@@ -1,0 +1,34 @@
+{
+  "name": "aeroconomy-bot",
+  "version": "0.1.0",
+  "description": "Discord bot for Aeroconomy virtual airlines: flight panels, reserving flights, fuel prices and the AeroDAQ in-game market.",
+  "author": "UncappingBadger",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/UncappingBadger/FlightPanelBot.git" },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/index.js",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "deploy-commands": "node --env-file-if-exists=.env dist/deploy-commands.js",
+    "deploy-commands:global": "node --env-file-if-exists=.env dist/deploy-commands.js --global",
+    "deploy-commands:dev": "tsx --env-file-if-exists=.env src/deploy-commands.ts",
+    "demo": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/demo/index.js",
+    "test": "tsx --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "build:host": "node scripts/build-host.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.28.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0"
+  }
+}
