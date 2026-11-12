@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import type { Config } from '../config.js';
+import { normalizeFsHubToken } from '../fshub/client.js';
 import { parseServiceAccount } from '../google/serviceAccount.js';
 import type { HostPaths } from './paths.js';
 
@@ -14,12 +15,20 @@ export interface HostSettings {
   /** Whether to look on GitHub once a day for a newer version of this app (and say so if there is one). */
   checkForUpdates: boolean;
   logLevel: LogLevel;
+  /**
+   * Optional: the host's FsHub personal access token. With it the bot checks the pilot IDs people type and
+   * can read an airline's FsHub roster. Empty means the bot never contacts FsHub. (Older versions kept a
+   * token under another name, `fshubToken`, which is deliberately not read: it was saved for a feature that
+   * no longer exists, and a token should only ever be used for what its owner pasted it in for.)
+   */
+  fshubAccessToken: string;
 }
 
 const FileSchema = z.object({
   discordToken: z.string().default(''),
   checkForUpdates: z.boolean().default(true),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  fshubAccessToken: z.string().default(''),
 });
 
 /** Tidy a pasted token: no spaces, quotes, or a leading "Bot ". */
@@ -68,12 +77,18 @@ export function loadSettings(paths: HostPaths): HostSettings {
   } catch {
     parsed = FileSchema.parse({});
   }
-  return { discordToken: normalizeToken(parsed.discordToken), checkForUpdates: parsed.checkForUpdates, logLevel: parsed.logLevel };
+  return {
+    discordToken: normalizeToken(parsed.discordToken),
+    checkForUpdates: parsed.checkForUpdates,
+    logLevel: parsed.logLevel,
+    fshubAccessToken: normalizeFsHubToken(parsed.fshubAccessToken),
+  };
 }
 
 /**
- * Older versions kept a FsHub API token in settings.json. Nothing uses it any more, so take it out of
- * the file rather than leave a secret lying around. Does nothing if the file never had one.
+ * Older versions kept a FsHub API token in settings.json (as `fshubToken`) for a feature that no longer
+ * exists, and nothing reads it. Take it out of the file rather than leave a secret lying around. Does
+ * nothing if the file never had one. (The current optional token is a different setting, `fshubAccessToken`.)
  */
 export function forgetLegacySettings(paths: HostPaths): boolean {
   try {
@@ -116,6 +131,7 @@ export function toConfig(paths: HostPaths, s: HostSettings): Config {
     databasePath: paths.database,
     logLevel: s.logLevel,
     googleServiceAccountFile: existsSync(paths.googleKey) ? paths.googleKey : undefined,
+    fshubToken: s.fshubAccessToken || undefined,
   };
 }
 

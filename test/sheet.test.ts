@@ -17,7 +17,7 @@ import {
 } from '../src/jobs/sheet.js';
 import type { SourceJob } from '../src/jobs/types.js';
 import { AIRLINE, CHANNEL, GUILD, HOUR, makeHarness, sj, T0, USER_A, USER_B, type Harness } from './helpers.js';
-import { fakeComponent, fakeDm, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
+import { fakeComponent, fakeDm, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions, messageText } from './discord-helpers.js';
 
 /* A made-up sheet in the same shape as a real airline's sign-up tab. "Now" in these tests is 2026-11-11 12:00Z. */
 
@@ -324,9 +324,9 @@ describe('flights the sheet already assigns', () => {
     assert.equal(legAt('TST-001').sheetHolder, 'Taylor');
     assert.equal(legAt('TST-001').holder, null);
     await d.panels.refresh(pid);
-    const text = d.client.channel(CHANNEL).live.map((m) => m.payload.embeds[0].toJSON().description as string).join('\n');
-    assert.match(text, /\*\*TST-001\*\* · EGLL → EGKK[^\n]*\n[^\n]*\n↳ Taylor \*\(in the schedule\)\*/);
-    assert.match(text, /\*\*TST-002\*\*[\s\S]*↳ \*open\*/);
+    const text = d.client.channel(CHANNEL).live.map((m) => messageText(m)).join('\n');
+    assert.match(text, /^TST-001 ·[^\n]*\n## EGLL ✈ EGKK\n(?:[A-Z ]+: [^\n]*\n)*PILOT: Taylor \*\(in the schedule\)\*$/m);
+    assert.match(text, /^TST-002 ·[^\n]*\n## [^\n]*\n(?:[A-Z ]+: [^\n]*\n)*PILOT: \*open\*$/m);
   });
 
   it('treats such a leg as taken: nobody can reserve it, and they are told who has it', async () => {
@@ -543,7 +543,7 @@ describe('/setup sheet', () => {
     assert.match(reply, /skipped or guessed at some rows/);
     assert.match(reply, /KORD-KPVD/);
     // the panel shows the sheet's own sign-ups
-    const panelText = d.client.channel(CHANNEL).live.map((m) => m.payload.embeds[0].toJSON().description as string).join('\n');
+    const panelText = d.client.channel(CHANNEL).live.map((m) => messageText(m)).join('\n');
     assert.match(panelText, /Taylor \*\(in the schedule\)\*/);
     assert.match(panelText, /Backup: Jordan/);
   });

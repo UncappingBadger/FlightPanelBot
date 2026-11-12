@@ -24,7 +24,7 @@ export interface HostState {
   inviteUrl: string | null;
   servers: ServerInfo[];
   /** What is filled in. Never the secrets themselves. */
-  configured: { discordToken: boolean; google: GoogleKeyInfo };
+  configured: { discordToken: boolean; google: GoogleKeyInfo; fshub: boolean };
   version: string;
   updatedAt: number;
 }

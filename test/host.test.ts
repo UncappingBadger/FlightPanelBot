@@ -89,49 +89,49 @@ describe('Discord bot tokens', () => {
 
 describe('saved settings', () => {
   it('start empty, round-trip, and say what is still missing (only the Discord token now)', () => {
-    assert.deepEqual(loadSettings(paths), { discordToken: '', checkForUpdates: true, logLevel: 'info' });
+    assert.deepEqual(loadSettings(paths), { discordToken: '', checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
     assert.deepEqual(missingSettings(loadSettings(paths)), ['Discord bot token']);
-    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: false, logLevel: 'debug' });
-    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: false, logLevel: 'debug' });
+    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: false, logLevel: 'debug', fshubAccessToken: '' });
+    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: false, logLevel: 'debug', fshubAccessToken: '' });
     assert.deepEqual(missingSettings(loadSettings(paths)), []);
   });
 
   it('survive a corrupt or hand-edited file without crashing', () => {
     writeFileSync(paths.settings, '{ not json');
-    assert.deepEqual(loadSettings(paths), { discordToken: '', checkForUpdates: true, logLevel: 'info' });
+    assert.deepEqual(loadSettings(paths), { discordToken: '', checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
     writeFileSync(paths.settings, JSON.stringify({ discordToken: 5, logLevel: 'loud' }));
     assert.equal(loadSettings(paths).discordToken, '');
   });
 
   it('are written whole, leaving no half-written file behind', () => {
-    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
     assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.tmp')), []);
   });
 
   it('become the bot\'s config, with the data inside the host folder and no guild lock', () => {
-    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn' });
+    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn', fshubAccessToken: '' });
     const config = toConfig(paths, loadSettings(paths));
     assert.deepEqual(
       [config.discordClientId, config.discordGuildId, config.logLevel, config.databasePath, config.googleServiceAccountFile],
       [BOT_ID, undefined, 'warn', paths.database, undefined],
     );
-    assert.ok(!('fshubToken' in config), 'the bot has no FsHub setting');
-    assert.throws(() => toConfig(paths, { discordToken: 'junk', checkForUpdates: true, logLevel: 'info' }), /doesn't look like a Discord bot token/);
+    assert.equal(config.fshubToken, undefined, 'no FsHub token unless the host saved one');
+    assert.throws(() => toConfig(paths, { discordToken: 'junk', checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' }), /doesn't look like a Discord bot token/);
   });
 
   it('an older settings file that still holds a FsHub token loads fine, and the token is removed from it', () => {
     writeFileSync(paths.settings, JSON.stringify({ discordToken: TOKEN, fshubToken: OLD_FSHUB_TOKEN, logLevel: 'warn' }));
-    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn' });
+    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn', fshubAccessToken: '' });
     assert.equal(forgetLegacySettings(paths), true);
     const raw = readFileSync(paths.settings, 'utf8');
-    assert.ok(!raw.includes(OLD_FSHUB_TOKEN) && !raw.includes('fshub'), 'no FsHub token left on disk');
-    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn' }, 'everything else is kept');
+    assert.ok(!raw.includes(OLD_FSHUB_TOKEN) && !raw.includes('"fshubToken"'), 'no FsHub token left on disk');
+    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn', fshubAccessToken: '' }, 'everything else is kept');
     assert.equal(forgetLegacySettings(paths), false, 'and a second run finds nothing to do');
   });
 
   it('reads a settings file that starts with a byte-order mark, as Notepad and PowerShell can save it', () => {
     writeFileSync(paths.settings, '﻿' + JSON.stringify({ discordToken: TOKEN, fshubToken: OLD_FSHUB_TOKEN, logLevel: 'warn' }));
-    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn' });
+    assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'warn', fshubAccessToken: '' });
     assert.equal(forgetLegacySettings(paths), true);
     assert.ok(!readFileSync(paths.settings, 'utf8').includes(OLD_FSHUB_TOKEN));
   });
@@ -142,14 +142,14 @@ describe('saved settings', () => {
     writeFileSync(paths.settings, '{ not json');
     assert.equal(forgetLegacySettings(paths), false);
     assert.equal(readFileSync(paths.settings, 'utf8'), '{ not json');
-    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
     const before = readFileSync(paths.settings, 'utf8');
     assert.equal(forgetLegacySettings(paths), false);
     assert.equal(readFileSync(paths.settings, 'utf8'), before);
   });
 
   it('turn on write-back only when a Google key has been saved', () => {
-    const s = { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' as const };
+    const s = { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' as const, fshubAccessToken: '' };
     assert.equal(toConfig(paths, s).googleServiceAccountFile, undefined);
     saveGoogleKey(paths, KEY_JSON);
     assert.equal(toConfig(paths, s).googleServiceAccountFile, paths.googleKey);
@@ -258,7 +258,7 @@ describe('the status file the tray icon reads', () => {
     botName: 'Bot#1',
     inviteUrl: inviteUrl(BOT_ID),
     servers: [{ id: '1', name: 'My server', commands: 'registered' }],
-    configured: { discordToken: true, google: { present: false, email: null, problem: null } },
+    configured: { discordToken: true, google: { present: false, email: null, problem: null }, fshub: false },
     version: '1.0.0',
     updatedAt: 1,
   };
@@ -381,7 +381,7 @@ describe('the supervisor', () => {
       },
       ...extra,
     });
-  const configured = () => saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+  const configured = () => saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
   const last = () => states.at(-1)!;
 
   beforeEach(() => {
@@ -421,7 +421,22 @@ describe('the supervisor', () => {
     await make().start();
     const everything = JSON.stringify(states);
     for (const secret of [TOKEN, account.privateKey, 'PRIVATE KEY']) assert.equal(everything.includes(secret), false, secret.slice(0, 12));
-    assert.deepEqual(last().configured, { discordToken: true, google: { present: true, email: account.email, problem: null } });
+    assert.deepEqual(last().configured, { discordToken: true, google: { present: true, email: account.email, problem: null }, fshub: false });
+  });
+
+  it('says whether a FsHub token is saved, but never what it is', async () => {
+    const FSHUB_SECRET = 'fshub-secret-0123456789abcdef0123456789';
+    saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: FSHUB_SECRET });
+    await make().start();
+    assert.equal(JSON.stringify(states).includes(FSHUB_SECRET), false);
+    assert.equal(last().configured.fshub, true);
+    assert.equal(started[0]!.config.fshubToken, FSHUB_SECRET, 'the bot is given it, to use against FsHub only');
+  });
+
+  it('a FsHub token left under the old setting name is never handed to the bot', async () => {
+    writeFileSync(paths.settings, JSON.stringify({ discordToken: TOKEN, fshubToken: OLD_FSHUB_TOKEN }));
+    await make().start();
+    assert.equal(started[0]!.config.fshubToken, undefined);
   });
 
   it('shows the invite link as soon as a token is saved, even before the bot has finished connecting', async () => {
@@ -536,15 +551,23 @@ describe('the local setup page', () => {
   let restarts: number;
   let quitCalled: boolean;
   let discordStatus: number;
+  let fshubStatus: number;
+  let fshubSeen: Array<{ path: string; token: string | null; method: string }>;
   let github: { status: number; body: unknown };
   let githubCalls: number;
   let networkDown: boolean;
   let updates: UpdateChecker;
 
-  const fakeFetch = (async (url: string) => {
+  const fakeFetch = (async (url: string, init?: RequestInit) => {
     if (networkDown) throw new TypeError('fetch failed');
     const u = String(url);
     if (u.includes('discord.com')) return new Response(JSON.stringify({ id: BOT_ID, username: 'Airline Bot' }), { status: discordStatus });
+    if (u.includes('fshub.io')) {
+      const headers = new Headers(init?.headers);
+      fshubSeen.push({ path: new URL(u).pathname, token: headers.get('x-pilot-token'), method: init?.method ?? 'GET' });
+      if (fshubStatus !== 200) return new Response(JSON.stringify({ error: { status_code: fshubStatus, message: 'Unauthenticated.' } }), { status: fshubStatus });
+      return new Response(JSON.stringify({ data: { id: 1, name: 'Token Holder', is_premium: false } }), { status: 200 });
+    }
     if (u.includes('api.github.com')) {
       githubCalls++;
       return new Response(JSON.stringify(github.body), { status: github.status });
@@ -556,6 +579,8 @@ describe('the local setup page', () => {
     restarts = 0;
     quitCalled = false;
     discordStatus = 200;
+    fshubStatus = 200;
+    fshubSeen = [];
     github = { status: 200, body: { tag_name: 'v9.9.9', html_url: 'https://github.com/o/r/releases/tag/v9.9.9' } };
     githubCalls = 0;
     networkDown = false;
@@ -664,16 +689,18 @@ describe('the local setup page', () => {
       assert.match(html, /v9\.9\.9/);
       assert.equal(html.includes(KEY), false, 'the page does not embed the key; it reads it from the address');
       assert.doesNotMatch(html, /<script[^>]+src=/, 'no outside scripts');
-      assert.doesNotMatch(html, /fshub/i, 'the page no longer asks for anything from FsHub');
+      assert.match(html, /<input type="password" id="fshub"/, 'the FsHub token is optional and typed into a hidden field');
+      assert.doesNotMatch(html, /fshubToken|fshubAccessToken/, 'the page never carries a stored token');
     });
 
     it('reports state without any token', async () => {
-      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
       const text = await (await fetch(url('/api/state'))).text();
       assert.equal(text.includes(TOKEN), false);
       const state = JSON.parse(text);
       assert.deepEqual([state.configured.discordToken, state.version], [true, '9.9.9']);
       assert.ok(!('fshubToken' in state.configured));
+      assert.equal(state.configured.fshub, false);
       assert.deepEqual([state.update.supported, state.update.auto, state.update.available, state.update.checkedAt], [true, true, false, null]);
     });
 
@@ -694,7 +721,7 @@ describe('the local setup page', () => {
       const text = await res.text();
       assert.equal(res.status, 200);
       assert.equal(text.includes(TOKEN), false);
-      assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+      assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
       for (const limit = Date.now() + 1000; restarts === 0 && Date.now() < limit; ) await new Promise((r) => setTimeout(r, 10));
       assert.equal(restarts, 1);
     });
@@ -707,12 +734,12 @@ describe('the local setup page', () => {
     });
 
     it('rejects a token that Discord says is wrong, keeping what was saved before', async () => {
-      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
       discordStatus = 401;
       const d = await post('/api/settings', { discordToken: `${Buffer.from('999999999999999999').toString('base64')}.zzzzzz.${'y'.repeat(27)}` });
       assert.equal(d.status, 400);
       assert.match(((await d.json()) as { error: string }).error, /Discord says that token is not valid/);
-      assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+      assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
       assert.equal(restarts, 0, 'nothing restarted');
     });
 
@@ -735,6 +762,80 @@ describe('the local setup page', () => {
       const res = await post('/api/settings', {});
       assert.equal(res.status, 400);
       assert.match(((await res.json()) as { error: string }).error, /Paste the bot token/);
+    });
+  });
+
+  describe('the optional FsHub token', () => {
+    const FSHUB_TOKEN = 'fshub-token-0123456789abcdefghij0123456789';
+    const waitForRestart = async () => {
+      for (const limit = Date.now() + 1000; restarts === 0 && Date.now() < limit; ) await new Promise((r) => setTimeout(r, 10));
+    };
+
+    it('checks the token with FsHub, keeps it, restarts the bot, and never echoes it back', async () => {
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
+      const res = await post('/api/fshub', { token: ` "${FSHUB_TOKEN}" ` });
+      const text = await res.text();
+      assert.equal(res.status, 200);
+      assert.equal(text.includes(FSHUB_TOKEN), false);
+      assert.deepEqual(JSON.parse(text), { ok: true, name: 'Token Holder', notes: [] });
+      assert.equal(loadSettings(paths).fshubAccessToken, FSHUB_TOKEN);
+      assert.deepEqual(fshubSeen, [{ path: '/api/v3/user', token: FSHUB_TOKEN, method: 'GET' }], 'it asked FsHub only who the token belongs to, with a GET');
+      await waitForRestart();
+      assert.equal(restarts, 1);
+      const state = (await (await fetch(url('/api/state'))).text());
+      assert.equal(state.includes(FSHUB_TOKEN), false);
+      assert.equal(JSON.parse(state).configured.fshub, true);
+    });
+
+    it('keeps the Discord token and the other settings when it saves', async () => {
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: false, logLevel: 'warn', fshubAccessToken: '' });
+      await post('/api/fshub', { token: FSHUB_TOKEN });
+      assert.deepEqual(loadSettings(paths), { discordToken: TOKEN, checkForUpdates: false, logLevel: 'warn', fshubAccessToken: FSHUB_TOKEN });
+    });
+
+    it('does not save a token FsHub rejects, and leaves the one already saved', async () => {
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: FSHUB_TOKEN });
+      fshubStatus = 401;
+      const res = await post('/api/fshub', { token: 'a-different-token-0123456789abcdef' });
+      assert.equal(res.status, 400);
+      assert.match(((await res.json()) as { error: string }).error, /FsHub says that token is not valid/);
+      assert.equal(loadSettings(paths).fshubAccessToken, FSHUB_TOKEN);
+      assert.equal(restarts, 0);
+    });
+
+    it('rejects something that is not shaped like a token without asking FsHub', async () => {
+      for (const token of ['', 'short', 'has spaces in the middle of it 0123456789', 42]) {
+        const res = await post('/api/fshub', { token });
+        assert.equal(res.status, 400, String(token));
+      }
+      assert.equal(fshubSeen.length, 0);
+      assert.equal(loadSettings(paths).fshubAccessToken, '');
+    });
+
+    it('saves anyway, with a note, when it cannot reach FsHub to check', async () => {
+      networkDown = true;
+      const res = await post('/api/fshub', { token: FSHUB_TOKEN });
+      const body = (await res.json()) as { ok: boolean; name: string | null; notes: string[] };
+      assert.equal(res.status, 200);
+      assert.equal(body.name, null);
+      assert.equal(body.notes.length, 1);
+      assert.equal(loadSettings(paths).fshubAccessToken, FSHUB_TOKEN);
+    });
+
+    it('removes the token', async () => {
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: FSHUB_TOKEN });
+      assert.equal((await post('/api/fshub/remove', {})).status, 200);
+      assert.equal(loadSettings(paths).fshubAccessToken, '');
+      assert.equal(loadSettings(paths).discordToken, TOKEN);
+      assert.equal(readFileSync(paths.settings, 'utf8').includes(FSHUB_TOKEN), false, 'gone from the file too');
+    });
+
+    it('only answers with the right key, from its own page', async () => {
+      const noKey = await fetch(url('/api/fshub', null), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: FSHUB_TOKEN }) });
+      assert.equal(noKey.status, 403);
+      assert.equal((await post('/api/fshub', { token: FSHUB_TOKEN }, { origin: 'https://evil.example' })).status, 403);
+      assert.equal(fshubSeen.length, 0, 'nothing was sent to FsHub');
+      assert.equal(loadSettings(paths).fshubAccessToken, '');
     });
   });
 
@@ -762,7 +863,7 @@ describe('the local setup page', () => {
     });
 
     it('restarts the bot on request', async () => {
-      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' });
+      saveSettings(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' });
       assert.equal((await post('/api/restart', {})).status, 200);
       for (const limit = Date.now() + 1000; restarts === 0 && Date.now() < limit; ) await new Promise((r) => setTimeout(r, 10));
       assert.equal(restarts, 1);

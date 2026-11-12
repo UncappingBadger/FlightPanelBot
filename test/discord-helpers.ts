@@ -2,6 +2,9 @@ import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandIntera
 import type { AeroDaqClient, AirportFuel, Stock } from '../src/aerodaq/client.js';
 import type { Config } from '../src/config.js';
 import type { BotContext } from '../src/discord/context.js';
+import type { FlightPage, FsHubAccount, FsHubAirline, FsHubApi, FsHubFlight, FsHubPilot, RosterPilot } from '../src/fshub/client.js';
+import { AutoCompleter } from '../src/services/autoComplete.js';
+import { FsHubSync } from '../src/services/fshubSync.js';
 import { MarketService } from '../src/discord/market.js';
 import { Notifier } from '../src/discord/notifier.js';
 import { PanelService } from '../src/discord/panel.js';
@@ -19,6 +22,7 @@ export const CONFIG: Config = {
   databasePath: ':memory:',
   logLevel: 'error',
   googleServiceAccountFile: undefined,
+  fshubToken: undefined,
 };
 
 /* ------------------------------------------------------------------ fake Discord objects */
@@ -49,6 +53,21 @@ export class FakeUser {
 
 /** Discord's "Unknown Message" (10008): what the API says about a message that no longer exists. */
 export const unknownMessage = () => Object.assign(new Error('Unknown Message'), { code: 10008 });
+
+/**
+ * The words on a card, as one piece of text: its title, its description, and each box as `NAME: value` (a box's line breaks
+ * become " / "), then the footer. Cards are embeds, so a test asks what a panel message says, not where it says it.
+ */
+export function embedText(e: { toJSON(): any }): string {
+  const j = e.toJSON();
+  const boxes = (j.fields ?? []).map((f: { name: string; value: string }) => `${f.name}: ${f.value.replace(/\n/g, ' / ')}`);
+  return [j.title, j.description, ...boxes, j.footer?.text].filter(Boolean).join('\n');
+}
+
+/** Everything a message with cards says: each card's text, one after another. */
+export function messageText(m: { payload: { embeds: Array<{ toJSON(): any }> } }): string {
+  return m.payload.embeds.map(embedText).join('\n\n');
+}
 
 export class FakeMessage {
   edits: any[] = [];
@@ -308,6 +327,71 @@ export class FakeAeroDaq {
   }
 }
 
+/**
+ * A stand-in for FsHub. Everything in it is made up: the pilots, airlines and Discord IDs are not real
+ * people. Tests set what it knows, or make it fail the way a real outage or refusal would.
+ */
+export class FakeFsHub implements FsHubApi {
+  /** Pilots FsHub knows, by ID. */
+  pilots = new Map<number, FsHubPilot>();
+  /** Airlines FsHub knows, by ID. */
+  airlines = new Map<number, FsHubAirline>();
+  /** The airlines the token's own account belongs to. */
+  mine: FsHubAirline[] = [];
+  /** Rosters, by airline ID. */
+  rosters = new Map<number, RosterPilot[]>();
+  /** When set, every call throws it. */
+  error: Error | null = null;
+  /** When set, only roster reads throw it (the rest still work). */
+  rosterError: Error | null = null;
+  /** The flights FsHub lists for each airline (any order: it serves them oldest first, by ID, like FsHub does). */
+  flights = new Map<number, FsHubFlight[]>();
+  /** When set, only flight reads throw it. */
+  flightError: Error | null = null;
+  pilotCalls: number[] = [];
+  rosterCalls: number[] = [];
+  flightCalls: Array<{ airlineId: number; cursor: number; limit: number }> = [];
+  async account(): Promise<FsHubAccount> {
+    if (this.error) throw this.error;
+    return { id: 1, name: 'Token Holder', premium: false };
+  }
+  async pilot(id: number): Promise<FsHubPilot | null> {
+    this.pilotCalls.push(id);
+    if (this.error) throw this.error;
+    return this.pilots.get(id) ?? null;
+  }
+  async airline(id: number): Promise<FsHubAirline | null> {
+    if (this.error) throw this.error;
+    return this.airlines.get(id) ?? null;
+  }
+  async myAirlines(): Promise<FsHubAirline[]> {
+    if (this.error) throw this.error;
+    return this.mine;
+  }
+  async roster(airlineId: number): Promise<RosterPilot[]> {
+    this.rosterCalls.push(airlineId);
+    if (this.error) throw this.error;
+    if (this.rosterError) throw this.rosterError;
+    return this.rosters.get(airlineId) ?? [];
+  }
+  async airlineFlights(airlineId: number, cursor: number, limit: number): Promise<FlightPage> {
+    this.flightCalls.push({ airlineId, cursor, limit });
+    if (this.error) throw this.error;
+    if (this.flightError) throw this.flightError;
+    const page = (this.flights.get(airlineId) ?? [])
+      .filter((f) => f.id > cursor)
+      .sort((a, b) => a.id - b.id)
+      .slice(0, limit);
+    return {
+      flights: page,
+      count: page.length,
+      lastId: page.length ? page[page.length - 1]!.id : null,
+      firstAt: page.length ? page[0]!.arrivedAt : null,
+      lastAt: page.length ? page[page.length - 1]!.arrivedAt : null,
+    };
+  }
+}
+
 export interface DiscordHarness {
   ctx: BotContext;
   client: FakeClient;
@@ -315,11 +399,13 @@ export interface DiscordHarness {
   refresher: SourceRefresher;
   aerodaq: FakeAeroDaq;
   market: MarketService;
+  /** Present when the test asked for FsHub (`fshub: true`); otherwise ctx.fshub is null, as for a host with no token. */
+  fshub: FakeFsHub | null;
 }
 
 export function makeDiscordHarness(
   h: Harness,
-  opts: { source?: JobSource | null; fetchFn?: typeof fetch; writeback?: SheetWriteBack | null; pilotIds?: boolean; aerodaq?: FakeAeroDaq } = {},
+  opts: { source?: JobSource | null; fetchFn?: typeof fetch; writeback?: SheetWriteBack | null; pilotIds?: boolean; aerodaq?: FakeAeroDaq; fshub?: boolean | FakeFsHub } = {},
 ): DiscordHarness {
   const client = new FakeClient();
   const now = () => h.clock.now;
@@ -337,6 +423,14 @@ export function makeDiscordHarness(
   const aerodaq = opts.aerodaq ?? new FakeAeroDaq();
   const market = new MarketService(h.store, aerodaq, silentLogger, now);
   market.attach(client as unknown as Client);
+  const fshub = opts.fshub ? (opts.fshub === true ? new FakeFsHub() : opts.fshub) : null;
+  const fshubSync = fshub ? new FsHubSync(h.store, fshub, panels, { logger: silentLogger, now, completed: (panelId) => h.jobs.completed(panelId) }) : null;
+  const notifier = new Notifier(client as unknown as Client, panels, silentLogger);
+  // As in the real bot: the hourly completion, which tells each pilot in a DM (FakeUser records them).
+  const autoComplete = fshubSync
+    ? new AutoCompleter({ store: h.store, jobs: h.jobs, sync: fshubSync, writeback: opts.writeback ?? null, logger: silentLogger, now, onCompleted: (discordId, done) => notifier.autoCompleted(discordId, done) })
+    : null;
+  panels.fshubEnabled = fshub !== null;
   const ctx: BotContext = {
     config: CONFIG,
     store: h.store,
@@ -346,12 +440,15 @@ export function makeDiscordHarness(
     aerodaq: aerodaq as unknown as AeroDaqClient,
     market,
     writeback: opts.writeback ?? null,
+    fshub,
+    fshubSync,
+    autoComplete,
     log: silentLogger,
     now,
     fetchFn: opts.fetchFn ?? fetch,
   };
-  new Notifier(client as unknown as Client, panels, silentLogger).subscribe(h.events);
-  return { ctx, client, panels, refresher, aerodaq, market };
+  notifier.subscribe(h.events);
+  return { ctx, client, panels, refresher, aerodaq, market, fshub };
 }
 
 /** Let fire-and-forget event listeners and debounce timers finish. */

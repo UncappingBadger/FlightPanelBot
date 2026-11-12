@@ -392,6 +392,23 @@ describe('the market board in a channel', () => {
     assert.deepEqual([board().lastOkAt, board().lastError], [h.clock.now, null]);
   });
 
+  it('never posts two boards when redraws overlap (the schedule and /setup market can ask at the same moment)', async () => {
+    const results = await Promise.all([d.market.refresh(GUILD), d.market.refresh(GUILD), d.market.refresh(GUILD)]);
+    assert.deepEqual(results, ['posted', 'updated', 'updated']);
+    assert.equal(live().length, 1, 'one board, not three');
+    assert.deepEqual(board().messageIds, [live()[0]!.id], 'and it is the one the bot knows about');
+  });
+
+  it('still redraws after one that failed', async () => {
+    d.aerodaq.error = new AeroDaqError('unavailable', "I couldn't reach AeroDAQ right now.");
+    const failed = d.market.refresh(GUILD);
+    const next = d.market.refresh(GUILD);
+    assert.equal(await failed, 'unavailable');
+    d.aerodaq.error = null;
+    assert.equal(await next, 'posted');
+    assert.equal(live().length, 1);
+  });
+
   it('edits that message in place on later refreshes', async () => {
     await d.market.refresh(GUILD);
     const first = live()[0]!;

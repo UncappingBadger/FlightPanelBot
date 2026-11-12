@@ -70,7 +70,7 @@ export class Supervisor {
       botName: this.botName,
       inviteUrl: clientId ? inviteUrl(clientId) : null,
       servers: this.servers,
-      configured: { discordToken: settings.discordToken !== '', google: googleKeyInfo(this.o.paths) },
+      configured: { discordToken: settings.discordToken !== '', google: googleKeyInfo(this.o.paths), fshub: settings.fshubAccessToken !== '' },
       version: this.o.version,
       updatedAt: this.updatedAt,
     };

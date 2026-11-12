@@ -25,6 +25,8 @@ export const MARKET_REFRESH_MS = 15 * 60_000;
 export class MarketService {
   private client: Client | null = null;
   private running = false;
+  /** The redraw of each server's board that is under way or queued. */
+  private readonly chains = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly store: Store,
@@ -37,8 +39,25 @@ export class MarketService {
     this.client = client;
   }
 
-  /** Redraw one server's board now. */
-  async refresh(guildId: string): Promise<MarketRefreshResult> {
+  /**
+   * Redraw one server's board now. Redraws of one board never overlap (the scheduler and `/setup market` can ask at the
+   * same moment, and two at once would each post the board, leaving a copy nothing knows about): one waits for the other.
+   */
+  refresh(guildId: string): Promise<MarketRefreshResult> {
+    const after = this.chains.get(guildId) ?? Promise.resolve();
+    const run = after.then(() => this.redraw(guildId));
+    const done = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.chains.set(guildId, done);
+    void done.then(() => {
+      if (this.chains.get(guildId) === done) this.chains.delete(guildId);
+    });
+    return run;
+  }
+
+  private async redraw(guildId: string): Promise<MarketRefreshResult> {
     const board = this.store.getMarketBoard(guildId);
     if (!board || !this.client) return 'skipped';
     this.store.updateMarketBoard(guildId, { lastAttemptAt: this.now() });

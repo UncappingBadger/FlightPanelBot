@@ -1,6 +1,6 @@
 {
   "name": "aeroconomy-bot",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Discord bot for Aeroconomy virtual airlines: flight panels, reserving flights, fuel prices and the AeroDAQ in-game market.",
   "author": "UncappingBadger",
   "license": "MIT",

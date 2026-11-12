@@ -23,6 +23,12 @@ export interface SourceLeg {
 export interface SourceJob {
   /** The source's own stable identifier. Re-importing the same key keeps the same bot ID. */
   key: string;
+  /**
+   * The airline's own number for this flight (a schedule sheet's Flight Number column), already tidied by
+   * `normalizeFlightNumber`. When it is there the bot uses it as the flight's ID, in place of its own `PREFIX-NNN`
+   * one; when it is missing, or cannot be used, the flight gets the automatic ID as before.
+   */
+  flightNumber?: string | null;
   title: string | null;
   legs: SourceLeg[];
   /** Required airframe, e.g. "A20N" or "Boeing 737-800". */
@@ -59,6 +65,16 @@ export interface JobSource {
 
 export function normalizeFetched(result: SourceJob[] | FetchedJobs): FetchedJobs {
   return Array.isArray(result) ? { jobs: result, warnings: [] } : result;
+}
+
+/**
+ * A flight number as an ID: letters, numbers and dashes, up to 16 characters, upper-cased with no spaces, or null when
+ * it is empty or has anything else in it. The ID is typed by pilots and put in messages, so nothing that could be
+ * formatting or a mention is allowed.
+ */
+export function normalizeFlightNumber(raw: string): string | null {
+  const t = raw.trim().toUpperCase().replace(/\s+/g, '');
+  return /^[A-Z0-9][A-Z0-9-]{0,15}$/.test(t) ? t : null;
 }
 
 export const MAX_LEGS = 12;

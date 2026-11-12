@@ -5,7 +5,7 @@ import { handleDmMessage, MAX_ATTEMPTS, outcomeText, SESSION_TTL_MS } from '../s
 import { UserError } from '../src/discord/errors.js';
 import { JobError } from '../src/services/jobs.js';
 import { CHANNEL, GUILD, makeHarness, sj, USER_A, USER_B, type Harness } from './helpers.js';
-import { fakeComponent, fakeDm, FakeUser, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
+import { fakeComponent, fakeDm, FakeUser, makeDiscordHarness, settle, type DiscordHarness, messageText } from './discord-helpers.js';
 
 describe('the Reserve conversation', () => {
   let h: Harness;
@@ -39,7 +39,7 @@ describe('the Reserve conversation', () => {
   };
   const say = (user: FakeUser, text: string) => handleDmMessage(d.ctx, fakeDm(user, text));
   const startFor = async (user: FakeUser) => press(user, `panel:reserve:${pid}`);
-  const panelText = () => d.client.channel(CHANNEL).live.map((m) => m.payload.embeds[0].toJSON().description as string).join('\n');
+  const panelText = () => d.client.channel(CHANNEL).live.map((m) => messageText(m)).join('\n');
   const legsOf = (id: number) => h.jobs.view(id)!.legs.map((l) => l.holder?.username ?? null);
   const menuOf = (payload: any) => payload.components.map((c: any) => c.toJSON()).flatMap((r: any) => r.components);
 
@@ -145,7 +145,7 @@ describe('the Reserve conversation', () => {
       assert.match(alice.lastText, /panel has been updated/);
       assert.equal(h.store.getSession(alice.id, h.clock.now), null, 'conversation is finished');
       await settle();
-      assert.match(panelText(), new RegExp(`\\*\\*TST-001\\*\\*[^]*↳ <@${USER_A.discordId}>`));
+      assert.match(panelText(), new RegExp(`^TST-001 ·[^\\n]*\\n## [^\\n]*\\n(?:[A-Z ]+: [^\\n]*\\n)*PILOT: <@${USER_A.discordId}>`, 'm'));
       assert.deepEqual(legsOf(single), ['alice']);
     });
 
@@ -540,7 +540,7 @@ describe('the FsHub pilot ID', () => {
   };
   const say = (user: FakeUser, text: string) => handleDmMessage(d.ctx, fakeDm(user, text));
   const reserveButton = () => press(alice, `panel:reserve:${pid}`);
-  const panelText = () => d.client.channel(CHANNEL).live.map((m) => m.payload.embeds[0].toJSON().description as string).join('\n');
+  const panelText = () => d.client.channel(CHANNEL).live.map((m) => messageText(m)).join('\n');
 
   describe('asking for it', () => {
     it('is the first thing the DM asks, before the flight, and says what it is for and where to find it', async () => {
@@ -586,7 +586,7 @@ describe('the FsHub pilot ID', () => {
       await say(alice, 'TST-001');
       assert.match(alice.lastText, /TST-001.*is reserved for you/);
       await settle();
-      assert.match(panelText(), new RegExp(`↳ <@${USER_A.discordId}> · FsHub #4821`));
+      assert.match(panelText(), new RegExp(`^PILOT: <@${USER_A.discordId}> · FsHub #4821`, 'm'));
     });
 
     it('takes a profile link or a number with a # as well', async () => {

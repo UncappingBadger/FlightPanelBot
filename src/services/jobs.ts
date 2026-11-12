@@ -24,6 +24,11 @@ export interface SyncResult {
   completed: number;
   /** People whose reservation was taken away by this sync (job removed, or its legs changed). */
   released: ReleasedNotice[];
+  /**
+   * Flight numbers the source gave a flight that could not be used as its ID because another flight on the panel already
+   * has that ID, so the flight kept the one it had (or got an automatic one). Reported to the admin.
+   */
+  numberClashes?: string[];
 }
 
 export interface ReserveResult {
@@ -43,6 +48,18 @@ const DAY = 24 * 3_600_000;
 const STALE_AFTER_MS = 7 * DAY;
 /** How long a completed flight stays on the panel, marked done. */
 export const COMPLETED_SHOW_MS = DAY;
+/**
+ * The panel lists the flights that are open now or start within a number of days from now (1 to 7, chosen per panel with
+ * `/setup window`; a new panel shows 7). A schedule often runs weeks ahead, and showing all of it buries the flights that can
+ * be flown soon; later ones appear once they come within the period. Only the panel is limited: a flight beyond it can still
+ * be reserved by its code.
+ */
+export const PANEL_DAYS_MIN = 1;
+export const PANEL_DAYS_MAX = 7;
+/** The period a new panel shows, and the longest any panel can. */
+export const PANEL_HORIZON_MS = PANEL_DAYS_MAX * DAY;
+/** How far ahead a panel set to show `days` days lists flights. */
+export const panelHorizonMs = (days: number): number => Math.min(PANEL_DAYS_MAX, Math.max(PANEL_DAYS_MIN, Math.round(days))) * DAY;
 /**
  * After a pilot completes a flight here, a sheet that still shows the box unticked is not believed
  * for this long: the tick was only just written, and the sheet's published copy can lag behind.
@@ -113,8 +130,17 @@ export class JobService {
     const result = this.store.tx(() => {
       const panel = this.store.getPanel(panelId);
       if (!panel) throw new JobError('NOT_FOUND', 'That panel no longer exists.');
-      const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [] };
+      const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [], numberClashes: [] };
       const seen = new Set<number>();
+      /** The ID a flight gets: its flight number when it has one that no other flight on the panel has, else the automatic one. */
+      const claim = (wanted: string | null | undefined, ownCode?: string): string | null => {
+        if (!wanted || wanted === ownCode) return null;
+        if (this.store.getJobByCode(panelId, wanted)) {
+          out.numberClashes!.push(wanted);
+          return null;
+        }
+        return wanted;
+      };
 
       for (const sj of jobs) {
         const existing = this.store.getJobBySourceKey(panelId, sj.key);
@@ -126,7 +152,8 @@ export class JobService {
         if (!existing) completed = sj.completed === true;
         else if (sj.completed === undefined) completed = existing.completedAt !== null;
         else if (sj.completed) completed = true;
-        else completed = existing.completedBy !== null && existing.completedAt !== null && now - existing.completedAt < COMPLETION_GRACE_MS;
+        // A completion FsHub confirmed stands even if the sheet is never ticked; one a pilot only claimed is given a few minutes.
+        else completed = existing.completedBy !== null && existing.completedAt !== null && (existing.completedVia === 'fshub' || now - existing.completedAt < COMPLETION_GRACE_MS);
         const expired = (sj.deadline !== null && sj.deadline <= now) || sj.closed === true || completed;
 
         if (!existing) {
@@ -134,7 +161,7 @@ export class JobService {
           // it is worth showing as completed.
           const showAsCompleted = completed && (sj.deadline === null || sj.deadline > now - COMPLETED_SHOW_MS);
           if (expired && !showAsCompleted) continue;
-          const code = this.store.allocateCode(panelId);
+          const code = claim(sj.flightNumber) ?? this.store.allocateCode(panelId);
           const job = this.store.insertJob({
             panelId,
             code,
@@ -161,8 +188,14 @@ export class JobService {
         // Completed the first time it is seen so; forgotten again if the box is unticked.
         const completedAt = completed ? (existing.completedAt ?? now) : null;
         const completedBy = completed ? existing.completedBy : null;
+        const completedVia = completed ? existing.completedVia : null;
         if (completed && existing.completedAt === null) out.completed++;
+        // The airline's flight number becomes the flight's ID, also for a flight the bot already knew by its automatic one.
+        // (A number taken away again leaves the ID as it was: IDs don't change back and forth.)
+        const number = claim(sj.flightNumber, existing.code);
+        if (number) this.store.setJobCode(existing.id, number);
         let changed =
+          number !== null ||
           existing.title !== sj.title ||
           existing.aircraft !== sj.aircraft ||
           existing.availableFrom !== sj.availableFrom ||
@@ -171,7 +204,8 @@ export class JobService {
           existing.notes !== sj.notes ||
           existing.status !== status ||
           existing.completedAt !== completedAt ||
-          existing.completedBy !== completedBy;
+          existing.completedBy !== completedBy ||
+          existing.completedVia !== completedVia;
         this.store.updateJob(existing.id, {
           title: sj.title,
           aircraft: sj.aircraft,
@@ -182,6 +216,7 @@ export class JobService {
           status,
           completedAt,
           completedBy,
+          completedVia,
           lastSeen: now,
         });
 
@@ -255,7 +290,10 @@ export class JobService {
   }
 
   findByCode(panel: Panel, input: string): JobView | null {
-    const code = normalizeCode(panel.prefix, input);
+    // What was typed may be a flight number as the airline writes it (any case, spaces ignored) or one of the bot's own IDs
+    // in its shorter forms (`dmo7`, `7`). A flight number is tried first: it is exactly what is on the panel.
+    const typed = input.trim().toUpperCase().replace(/\s+/g, '');
+    const code = (typed && this.store.getJobByCode(panel.id, typed) ? typed : null) ?? normalizeCode(panel.prefix, input);
     if (!code) return null;
     const job = this.store.getJobByCode(panel.id, code);
     if (!job || job.status !== 'open') return null;
@@ -321,9 +359,11 @@ export class JobService {
 
   /**
    * A pilot marks a flight completed. They must hold every leg of it. The flight leaves the open
-   * list and is shown as completed; the person who completed it is remembered.
+   * list and is shown as completed; the person who completed it is remembered. `via` is `fshub` when
+   * FsHub's own record of the landing was what confirmed it (such a completion is not undone by a sheet
+   * that has not been ticked).
    */
-  complete(jobId: number, discordId: string): JobView {
+  complete(jobId: number, discordId: string, via: 'fshub' | null = null): JobView {
     const now = this.now();
     const view = this.store.tx(() => {
       const current = this.store.getJobView(jobId);
@@ -334,7 +374,7 @@ export class JobService {
       if (current.legs.length === 0 || current.legs.some((l) => l.holder?.discordId !== discordId)) {
         throw new JobError('BAD_INPUT', `You can only complete a flight you hold every leg of, and ${current.job.code} has legs that aren't yours.`);
       }
-      this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: discordId });
+      this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: discordId, completedVia: via });
       return this.store.getJobView(jobId) as JobView;
     });
     this.events.emit({ type: 'changed', panelId: view.job.panelId });

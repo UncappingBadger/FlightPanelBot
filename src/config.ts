@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeFsHubToken } from './fshub/client.js';
 
 const required = (name: string) => z.string({ error: `${name} is required (see .env.example)` }).min(1, `${name} is required`);
 
@@ -10,6 +11,8 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   /** Optional: a Google service account key file, so the bot can write to a linked Google Sheet. */
   GOOGLE_SERVICE_ACCOUNT_FILE: z.string().min(1).optional(),
+  /** Optional: a FsHub personal access token, so the bot can check pilot IDs and read an airline's roster. */
+  FSHUB_TOKEN: z.string().min(1).optional(),
 });
 
 export interface Config {
@@ -21,6 +24,8 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** Path to the Google service account key, or undefined when write-back is not set up. */
   googleServiceAccountFile: string | undefined;
+  /** A FsHub personal access token, or undefined when the bot is not connected to FsHub. */
+  fshubToken: string | undefined;
 }
 
 /** Treat blank values in .env (e.g. `DISCORD_GUILD_ID=`) as "not set". */
@@ -44,5 +49,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databasePath: e.DATABASE_PATH,
     logLevel: e.LOG_LEVEL,
     googleServiceAccountFile: e.GOOGLE_SERVICE_ACCOUNT_FILE,
+    fshubToken: e.FSHUB_TOKEN ? normalizeFsHubToken(e.FSHUB_TOKEN) || undefined : undefined,
   };
 }

@@ -255,6 +255,8 @@ Runs your virtual airline's flight panel in your own Discord server, from your o
    to keep it visible. Your web browser opens the setup page.
 3. Follow the page: create your own Discord bot, paste its token, then press "Add the bot to a server".
    Type /setup in your server and follow the server owner's manual. No FsHub account or token is needed.
+   (If you want, the setup page also takes a FsHub token, so the bot can check the pilot IDs people type and
+   match pilots to your airline's FsHub roster. Without one the bot never contacts FsHub.)
 
 Right-click the icon for settings, the log, restarting the bot, "Start with Windows", and Quit.
 The bot only works while this program is running, so keep it on a computer that stays on.
@@ -268,7 +270,8 @@ one from the icon, and run the new one. Your settings and data carry over. The c
 the setup page, and only sends the program's name and version to github.com.
 
 The bot also uses AeroDAQ (aerodaq.com, an in-game market, not real money) for /fuel and the optional market
-board, but only when someone uses them.
+board, but only when someone uses them. If you save a FsHub token, it also asks fshub.io (read-only) about the
+pilot IDs people type and about the roster and recent flights of an airline you link with /setup fshub.
 
 The server owner's manual is in FlightPanelBot-Server-Owner-Manual.pdf (when it is in this folder).
 

@@ -2,7 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Logger } from '../util/log.js';
-import { checkDiscordToken } from './accounts.js';
+import { fshubTokenProblem, normalizeFsHubToken } from '../fshub/client.js';
+import { checkDiscordToken, checkFsHubToken } from './accounts.js';
 import type { HostPaths } from './paths.js';
 import { renderPage } from './page.js';
 import { discordTokenProblem, loadSettings, normalizeToken, removeGoogleKey, saveGoogleKey, saveSettings } from './settings.js';
@@ -158,6 +159,28 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
         removeGoogleKey(opts.paths);
         void opts.supervisor.restart();
         return json(res, 200, { ok: true });
+
+      // The optional FsHub token: checked with FsHub, then kept, and never sent back to the page.
+      case '/api/fshub': {
+        const token = typeof body.token === 'string' ? normalizeFsHubToken(body.token) : '';
+        const problem = fshubTokenProblem(token);
+        if (problem) throw new HttpError(400, problem);
+        const check = await checkFsHubToken(token, fetchFn);
+        if (check.status === 'rejected') throw new HttpError(400, check.message);
+        const current = loadSettings(opts.paths);
+        current.fshubAccessToken = token;
+        saveSettings(opts.paths, current);
+        void opts.supervisor.restart();
+        return json(res, 200, { ok: true, name: check.status === 'ok' ? (check.name ?? null) : null, notes: check.status === 'unknown' ? [check.message] : [] });
+      }
+
+      case '/api/fshub/remove': {
+        const current = loadSettings(opts.paths);
+        current.fshubAccessToken = '';
+        saveSettings(opts.paths, current);
+        void opts.supervisor.restart();
+        return json(res, 200, { ok: true });
+      }
 
       case '/api/restart':
         void opts.supervisor.restart();

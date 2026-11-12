@@ -82,6 +82,17 @@ export function renderPage(version: string): string {
     <div class="msg hidden" id="google-msg"></div>
   </section>
 
+  <section id="s-fshub">
+    <h2>4. Optional: connect the bot to FsHub</h2>
+    <p class="muted">With a FsHub token the bot checks the pilot IDs people type and shows the name FsHub has for each, and <code>/setup fshub</code> can read your airline's roster so pilots are matched to their Discord accounts without being asked. It only reads from FsHub and never changes anything there. Without a token the bot never contacts FsHub.</p>
+    <p class="muted">Create a personal access token at <a href="https://fshub.io/settings/integrations" target="_blank" rel="noopener">fshub.io/settings/integrations</a>. FsHub only shows an airline's roster to its members, so use an account that belongs to your airline. The token acts as that account, so keep it private; you can delete it on that page at any time.</p>
+    <label for="fshub">FsHub access token</label>
+    <input type="password" id="fshub" autocomplete="off" spellcheck="false" placeholder="Paste the token here">
+    <p id="fshub-state" class="muted"></p>
+    <div class="row"><button id="fshub-save">Check and save token</button><button class="secondary" id="fshub-remove">Remove token</button></div>
+    <div class="msg hidden" id="fshub-msg"></div>
+  </section>
+
   <section>
     <h2>Updates</h2>
     <p id="update-state" class="muted">Checking…</p>
@@ -133,6 +144,8 @@ export function renderPage(version: string): string {
     var g = s.configured.google;
     $('google-state').textContent = g.present ? (g.email ? 'Key saved. Share your sheet with ' + g.email + ' as an Editor.' : (g.problem || 'A key is saved but unusable.')) : 'No key saved: the bot only reads your sheet.';
     $('google-remove').style.display = g.present ? '' : 'none';
+    $('fshub-state').textContent = s.configured.fshub ? 'A token is saved. Paste a new one only to replace it.' : 'No token saved: the bot never contacts FsHub.';
+    $('fshub-remove').style.display = s.configured.fshub ? '' : 'none';
   }
   function ago(ms) {
     var m = Math.round((Date.now() - ms) / 60000);
@@ -182,6 +195,14 @@ export function renderPage(version: string): string {
   $('update-auto').onchange = function () {
     api('/api/update/auto', { enabled: $('update-auto').checked }).then(renderUpdate).catch(function (e) { show($('update-msg'), e.message, true); });
   };
+  $('fshub-save').onclick = function () {
+    $('fshub-save').disabled = true; show($('fshub-msg'), 'Checking with FsHub\\u2026', false);
+    api('/api/fshub', { token: $('fshub').value }).then(function (r) {
+      $('fshub').value = '';
+      show($('fshub-msg'), 'Saved.' + (r.name ? ' Connected as ' + r.name + '.' : '') + ' ' + (r.notes || []).join(' ') + ' The bot is restarting to use it.', false); poll();
+    }).catch(function (e) { show($('fshub-msg'), e.message, true); }).then(function () { $('fshub-save').disabled = false; });
+  };
+  $('fshub-remove').onclick = function () { api('/api/fshub/remove', {}).then(function () { show($('fshub-msg'), 'Token removed.', false); poll(); }); };
   $('restart').onclick = function () { api('/api/restart', {}).then(poll); };
   $('logs-refresh').onclick = logs;
   $('google-remove').onclick = function () { api('/api/google-key/remove', {}).then(function () { show($('google-msg'), 'Key removed.', false); poll(); }); };

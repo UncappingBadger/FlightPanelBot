@@ -3,7 +3,8 @@ import type { Logger } from '../util/log.js';
 import type { JobEvent, JobEvents, ReleasedNotice } from '../services/events.js';
 import { legList } from '../util/format.js';
 import type { PanelService } from './panel.js';
-import { noPings } from './ui.js';
+import type { AutoCompleted } from '../services/autoComplete.js';
+import { autoCompletedMessage, noPings } from './ui.js';
 
 const REASON: Record<ReleasedNotice['reason'], string> = {
   removed: 'is no longer listed, so your reservation was released',
@@ -21,6 +22,17 @@ export class Notifier {
 
   subscribe(events: JobEvents): () => void {
     return events.subscribe((e) => this.handle(e));
+  }
+
+  /** Tell a pilot their flights were completed from FsHub. Best effort: closed DMs only mean they are not told. */
+  async autoCompleted(discordId: string, done: AutoCompleted[]): Promise<void> {
+    if (done.length === 0) return;
+    try {
+      const user = await this.client.users.fetch(discordId);
+      await user.send({ content: autoCompletedMessage(done), allowedMentions: noPings });
+    } catch (e) {
+      this.log.debug(`Could not tell ${discordId} about flights completed from FsHub`, e);
+    }
   }
 
   async handle(event: JobEvent): Promise<void> {

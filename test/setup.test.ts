@@ -6,7 +6,7 @@ import { DemoJobSource } from '../src/jobs/demo.js';
 import { ImportError, parseJobsFile } from '../src/jobs/import.js';
 import { silentLogger } from '../src/util/log.js';
 import { CHANNEL, GUILD, HOUR, makeHarness, sj, T0, USER_A, USER_B, type Harness } from './helpers.js';
-import { fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
+import { fakeInteraction, FakeUser, makeDiscordHarness, messageText, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 
 const setup = commands.find((c) => c.data.name === 'setup')!;
 const NEW_CHANNEL = '800000000000000001';
@@ -49,7 +49,7 @@ describe('/setup (admins only)', () => {
 
   describe('permissions', () => {
     it('refuses every subcommand to people without Manage Server, and changes nothing', async () => {
-      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'refresh', 'release', 'template'];
+      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'fshub', 'refresh', 'release', 'template'];
       for (const sub of subs) {
         await assert.rejects(
           run(sub, { admin: false, options: { airline: 'Test Air', channel: { id: CHANNEL }, code: 'TST-001', file: attachment() } }),
@@ -85,9 +85,10 @@ describe('/setup (admins only)', () => {
       assert.deepEqual([panel.prefix, panel.channelId, panel.airlineName, panel.airlineAbbr], ['TA', CHANNEL, 'Test Air', null]);
       assert.match(text(calls), /Created the \*\*Test Air\*\* panel/);
       assert.match(text(calls), /\/setup template/, 'tells the admin how to load flights');
-      assert.equal(channelMsgs().length, 1);
+      assert.equal(channelMsgs().length, 2, 'the open flights, and the completed flights as a panel of their own');
       assert.match(channelMsgs()[0]!.payload.embeds[0].toJSON().title, /Test Air · open flights/);
-      assert.deepEqual(h.store.getPanel(panel.id)!.messageIds, [channelMsgs()[0]!.id]);
+      assert.match(channelMsgs()[1]!.payload.embeds[0].toJSON().title, /Test Air · completed flights/);
+      assert.deepEqual(h.store.getPanel(panel.id)!.messageIds, channelMsgs().map((m) => m.id));
     });
 
     it('accepts a custom prefix, validates it and keeps it unique within the server', async () => {
@@ -137,14 +138,16 @@ describe('/setup (admins only)', () => {
 
     it('running it again moves the panel to a new channel without duplicating it', async () => {
       await addPanel();
-      const first = channelMsgs()[0]!;
+      const before = [...channelMsgs()];
+      assert.equal(before.length, 2);
       await addPanel({}); // same channel: nothing duplicated
       assert.equal(h.store.listPanels(GUILD).length, 1);
+      assert.equal(channelMsgs().length, 2);
       await run('panel-add', { options: { airline: 'Test Air', channel: { id: NEW_CHANNEL } } });
       assert.equal(h.store.getPanelByName(GUILD, 'Test Air')!.channelId, NEW_CHANNEL);
-      assert.equal(first.deleted, true, 'old panel message removed');
+      assert.ok(before.every((m) => m.deleted), 'old panel messages removed');
       assert.equal(channelMsgs().length, 0);
-      assert.equal(channelMsgs(NEW_CHANNEL).length, 1);
+      assert.equal(channelMsgs(NEW_CHANNEL).length, 2);
     });
 
     it('will not change the prefix of an existing panel (it would break known IDs)', async () => {
@@ -173,14 +176,15 @@ describe('/setup (admins only)', () => {
     it('brings the panel back after someone deleted its message, with no permissions warning', async () => {
       await addPanel();
       const first = channelMsgs()[0]!;
-      d.client.channel(CHANNEL).deleteMessage(first.id); // a person deletes the panel in Discord
-      assert.equal(channelMsgs().length, 0);
+      d.client.channel(CHANNEL).deleteMessage(first.id); // a person deletes part of the panel in Discord
+      assert.equal(channelMsgs().length, 1, 'the completed flights message is still there');
 
       const calls = await addPanel(); // /setup panel-add again
       assert.match(text(calls), /Updated the \*\*Test Air\*\* panel/);
       assert.doesNotMatch(text(calls), /⚠️/);
-      assert.equal(channelMsgs().length, 1);
+      assert.equal(channelMsgs().length, 2, 'the whole panel is posted again, in order, with no leftover');
       assert.notEqual(channelMsgs()[0]!.id, first.id);
+      assert.match(channelMsgs()[0]!.payload.embeds[0].toJSON().title, /open flights/);
     });
 
     it('blames permissions only for a real permissions problem, and says what is needed', async () => {
@@ -217,7 +221,7 @@ describe('/setup (admins only)', () => {
       assert.match(text(calls), /Imported \*\*2\*\* flights.*2 new, 0 changed, 0 closed/);
       const panel = h.store.getPanelByName(GUILD, 'Test Air')!;
       assert.deepEqual(h.jobs.open(panel.id).map((v) => [v.job.code, v.job.aircraft, v.legs.length]), [['TST-001', 'A20N', 1], ['TST-002', 'A320', 2]]);
-      assert.match(channelMsgs()[0]!.payload.embeds[0].toJSON().description, /\*\*TST-002\*\* · EGLL → EGCC → EGPH \(2 legs\)/);
+      assert.match(messageText(channelMsgs()[0]!), /^TST-002 · 2 legs · A320\n## EGLL ✈ EGCC ✈ EGPH/m);
     });
 
     it('re-importing keeps IDs and reservations, closes flights that left the file, and tells the holders', async () => {

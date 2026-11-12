@@ -1,3 +1,4 @@
+import { FsHubClient, FsHubError } from '../fshub/client.js';
 import { normalizeToken } from './settings.js';
 
 /** The result of asking a service whether a token works. `unknown` means we couldn't tell (offline, say). */
@@ -21,5 +22,18 @@ export async function checkDiscordToken(token: string, fetchFn: typeof fetch = f
     return { status: 'ok', id: typeof body?.id === 'string' ? body.id : undefined, name: typeof body?.username === 'string' ? body.username : undefined };
   } catch {
     return { status: 'unknown', message: "I couldn't reach Discord to check the token." };
+  }
+}
+
+/** Ask FsHub whose token this is. A token FsHub does not accept is rejected; no network is "unknown". */
+export async function checkFsHubToken(token: string, fetchFn: typeof fetch = fetch): Promise<TokenCheck> {
+  try {
+    const account = await new FsHubClient({ token, fetchFn }).account();
+    return { status: 'ok', name: account.name, id: String(account.id) };
+  } catch (e) {
+    if (e instanceof FsHubError && (e.kind === 'rejected' || e.kind === 'no-access')) {
+      return { status: 'rejected', message: "FsHub says that token is not valid. Make a new one at fshub.io/settings/integrations and paste that." };
+    }
+    return { status: 'unknown', message: e instanceof FsHubError ? `${e.message} I saved the token anyway.` : "I couldn't reach FsHub to check the token. I saved it anyway." };
   }
 }

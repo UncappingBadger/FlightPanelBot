@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { readTextCapped } from '../util/http.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
 /**
@@ -250,8 +251,8 @@ export class AeroDaqClient {
       this.log.debug(`AeroDAQ ${path} answered HTTP ${res.status}`);
       throw new AeroDaqError('unavailable', res.status === 429 ? 'AeroDAQ is busy right now. Try again in a minute.' : `AeroDAQ is having trouble right now (HTTP ${res.status}).`);
     }
-    const body = await res.text().catch(() => '');
-    if (body.length > MAX_BODY_CHARS) throw new AeroDaqError('bad-response', 'AeroDAQ sent far more than I expected.');
+    const body = await readTextCapped(res, MAX_BODY_CHARS).catch(() => '');
+    if (body === null) throw new AeroDaqError('bad-response', 'AeroDAQ sent far more than I expected.');
     try {
       return { status: res.status, json: JSON.parse(body) };
     } catch {

@@ -202,9 +202,11 @@ describe('loadConfig', () => {
     assert.equal(c.databasePath, 'data/bot.sqlite');
   });
 
-  it('needs no FsHub setting, and ignores any left in an old .env', () => {
-    const c = loadConfig({ ...base, FSHUB_TOKEN: 'old', FSHUB_BASE_URL: 'https://fshub.io/api/v3' });
-    assert.ok(!('fshubToken' in c));
+  it('needs no FsHub setting; a FsHub token is optional and tidied, and a leftover base URL is ignored', () => {
+    assert.equal(loadConfig(base).fshubToken, undefined);
+    assert.equal(loadConfig({ ...base, FSHUB_TOKEN: '   ' }).fshubToken, undefined);
+    const c = loadConfig({ ...base, FSHUB_TOKEN: ' "abc123abc123abc123abc123" ', FSHUB_BASE_URL: 'https://fshub.io/api/v3' });
+    assert.equal(c.fshubToken, 'abc123abc123abc123abc123');
     assert.equal(c.discordToken, 'tok');
   });
 

@@ -9,10 +9,14 @@ import {
   type AutocompleteInteraction,
 } from 'discord.js';
 import type { Panel, ReminderMode } from '../../db/store.js';
+import { matchAirline, parseAirlineRef } from '../../fshub/airlineRef.js';
+import { FsHubError, type FsHubAirline } from '../../fshub/client.js';
 import { MAX_IMPORT_BYTES, parseJobsFile, sampleCsv } from '../../jobs/import.js';
 import { parseSheetUrl, SheetJobSource } from '../../jobs/sheet.js';
-import { defaultPrefix } from '../../services/jobs.js';
-import { airlineLabel, legList, truncate, ts } from '../../util/format.js';
+import type { AutoCompleteResult } from '../../services/autoComplete.js';
+import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
+import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '../../services/jobs.js';
+import { airlineLabel, legList, plainText, truncate, ts } from '../../util/format.js';
 import type { BotContext, Command } from '../context.js';
 import { UserError } from '../errors.js';
 import { requireAdmin } from '../guard.js';
@@ -57,6 +61,166 @@ async function writebackNote(ctx: BotContext, panel: Panel): Promise<string> {
     return `• ⚠️ Write-back is on, but I can't open the sheet yet: ${why} Share it with **${ctx.writeback.accountEmail}** as an *Editor*. Until then pilots can still reserve here, but the sheet won't change.`;
   }
 }
+
+/** A panel's FsHub roster link for the `/setup panels` list: empty if it has none. */
+function fshubStatus(ctx: BotContext, panel: Panel): string {
+  if (panel.fshubAirlineId === null) return '';
+  const who = plainText(truncate(panel.fshubAirlineName ?? `#${panel.fshubAirlineId}`, 60));
+  if (!ctx.fshub) return ` · FsHub roster: ${who} (no FsHub token saved, so it isn't being read)`;
+  const roster = panel.fshubNote ? `${who} ⚠️ ${truncate(panel.fshubNote, 160)}` : `${who}${panel.fshubSyncedAt ? ` (read ${ts(panel.fshubSyncedAt, 'R')})` : ''}`;
+  let flights: string;
+  if (!panel.fshubConfirm) flights = 'off';
+  else if (panel.fshubFlightsNote) flights = `⚠️ ${truncate(panel.fshubFlightsNote, 160)}`;
+  else flights = `${ctx.store.countFshubFlights(panel.id)} kept${panel.fshubFlightsAt ? `, read ${ts(panel.fshubFlightsAt, 'R')}` : ''}`;
+  const auto = !panel.fshubConfirm ? '' : !panel.fshubAutoComplete ? ' · auto-complete: off' : ` · auto-complete: hourly${panel.fshubAutoCompleteAt ? ` (checked ${ts(panel.fshubAutoCompleteAt, 'R')})` : ''}`;
+  return ` · FsHub roster: ${roster} · FsHub flights: ${flights}${auto}`;
+}
+
+const NO_FSHUB_TOKEN =
+  "I don't have a FsHub access token. Whoever runs this bot can add one on its setup page (tray icon → Open setup → *FsHub*): create it at fshub.io/settings/integrations. Then run this again.";
+
+/** How a roster read went, in plain words for an admin. */
+function rosterSummary(r: RosterSyncResult): string {
+  const rest = r.rosterSize - r.withDiscord;
+  return [
+    `I read **${r.rosterSize}** pilot${r.rosterSize === 1 ? '' : 's'} from the roster.`,
+    r.withDiscord > 0
+      ? `**${r.withDiscord}** of them have told FsHub their Discord account, so I know who they are and won't ask them for a pilot ID${r.changed > 0 ? ` (${r.changed} new or updated just now)` : ''}.`
+      : 'None of them has told FsHub their Discord account yet (a pilot adds it in their FsHub profile settings), so I can\'t match anyone automatically.',
+    rest > 0 && r.withDiscord > 0 ? `The other ${rest} will be asked for their pilot ID the first time they reserve a flight.` : '',
+    "An ID a pilot typed themselves is never replaced by the roster's.",
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** How reading the airline's recent flights went, in plain words for an admin. */
+function flightSummary(r: FlightSyncResult): string {
+  if (!r.ok) return `⚠️ I couldn't read the airline's recent flights yet: ${r.note} I'll keep trying.`;
+  return r.kept > 0
+    ? `I also read the airline's recent FsHub flights (${r.kept} from the last week), so a completed flight shows the aircraft that was flown and that FsHub saw it land. Switch that off with \`/setup fshub confirm:off\`.`
+    : "I also read the airline's recent FsHub flights; there are none from the last week yet. Switch that off with `/setup fshub confirm:off`.";
+}
+
+/** What the check that completes flown flights did, in plain words for an admin. */
+function autoCompleteSummary(r: AutoCompleteResult): string {
+  if (!r.ok) return `⚠️ I couldn't check the pilots' flights against FsHub: ${r.note}`;
+  if (r.completed.length > 0) {
+    const codes = r.completed.map((c) => `**${c.view.job.code}**`).join(', ');
+    return `Auto-complete: I looked at ${r.checked} flight${r.checked === 1 ? '' : 's'} pilots hold and completed ${codes} (FsHub shows ${r.completed.length === 1 ? 'it' : 'them'} flown). I do this check every hour.`;
+  }
+  return r.checked > 0
+    ? `Auto-complete: I looked at ${r.checked} flight${r.checked === 1 ? '' : 's'} pilots hold; none has been flown yet according to FsHub. I check every hour.`
+    : 'Auto-complete: no pilot holds a flight that has started, so there was nothing to check. I check every hour.';
+}
+
+/**
+ * `/setup fshub`: link a panel to its airline's FsHub roster, read it now, unlink it, or switch the reading of the
+ * airline's flights (which confirms completed flights) on or off. Returns what to tell the admin.
+ */
+async function fshubSetup(ctx: BotContext, panelIn: Panel, rawLink: string | null, confirm: string | null, autoComplete: string | null = null): Promise<string> {
+  let panel = panelIn;
+  const link = rawLink?.trim() ?? '';
+  const notes: string[] = [];
+
+  if (autoComplete === 'on' || autoComplete === 'off') {
+    ctx.store.updatePanel(panel.id, { fshubAutoComplete: autoComplete === 'on', ...(autoComplete === 'on' ? { fshubAutoCompleteAt: null } : {}) });
+    panel = ctx.store.getPanel(panel.id) as Panel;
+    ctx.panels.schedule(panel.id);
+    notes.push(
+      autoComplete === 'on'
+        ? `Every hour I'll complete the flights FsHub shows pilots flew on the **${panel.airlineName}** panel, and tell each pilot in a DM. Pilots can still press **Complete** to do it at once.`
+        : `I've stopped completing flights automatically on the **${panel.airlineName}** panel. Pilots can still press **Complete**, and FsHub's record still shows on completed flights.`,
+    );
+    if (!link && confirm !== 'on' && confirm !== 'off') {
+      if (autoComplete === 'off' || !ctx.fshub || panel.fshubAirlineId === null || !panel.fshubConfirm) return notes.join('\n');
+    }
+  }
+
+  if (confirm === 'on' || confirm === 'off') {
+    ctx.store.updatePanel(panel.id, { fshubConfirm: confirm === 'on' });
+    // Off means off: what was kept is deleted, and the panel stops showing what FsHub recorded.
+    if (confirm === 'off') ctx.store.clearFshubFlights(panel.id);
+    panel = ctx.store.getPanel(panel.id) as Panel;
+    ctx.panels.schedule(panel.id);
+    notes.push(
+      confirm === 'on'
+        ? `I'll read the airline's recent FsHub flights for the **${panel.airlineName}** panel, so completed flights show the aircraft that was flown.`
+        : `I've stopped reading the airline's FsHub flights for the **${panel.airlineName}** panel and deleted the ones I had kept. Completed flights no longer show what FsHub recorded.`,
+    );
+    if (confirm === 'off' && !link) return notes.join('\n');
+  }
+
+  if (/^(none|off|remove|clear|unlink)$/i.test(link)) {
+    ctx.store.updatePanel(panel.id, { fshubAirlineId: null, fshubAirlineName: null, fshubSyncedAt: null, fshubNote: null });
+    ctx.store.clearFshubFlights(panel.id);
+    ctx.panels.schedule(panel.id);
+    return [...notes, `Stopped reading a FsHub roster and flights for the **${panel.airlineName}** panel. Pilots already matched keep their saved IDs.`].join('\n');
+  }
+
+  if (!ctx.fshub || !ctx.fshubSync) throw new UserError(NO_FSHUB_TOKEN);
+
+  // No link given: read the roster (and flights) now, if the panel has one.
+  if (!link) {
+    if (panel.fshubAirlineId === null) {
+      return [...notes, `The **${panel.airlineName}** panel isn't linked to a FsHub airline. Link it with \`/setup fshub link:\` and the airline's short name (for example \`SKY\`), its FsHub number, or the link to its page on fshub.io.`].join('\n');
+    }
+    const r = await ctx.fshubSync.syncPanel(panel);
+    const who = plainText(truncate(panel.fshubAirlineName ?? `#${panel.fshubAirlineId}`, 60));
+    if (!r.ok) return [...notes, `⚠️ **${who}** is linked, but I couldn't read its roster: ${r.note}`].join('\n');
+    const f = panel.fshubConfirm ? await ctx.fshubSync.syncFlights(ctx.store.getPanel(panel.id) as Panel) : null;
+    // Look at the pilots' flights now too, rather than leaving an admin to wait for the hourly check.
+    const fresh = ctx.store.getPanel(panel.id) as Panel;
+    const auto = f?.ok && ctx.autoComplete && fresh.fshubAutoComplete ? await ctx.autoComplete.runPanel(fresh) : null;
+    return [...notes, `✅ **${who}** is linked to the **${panel.airlineName}** panel. ${rosterSummary(r)}`, f ? flightSummary(f) : '', auto ? autoCompleteSummary(auto) : ''].filter(Boolean).join('\n');
+  }
+
+  const ref = parseAirlineRef(link);
+  if (!ref) throw new UserError("I couldn't tell which FsHub airline that is. Give its short name (like `SKY`), its FsHub number, or a link to its page on fshub.io.");
+
+  let airline: FsHubAirline | null;
+  try {
+    if (ref.kind === 'id') {
+      airline = await ctx.fshub.airline(ref.id);
+      if (!airline) throw new UserError(`FsHub has no airline with the number **${ref.id}**.`);
+    } else {
+      // FsHub is asked by number, so a name is looked up among the airlines the saved token's own account belongs to.
+      const mine = await ctx.fshub.myAirlines();
+      airline = matchAirline(mine, ref.text);
+      if (!airline) {
+        const known = mine.map((a) => `${plainText(a.name)}${a.abbr ? ` (${plainText(a.abbr)})` : ''} — number ${a.id}`);
+        throw new UserError(
+          `The FsHub account behind my token doesn't belong to an airline called "${truncate(plainText(ref.text), 40)}".${known.length > 0 ? ` It belongs to: ${known.join('; ')}. Use one of those, or the airline's number.` : ' It doesn\'t belong to any airline, so give me the airline\'s number instead.'}`,
+        );
+      }
+    }
+  } catch (e) {
+    if (e instanceof FsHubError) throw new UserError(e.message);
+    throw e;
+  }
+
+  const before = { fshubAirlineId: panel.fshubAirlineId, fshubAirlineName: panel.fshubAirlineName, fshubSyncedAt: panel.fshubSyncedAt, fshubNote: panel.fshubNote };
+  ctx.store.updatePanel(panel.id, { fshubAirlineId: airline.id, fshubAirlineName: airline.name, fshubSyncedAt: null, fshubNote: null });
+  const r = await ctx.fshubSync.syncPanel(ctx.store.getPanel(panel.id) as Panel);
+  if (!r.ok) {
+    // Never leave a panel linked to a roster that can't be read; the admin can fix the cause and link it again.
+    ctx.store.updatePanel(panel.id, before);
+    throw new UserError(`I couldn't read the roster of **${fshubLabel(airline)}**: ${r.note}`);
+  }
+  // Flights kept for another airline are no use for this one.
+  if (before.fshubAirlineId !== airline.id) ctx.store.clearFshubFlights(panel.id);
+  const f = panel.fshubConfirm ? await ctx.fshubSync.syncFlights(ctx.store.getPanel(panel.id) as Panel) : null;
+  return [
+    ...notes,
+    `✅ The **${panel.airlineName}** panel is linked to **${fshubLabel(airline)}** on FsHub. ${rosterSummary(r)} I read the roster again every hour; \`/setup fshub\` with no link reads it right now.`,
+    f ? flightSummary(f) : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** A FsHub airline as text for an admin: its name and short name, which come from outside and so are shown as plain text. */
+const fshubLabel = (a: { name: string; abbr: string | null }) => `${plainText(truncate(a.name, 60))}${a.abbr ? ` (${plainText(a.abbr)})` : ''}`;
 
 /** The longest an airline name can be. */
 const MAX_AIRLINE_NAME = 60;
@@ -160,6 +324,30 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('fshub')
+        .setDescription("Match pilots to their FsHub IDs from your airline's FsHub roster (leave empty to read it now)")
+        .addStringOption((o) =>
+          o
+            .setName('link')
+            .setDescription("The airline's FsHub short name (e.g. SKY), number or page link. Type none to stop.")
+            .setMaxLength(200),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('confirm')
+            .setDescription("Show the aircraft flown on completed flights, from the airline's FsHub flights")
+            .addChoices({ name: 'On: read the airline\'s FsHub flights and confirm completed ones', value: 'on' }, { name: 'Off: do not read flights', value: 'off' }),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('autocomplete')
+            .setDescription('Complete the flights FsHub shows pilots flew, once an hour, without anyone pressing Complete')
+            .addChoices({ name: 'On: complete flown flights every hour', value: 'on' }, { name: 'Off: only when a pilot presses Complete', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('reminders')
         .setDescription('Who is pinged when a flight still has no pilot 24 hours before it starts')
         .addStringOption((o) =>
@@ -178,6 +366,19 @@ export const setupCommand: Command = {
             .setName('cleanup')
             .setDescription('Delete each announcement at midnight (UTC) to keep the channel tidy')
             .addChoices({ name: 'On: delete announcements at midnight UTC (default)', value: 'on' }, { name: 'Off: leave them in the channel', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('window')
+        .setDescription('Choose how many days ahead a panel lists flights (1 to 7)')
+        .addIntegerOption((o) =>
+          o
+            .setName('days')
+            .setDescription('List flights open now or starting within this many days (leave empty to see the setting)')
+            .setMinValue(PANEL_DAYS_MIN)
+            .setMaxValue(PANEL_DAYS_MAX),
         )
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     )
@@ -328,7 +529,7 @@ export const setupCommand: Command = {
           const from = p.sheetId ? 'Google Sheet' : ctx.refresher.hasSource(p) ? 'automatic' : 'file import';
           const ping = reminderTarget(p)?.text ?? 'off';
           const writes = !p.sheetId ? '' : !ctx.writeback ? ' · sheet write-back: unavailable' : ` · sheet write-back: ${p.writeback ? 'on' : 'off'}`;
-          return `• **${airlineLabel({ name: p.airlineName, abbr: p.airlineAbbr })}** in <#${p.channelId}> · \`${p.prefix}-…\` · flights from: ${from} · reserving: ${who} · ${open.length} open flights, ${taken}/${legs} legs reserved${named > 0 ? `, ${named} named in the sheet` : ''} · pilot reminders: ${ping}${writes} · ${updated}${err}${note}`;
+          return `• **${airlineLabel({ name: p.airlineName, abbr: p.airlineAbbr })}** in <#${p.channelId}> · \`${p.prefix}-…\` · flights from: ${from} · reserving: ${who} · ${open.length} open flights, ${taken}/${legs} legs reserved${named > 0 ? `, ${named} named in the sheet` : ''} · panel shows the next ${p.showDays} day${p.showDays === 1 ? '' : 's'} · pilot reminders: ${ping}${writes}${fshubStatus(ctx, p)} · ${updated}${err}${note}`;
         });
         await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
         return;
@@ -424,6 +625,15 @@ export const setupCommand: Command = {
         return;
       }
 
+      case 'fshub': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        await interaction.editReply({
+          content: await fshubSetup(ctx, panel, interaction.options.getString('link'), interaction.options.getString('confirm'), interaction.options.getString('autocomplete')),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
       case 'reminders': {
         const panel = pickPanel(ctx, guildId, airlineOpt());
         const mode = interaction.options.getString('mode') as ReminderMode | null;
@@ -472,6 +682,33 @@ export const setupCommand: Command = {
               : 'Announcements stay in the channel until someone deletes them (`/setup reminders cleanup:on` clears them at midnight UTC).';
         await interaction.editReply({
           content: [`**${panel.airlineName}** reminders: ${who}`, tidy, warning].filter(Boolean).join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'window': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const days = interaction.options.getInteger('days');
+        let current = panel;
+        if (days !== null) {
+          if (!Number.isInteger(days) || days < PANEL_DAYS_MIN || days > PANEL_DAYS_MAX) throw new UserError(`Choose a number of days from ${PANEL_DAYS_MIN} to ${PANEL_DAYS_MAX}.`);
+          ctx.store.updatePanel(panel.id, { showDays: days });
+          current = ctx.store.getPanel(panel.id) as Panel;
+          ctx.panels.schedule(panel.id); // the panel redraws with the new period
+        }
+        const span = `${current.showDays} day${current.showDays === 1 ? '' : 's'}`;
+        const now = ctx.now();
+        const horizon = panelHorizonMs(current.showDays);
+        const later = ctx.jobs.open(current.id).filter((v) => v.job.availableFrom !== null && v.job.availableFrom > now + horizon).length;
+        await interaction.editReply({
+          content: [
+            `${days !== null ? 'Done. ' : ''}The **${panel.airlineName}** panel lists the flights that are open now or start within the next **${span}**.`,
+            later > 0
+              ? `${later} open flight${later === 1 ? ' starts' : 's start'} later than that and ${later === 1 ? 'is' : 'are'} left off the panel until ${later === 1 ? 'it comes' : 'they come'} within ${span}. Pilots can still reserve ${later === 1 ? 'it' : 'one'} by typing its flight ID.`
+              : 'Every open flight is listed.',
+            `Change it with \`/setup window days:\` (${PANEL_DAYS_MIN} to ${PANEL_DAYS_MAX}).`,
+          ].join('\n'),
           allowedMentions: noPings,
         });
         return;

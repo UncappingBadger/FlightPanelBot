@@ -15,7 +15,10 @@ import { loadServiceAccount, tokenProvider } from './google/serviceAccount.js';
 import { SheetsApi } from './google/sheetsApi.js';
 import { DemoJobSource } from './jobs/demo.js';
 import { sourceSelector } from './jobs/sheet.js';
+import { FsHubClient } from './fshub/client.js';
+import { AutoCompleter } from './services/autoComplete.js';
 import { JobEvents } from './services/events.js';
+import { FsHubSync } from './services/fshubSync.js';
 import { JobService } from './services/jobs.js';
 import { SourceRefresher } from './services/refresh.js';
 import { ReminderService } from './services/reminders.js';
@@ -75,8 +78,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const market = new MarketService(store, aerodaq, log);
   // A flight with no pilot a day before it starts is announced in the panel's channel.
   const reminders = new ReminderService(store, jobs, async (panel, due) => (await panels.remind(panel, due)) === 'sent', { logger: log });
-  const scheduler = new Scheduler(jobs, refresher, { logger: log, reminders, markets: market, cleanup: { run: () => panels.cleanReminders() } });
-
+  // Optional: with a FsHub token, typed pilot IDs are checked, and a panel linked to its airline's FsHub roster
+  // learns who is who by itself. Nothing is asked of FsHub without one.
+  const fshub = config.fshubToken ? new FsHubClient({ token: config.fshubToken, logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }) : null;
+  const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId) }) : null;
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
   let writeback: SheetWriteBack | null = null;
@@ -90,7 +95,23 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     }
   }
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, writeback, log, now: Date.now, fetchFn: fetch };
+  // With FsHub, flights it shows flown are completed by themselves once an hour (the pilot is told in a DM).
+  let notifier: Notifier | null = null;
+  const autoComplete = fshubSync
+    ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
+    : null;
+  panels.fshubEnabled = fshub !== null;
+  const scheduler = new Scheduler(jobs, refresher, {
+    logger: log,
+    reminders,
+    markets: market,
+    panels,
+    cleanup: { run: () => panels.cleanReminders() },
+    ...(fshubSync ? { fshub: fshubSync } : {}),
+    ...(autoComplete ? { autoComplete } : {}),
+  });
+
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, writeback, fshub, fshubSync, autoComplete, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({
@@ -99,7 +120,8 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   });
   panels.attach(client);
   market.attach(client);
-  new Notifier(client, panels, log).subscribe(events);
+  notifier = new Notifier(client, panels, log);
+  notifier.subscribe(events);
   registerInteractionRouter(client, ctx);
 
   const servers = new Map<string, ServerInfo>();
@@ -153,6 +175,8 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
 
   const stop = async () => {
     scheduler.stop();
+    // The FsHub lane may be mid-request; give it a moment to finish rather than closing the database under it.
+    await Promise.race([scheduler.idle(), new Promise<void>((r) => setTimeout(r, 3_000).unref?.())]);
     panels.stop();
     await client.destroy();
     store.close();

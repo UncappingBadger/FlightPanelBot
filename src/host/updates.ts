@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { readTextCapped } from '../util/http.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
 /** Where releases of this app are published. The check only ever reads this repository's latest release. */
@@ -45,7 +46,7 @@ export function isNewer(remote: [number, number, number], local: [number, number
 }
 
 export interface UpdateCheckerOptions {
-  /** This build's version, e.g. `0.1.0`. Anything that isn't a version (a dev run says `dev`) switches the check off. */
+  /** This build's version, e.g. `0.1.2`. Anything that isn't a version (a dev run says `dev`) switches the check off. */
   version: string;
   /** Where to remember which release the host has been told about. */
   statePath: string;
@@ -173,8 +174,8 @@ export class UpdateChecker {
       return;
     }
     if (!res.ok) throw new Error(`GitHub answered HTTP ${res.status}`);
-    const text = await res.text();
-    if (text.length > MAX_RESPONSE_CHARS) throw new Error('GitHub sent far more than expected');
+    const text = await readTextCapped(res, MAX_RESPONSE_CHARS);
+    if (text === null) throw new Error('GitHub sent far more than expected');
     // GitHub's "latest" never returns a draft or a pre-release, so those need no checking here.
     const body = JSON.parse(text) as { tag_name?: unknown; html_url?: unknown };
     const tag = typeof body.tag_name === 'string' ? body.tag_name.trim() : '';

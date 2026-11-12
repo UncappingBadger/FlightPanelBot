@@ -15,7 +15,7 @@ import { refreshIntervalFor, REFRESH_INTERVAL_MS, SHEET_REFRESH_INTERVAL_MS } fr
 import { SheetWriteBack, WriteBackError } from '../src/services/writeback.js';
 import { AIRLINE, CHANNEL, GUILD, HOUR, makeHarness, sj, T0, USER_A, USER_B, type Harness } from './helpers.js';
 import { DONE_COL, FakeGoogle, flightRow, makeServiceAccount, PILOT_COL, scheduleGrid, SHEET_ID, TAB_GID, TAB_TITLE } from './fake-google.js';
-import { fakeComponent, fakeDm, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
+import { fakeComponent, fakeDm, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions, messageText } from './discord-helpers.js';
 
 const { account, publicKey } = makeServiceAccount();
 
@@ -451,7 +451,7 @@ describe('pilots reserving, releasing and completing flights with write-back on'
     await press(user, `panel:reserve:${pid()}`, o);
     await say(user, code);
   };
-  const panelText = () => d.client.channel(CHANNEL).live.map((m) => m.payload.embeds[0].toJSON().description as string).join('\n');
+  const panelText = () => d.client.channel(CHANNEL).live.map((m) => messageText(m)).join('\n');
 
   beforeEach(async () => {
     h = await makeHarness();
@@ -495,7 +495,7 @@ describe('pilots reserving, releasing and completing flights with write-back on'
       syncFromSheet(); // the hourly read now sees "alice" in the Pilot column
       assert.equal(view(K.open).legs[0]!.sheetHolder, 'alice');
       await d.panels.refresh(pid());
-      assert.match(panelText(), new RegExp(`\\*\\*TST-001\\*\\*[^\\n]*\\n[^\\n]*\\n↳ <@${USER_A.discordId}> · FsHub #1001$`, 'm'));
+      assert.match(panelText(), new RegExp(`^TST-001 ·[^\\n]*\\n## [^\\n]*\\n(?:[A-Z ]+: [^\\n]*\\n)*PILOT: <@${USER_A.discordId}> · FsHub #1001$`, 'm'));
       assert.doesNotMatch(panelText(), /schedule: alice/);
     });
 
@@ -689,7 +689,7 @@ describe('pilots reserving, releasing and completing flights with write-back on'
       assert.deepEqual([j.status, j.completedAt, j.completedBy], ['expired', T0, alice.id]);
       assert.equal(h.jobs.open(pid()).some((v) => v.job.id === j.id), false);
       await settle();
-      assert.match(panelText(), new RegExp(`✅ \\*\\*TST-001\\*\\* · EGLL → EGCC · ✈ A320 · flown by <@${USER_A.discordId}>`));
+      assert.match(panelText(), new RegExp(`^TST-001 · A320\\n## EGLL ✈ EGCC\\n(?:[A-Z ]+: [^\\n]*\\n)*FLOWN BY: <@${USER_A.discordId}>`, 'm'));
     });
 
     it('can complete several at once', async () => {

@@ -43,8 +43,14 @@ export class SourceRefresher {
     const now = this.now();
     this.lastAttempt.set(panel.id, now);
     try {
-      const { jobs, warnings } = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
+      const fetched = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
+      const { jobs } = fetched;
       const result = this.jobs.sync(panel.id, jobs);
+      const clashes = [...new Set(result.numberClashes ?? [])];
+      const warnings =
+        clashes.length > 0
+          ? [...fetched.warnings, `the flight number${clashes.length === 1 ? '' : 's'} ${clashes.join(', ')} ${clashes.length === 1 ? 'is' : 'are'} already the ID of another flight on this panel (an earlier one, until it is cleared out), so ${clashes.length === 1 ? 'that flight keeps' : 'those flights keep'} their other ID for now`]
+          : fetched.warnings;
       this.store.updatePanel(panel.id, {
         lastRefreshAt: now,
         lastRefreshError: null,

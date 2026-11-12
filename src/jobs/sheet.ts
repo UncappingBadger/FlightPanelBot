@@ -1,6 +1,6 @@
 import type { Panel } from '../db/store.js';
 import { canon, ImportError, parseCsv, parseJobsFile, parseLegChain, str } from './import.js';
-import { MAX_JOBS, type FetchedJobs, type JobSource, type SourceAirline, type SourceJob } from './types.js';
+import { MAX_JOBS, normalizeFlightNumber, type FetchedJobs, type JobSource, type SourceAirline, type SourceJob } from './types.js';
 
 /**
  * A job source that reads the schedule an airline already keeps in a Google Sheet.
@@ -196,6 +196,8 @@ export interface ParsedSchedule extends FetchedJobs {
   cols: { pilot: number; done: number };
 }
 
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
 /** Spreadsheet column letters for a zero-based index: 0 is A, 25 is Z, 26 is AA. */
 export function colLetter(index: number): string {
   let n = index;
@@ -223,6 +225,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iBackup = at((n) => n === 'backuppilot');
   const iAircraft = at((n) => n === 'aircraft' || n === 'aircrafttype');
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
+  // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
+  const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
 
   const warnings: string[] = [];
   const jobs: SourceJob[] = [];
@@ -277,8 +281,16 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
 
     const key = nth === 1 ? base : `${base}#${nth}`;
     rowOf.set(key, rowNo);
+
+    let flightNumber: string | null = null;
+    const rawNumber = cell(iFlightNo);
+    if (rawNumber) {
+      flightNumber = normalizeFlightNumber(rawNumber);
+      if (!flightNumber) warnings.push(`${label}: the flight number "${str(rawNumber, 20) ?? ''}" can't be used as an ID (letters, numbers and dashes, up to 16), so this flight keeps its automatic ID`);
+    }
     jobs.push({
       key,
+      flightNumber,
       title: null,
       legs: legs.map((l) => ({ ...l, heldBy })),
       aircraft: str(cell(iAircraft), 40),
@@ -289,6 +301,27 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
       closed: cancelled || completed,
       completed,
     });
+  }
+
+  // A flight number is an ID, so it has to name one flight. A number on several rows is the same flight flown on several
+  // days, so each of those flights gets its day on the end, in the aviation way: SKY123 on 12 November is SKY123-12NOV.
+  const withNumber = new Map<string, SourceJob[]>();
+  for (const j of jobs) if (j.flightNumber) withNumber.set(j.flightNumber, [...(withNumber.get(j.flightNumber) ?? []), j]);
+  for (const [number, group] of withNumber) {
+    if (group.length < 2) continue;
+    for (const j of group) {
+      const day = new Date(j.availableFrom ?? 0);
+      j.flightNumber = `${number}-${String(day.getUTCDate()).padStart(2, '0')}${MONTHS[day.getUTCMonth()]}`;
+    }
+  }
+  // Still the same on several rows (the same number twice on one day, or a dated number that another row already is)?
+  // Then it can't name one flight: none of those flights uses it, they keep their automatic IDs, and the admin is told.
+  const stillShared = new Map<string, number>();
+  for (const j of jobs) if (j.flightNumber) stillShared.set(j.flightNumber, (stillShared.get(j.flightNumber) ?? 0) + 1);
+  for (const [number, rows] of stillShared) {
+    if (rows < 2) continue;
+    warnings.push(`the flight number ${number} is on ${rows} rows even with the day added, so those flights keep their automatic IDs (a flight number must name one flight)`);
+    for (const j of jobs) if (j.flightNumber === number) j.flightNumber = null;
   }
 
   if (jobs.length > MAX_JOBS) {

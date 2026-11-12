@@ -309,6 +309,73 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_reminder_messages_posted ON reminder_messages(posted_at);
   `,
+
+  /* v12: an optional FsHub connection. A pilot's saved ID can now carry the name FsHub has for it
+     ('fshub_name') and say where it came from ('source': 'typed' by the pilot, or 'roster' when it was
+     read from the airline's FsHub roster, which lists each pilot's Discord ID). A panel can be linked
+     to its airline's FsHub roster ('fshub_airline_id'); the bot reads that roster about once an hour
+     and notes when it last tried and how it went. */
+  `
+  ALTER TABLE pilot_ids ADD COLUMN fshub_name TEXT;
+  ALTER TABLE pilot_ids ADD COLUMN source TEXT NOT NULL DEFAULT 'typed';
+
+  ALTER TABLE panels ADD COLUMN fshub_airline_id INTEGER;
+  ALTER TABLE panels ADD COLUMN fshub_airline_name TEXT;
+  ALTER TABLE panels ADD COLUMN fshub_synced_at INTEGER;
+  ALTER TABLE panels ADD COLUMN fshub_note TEXT;
+  `,
+
+  /* v13: confirming flights against FsHub. A panel linked to its airline's FsHub roster also reads the
+     airline's recent flights (landings), so a completed flight can show the aircraft that was actually
+     flown and that FsHub saw it flown. The flights are kept for a few days in 'fshub_flights' (one row per
+     panel and FsHub flight), 'fshub_flight_cursor' is how far through FsHub's list the bot has read, and
+     'fshub_confirm' lets an admin switch the whole thing off per panel (existing linked panels start on). */
+  `
+  ALTER TABLE panels ADD COLUMN fshub_confirm INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE panels ADD COLUMN fshub_flight_cursor INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE panels ADD COLUMN fshub_flights_at INTEGER;
+  ALTER TABLE panels ADD COLUMN fshub_flights_note TEXT;
+
+  CREATE TABLE fshub_flights (
+    panel_id        INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    flight_id       INTEGER NOT NULL,
+    pilot_id        INTEGER NOT NULL,
+    pilot_name      TEXT,
+    dep             TEXT NOT NULL,
+    arr             TEXT NOT NULL,
+    departed_at     INTEGER,
+    arrived_at      INTEGER NOT NULL,
+    aircraft_icao   TEXT,
+    aircraft_name   TEXT,
+    schedule_status TEXT,
+    PRIMARY KEY (panel_id, flight_id)
+  );
+  CREATE INDEX idx_fshub_flights_route ON fshub_flights(panel_id, dep, arr, arrived_at);
+  `,
+
+  /* v14: a flight a pilot completes with the Complete button on a panel linked to FsHub is completed
+     because FsHub saw it flown. 'completed_via' remembers that ('fshub'), so a schedule sheet that has not
+     been ticked (because the bot cannot write to it) does not quietly undo the completion a few minutes
+     later, the way it does for a completion the pilot only claimed. */
+  `
+  ALTER TABLE jobs ADD COLUMN completed_via TEXT;
+  `,
+
+  /* v15: automatic completion. Once an hour the bot looks at the flights pilots hold on a FsHub-linked panel and
+     completes the ones FsHub shows flown, without anyone pressing Complete. 'fshub_autocomplete' lets an admin
+     switch that off per panel (existing linked panels start with it on); 'fshub_autocomplete_at' is when it
+     last ran, so a restart does not make it run again at once. */
+  `
+  ALTER TABLE panels ADD COLUMN fshub_autocomplete INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE panels ADD COLUMN fshub_autocomplete_at INTEGER;
+  `,
+
+  /* v16: how many days ahead a panel lists flights. A schedule often runs for weeks, so the panel shows the flights
+     that are open now or start within this many days (1 to 7); an admin chooses it per panel with /setup window.
+     Existing panels get 7, which is what they were shown by default when the limit was introduced. */
+  `
+  ALTER TABLE panels ADD COLUMN show_days INTEGER NOT NULL DEFAULT 7;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

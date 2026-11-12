@@ -32,7 +32,59 @@ export interface Panel {
   reminderCleanup: boolean;
   /** Whether pilots' names and completions are written back to the linked Google Sheet (when the bot is able to). */
   writeback: boolean;
+  /** The airline's FsHub ID, when the panel is linked to its FsHub roster (which fills in pilots' IDs by itself). */
+  fshubAirlineId: number | null;
+  fshubAirlineName: string | null;
+  /** When the roster was last tried (successful or not), so a failing one is not hammered. */
+  fshubSyncedAt: number | null;
+  /** Why the last roster read did not work, or null if it did. */
+  fshubNote: string | null;
+  /** Whether the airline's recent FsHub flights are read, to confirm completed flights and show the aircraft flown. */
+  fshubConfirm: boolean;
+  /** How far through the airline's FsHub flight list the bot has read (a FsHub flight ID); 0 before the first read. */
+  fshubFlightCursor: number;
+  /** When the flights were last read (successful or not). */
+  fshubFlightsAt: number | null;
+  /** Why the last flight read did not work, or null if it did. */
+  fshubFlightsNote: string | null;
+  /** Whether flights FsHub shows flown are completed automatically, once an hour, without the pilot pressing Complete. */
+  fshubAutoComplete: boolean;
+  /** When the hourly completion check last ran, or null if it never has. */
+  fshubAutoCompleteAt: number | null;
+  /** How many days ahead the panel lists flights (1 to 7): those open now or starting within this long. */
+  showDays: number;
   createdAt: number;
+}
+
+/** A flight FsHub recorded for the airline's pilots, kept for a few days so it can be matched to the panel's flights. */
+export interface FlownFlight {
+  flightId: number;
+  pilotId: number;
+  pilotName: string | null;
+  dep: string;
+  arr: string;
+  departedAt: number | null;
+  arrivedAt: number;
+  aircraftIcao: string | null;
+  aircraftName: string | null;
+  /** FsHub's own word for it: `ON-TIME`, `DELAYED` or `LATE`; null when it said nothing. */
+  scheduleStatus: string | null;
+}
+
+/** A pilot's saved FsHub ID, and how the bot came to have it. */
+export interface PilotLink {
+  fshubId: number;
+  /** The name FsHub has for this pilot, if the bot has looked it up. */
+  name: string | null;
+  /** `typed`: the pilot said so. `roster`: read from the airline's FsHub roster. */
+  source: 'typed' | 'roster';
+}
+
+/** One pilot on an airline's FsHub roster who has told FsHub their Discord account. */
+export interface RosterLink {
+  discordId: string;
+  fshubId: number;
+  name: string;
 }
 
 /**
@@ -81,6 +133,8 @@ export interface Job {
   completedAt: number | null;
   /** The Discord user who completed it from here; null if it was the airline's schedule that said so. */
   completedBy: string | null;
+  /** `fshub` when the completion was confirmed against FsHub's own record of the landing; null otherwise. */
+  completedVia: 'fshub' | null;
 }
 
 export interface Leg {
@@ -98,8 +152,10 @@ export interface Holder {
   reservedAt: number;
   /** The name the bot wrote against this reservation in the airline's sheet, if it wrote one. */
   sheetName: string | null;
-  /** The FsHub pilot ID this person gave, so a manager can match them to the airline's roster. Never checked with FsHub. */
+  /** The FsHub pilot ID this person gave (or the airline's roster lists), so a manager can match them to the roster. */
   fshubId: number | null;
+  /** The name FsHub has for that ID, when the bot has been able to look it up. */
+  fshubName: string | null;
 }
 
 export interface LegView extends Leg {
@@ -174,7 +230,41 @@ const toPanel = (r: Row): Panel => ({
   reminderRoleId: sn(r.reminder_role_id),
   reminderCleanup: r.reminder_cleanup === undefined || r.reminder_cleanup === null ? true : n(r.reminder_cleanup) !== 0,
   writeback: r.writeback === undefined || r.writeback === null ? true : n(r.writeback) !== 0,
+  fshubAirlineId: nn(r.fshub_airline_id),
+  fshubAirlineName: sn(r.fshub_airline_name),
+  fshubSyncedAt: nn(r.fshub_synced_at),
+  fshubNote: sn(r.fshub_note),
+  fshubConfirm: r.fshub_confirm === undefined || r.fshub_confirm === null ? true : n(r.fshub_confirm) !== 0,
+  fshubFlightCursor: r.fshub_flight_cursor === undefined || r.fshub_flight_cursor === null ? 0 : n(r.fshub_flight_cursor),
+  fshubFlightsAt: nn(r.fshub_flights_at),
+  fshubFlightsNote: sn(r.fshub_flights_note),
+  fshubAutoComplete: r.fshub_autocomplete === undefined || r.fshub_autocomplete === null ? true : n(r.fshub_autocomplete) !== 0,
+  fshubAutoCompleteAt: nn(r.fshub_autocomplete_at),
+  // Whatever is stored, a panel never shows less than a day or more than a week.
+  showDays: r.show_days === undefined || r.show_days === null ? 7 : Math.min(7, Math.max(1, Math.round(n(r.show_days)))),
   createdAt: n(r.created_at),
+});
+
+const toFlownFlight = (r: Row): FlownFlight => ({
+  flightId: n(r.flight_id),
+  pilotId: n(r.pilot_id),
+  pilotName: sn(r.pilot_name),
+  dep: s(r.dep),
+  arr: s(r.arr),
+  departedAt: nn(r.departed_at),
+  arrivedAt: n(r.arrived_at),
+  aircraftIcao: sn(r.aircraft_icao),
+  aircraftName: sn(r.aircraft_name),
+  scheduleStatus: sn(r.schedule_status),
+});
+
+const toHolder = (r: Row): Holder => ({
+  discordId: s(r.discord_id),
+  username: s(r.username),
+  reservedAt: n(r.reserved_at),
+  sheetName: sn(r.sheet_name),
+  fshubId: nn(r.fshub_id),
+  fshubName: sn(r.fshub_name),
 });
 
 const toMarketBoard = (r: Row): MarketBoard => ({
@@ -204,6 +294,7 @@ const toJob = (r: Row): Job => ({
   remindedAt: nn(r.reminded_at),
   completedAt: nn(r.completed_at),
   completedBy: sn(r.completed_by),
+  completedVia: sn(r.completed_via) === 'fshub' ? 'fshub' : null,
 });
 
 export class Store {
@@ -278,6 +369,11 @@ export class Store {
     return this.all('SELECT * FROM panels ORDER BY id').map(toPanel);
   }
 
+  /** Panels linked to an airline's FsHub roster. */
+  listFshubPanels(): Panel[] {
+    return this.all('SELECT * FROM panels WHERE fshub_airline_id IS NOT NULL ORDER BY id').map(toPanel);
+  }
+
   updatePanel(
     id: number,
     patch: Partial<{
@@ -294,10 +390,36 @@ export class Store {
       reminderRoleId: string | null;
       reminderCleanup: boolean;
       writeback: boolean;
+      fshubAirlineId: number | null;
+      fshubAirlineName: string | null;
+      fshubSyncedAt: number | null;
+      fshubNote: string | null;
+      fshubConfirm: boolean;
+      fshubFlightCursor: number;
+      fshubFlightsAt: number | null;
+      fshubFlightsNote: string | null;
+      fshubAutoComplete: boolean;
+      fshubAutoCompleteAt: number | null;
+      showDays: number;
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.showDays !== undefined) {
+      if (!Number.isInteger(patch.showDays) || patch.showDays < 1 || patch.showDays > 7) throw new Error(`A panel shows 1 to 7 days, not ${patch.showDays}`);
+      sets.push('show_days = ?');
+      params.push(patch.showDays);
+    }
+    if (patch.fshubAutoComplete !== undefined) (sets.push('fshub_autocomplete = ?'), params.push(patch.fshubAutoComplete ? 1 : 0));
+    if (patch.fshubAutoCompleteAt !== undefined) (sets.push('fshub_autocomplete_at = ?'), params.push(patch.fshubAutoCompleteAt));
+    if (patch.fshubConfirm !== undefined) (sets.push('fshub_confirm = ?'), params.push(patch.fshubConfirm ? 1 : 0));
+    if (patch.fshubFlightCursor !== undefined) (sets.push('fshub_flight_cursor = ?'), params.push(patch.fshubFlightCursor));
+    if (patch.fshubFlightsAt !== undefined) (sets.push('fshub_flights_at = ?'), params.push(patch.fshubFlightsAt));
+    if (patch.fshubFlightsNote !== undefined) (sets.push('fshub_flights_note = ?'), params.push(patch.fshubFlightsNote));
+    if (patch.fshubAirlineId !== undefined) (sets.push('fshub_airline_id = ?'), params.push(patch.fshubAirlineId));
+    if (patch.fshubAirlineName !== undefined) (sets.push('fshub_airline_name = ?'), params.push(patch.fshubAirlineName));
+    if (patch.fshubSyncedAt !== undefined) (sets.push('fshub_synced_at = ?'), params.push(patch.fshubSyncedAt));
+    if (patch.fshubNote !== undefined) (sets.push('fshub_note = ?'), params.push(patch.fshubNote));
     if (patch.reminderCleanup !== undefined) (sets.push('reminder_cleanup = ?'), params.push(patch.reminderCleanup ? 1 : 0));
     if (patch.writeback !== undefined) (sets.push('writeback = ?'), params.push(patch.writeback ? 1 : 0));
     if (patch.reminderMode !== undefined) (sets.push('reminder_mode = ?'), params.push(patch.reminderMode));
@@ -324,8 +446,19 @@ export class Store {
   allocateCode(panelId: number): string {
     const p = this.getPanel(panelId);
     if (!p) throw new Error(`No panel ${panelId}`);
-    this.run('UPDATE panels SET next_seq = next_seq + 1 WHERE id = ?', panelId);
-    return `${p.prefix}-${String(p.nextSeq).padStart(3, '0')}`;
+    // A flight number from the schedule may already be using what would be next (a sheet that numbers flights `WA-005`),
+    // so skip any that is taken.
+    for (let seq = p.nextSeq; ; seq++) {
+      const code = `${p.prefix}-${String(seq).padStart(3, '0')}`;
+      if (this.getJobByCode(panelId, code)) continue;
+      this.run('UPDATE panels SET next_seq = ? WHERE id = ?', seq + 1, panelId);
+      return code;
+    }
+  }
+
+  /** Give a flight a different ID (an airline's flight number replacing the automatic one). Call inside a transaction. */
+  setJobCode(jobId: number, code: string): void {
+    this.run('UPDATE jobs SET code = ? WHERE id = ?', code, jobId);
   }
 
   /* ------------------------------------------------------------------ jobs and legs */
@@ -368,12 +501,13 @@ export class Store {
 
   updateJob(
     id: number,
-    patch: Partial<Pick<Job, 'title' | 'aircraft' | 'availableFrom' | 'deadline' | 'pay' | 'notes' | 'status' | 'lastSeen' | 'remindedAt' | 'completedAt' | 'completedBy'>>,
+    patch: Partial<Pick<Job, 'title' | 'aircraft' | 'availableFrom' | 'deadline' | 'pay' | 'notes' | 'status' | 'lastSeen' | 'remindedAt' | 'completedAt' | 'completedBy' | 'completedVia'>>,
   ): void {
     const cols: Array<[string, SQLInputValue | undefined]> = [
       ['reminded_at', patch.remindedAt],
       ['completed_at', patch.completedAt],
       ['completed_by', patch.completedBy],
+      ['completed_via', patch.completedVia],
       ['title', patch.title],
       ['aircraft', patch.aircraft],
       ['available_from', patch.availableFrom],
@@ -454,7 +588,7 @@ export class Store {
     if (jobIds.length === 0) return out;
     const marks = jobIds.map(() => '?').join(',');
     const rows = this.all(
-      `SELECT l.job_id, l.leg_no, l.dep, l.arr, l.sheet_holder, r.discord_id, r.username, r.reserved_at, r.sheet_name, p.fshub_id
+      `SELECT l.job_id, l.leg_no, l.dep, l.arr, l.sheet_holder, r.discord_id, r.username, r.reserved_at, r.sheet_name, p.fshub_id, p.fshub_name
        FROM job_legs l LEFT JOIN leg_reservations r ON r.job_id = l.job_id AND r.leg_no = l.leg_no
        LEFT JOIN pilot_ids p ON p.discord_id = r.discord_id
        WHERE l.job_id IN (${marks}) ORDER BY l.job_id, l.leg_no`,
@@ -469,7 +603,7 @@ export class Store {
         dep: s(r.dep),
         arr: s(r.arr),
         sheetHolder: sn(r.sheet_holder),
-        holder: r.discord_id == null ? null : { discordId: s(r.discord_id), username: s(r.username), reservedAt: n(r.reserved_at), sheetName: sn(r.sheet_name), fshubId: nn(r.fshub_id) },
+        holder: r.discord_id == null ? null : toHolder(r),
       });
       out.set(jobId, list);
     }
@@ -495,12 +629,12 @@ export class Store {
 
   getHolder(jobId: number, legNo: number): Holder | null {
     const r = this.get(
-      `SELECT r.*, p.fshub_id FROM leg_reservations r LEFT JOIN pilot_ids p ON p.discord_id = r.discord_id
+      `SELECT r.*, p.fshub_id, p.fshub_name FROM leg_reservations r LEFT JOIN pilot_ids p ON p.discord_id = r.discord_id
        WHERE r.job_id = ? AND r.leg_no = ?`,
       jobId,
       legNo,
     );
-    return r ? { discordId: s(r.discord_id), username: s(r.username), reservedAt: n(r.reserved_at), sheetName: sn(r.sheet_name), fshubId: nn(r.fshub_id) } : null;
+    return r ? toHolder(r) : null;
   }
 
   /** Remember the name the bot wrote against a reservation in the airline's sheet (null if it didn't, or took it out). */
@@ -555,14 +689,115 @@ export class Store {
     return r ? n(r.fshub_id) : null;
   }
 
-  setPilotId(discordId: string, fshubId: number, now: number): void {
+  /** What the bot has saved for a person: the FsHub ID, the name FsHub has for it, and who supplied it. */
+  getPilotLink(discordId: string): PilotLink | null {
+    const r = this.get('SELECT fshub_id, fshub_name, source FROM pilot_ids WHERE discord_id = ?', discordId);
+    return r ? { fshubId: n(r.fshub_id), name: sn(r.fshub_name), source: s(r.source) === 'roster' ? 'roster' : 'typed' } : null;
+  }
+
+  /**
+   * Save the FsHub pilot ID a person gave, with the name FsHub has for it if that was looked up. It
+   * replaces whatever was saved before, including an ID that came from a roster.
+   */
+  setPilotId(discordId: string, fshubId: number, now: number, name: string | null = null): void {
     this.run(
-      `INSERT INTO pilot_ids(discord_id, fshub_id, updated_at) VALUES (?,?,?)
-       ON CONFLICT(discord_id) DO UPDATE SET fshub_id = excluded.fshub_id, updated_at = excluded.updated_at`,
+      `INSERT INTO pilot_ids(discord_id, fshub_id, updated_at, fshub_name, source) VALUES (?,?,?,?, 'typed')
+       ON CONFLICT(discord_id) DO UPDATE SET fshub_id = excluded.fshub_id, updated_at = excluded.updated_at,
+         fshub_name = excluded.fshub_name, source = 'typed'`,
       discordId,
       fshubId,
       now,
+      name,
     );
+  }
+
+  /**
+   * Take what an airline's FsHub roster says about who is who. Someone with no saved ID gets the
+   * roster's; one whose ID came from a roster before is brought up to date. An ID a pilot typed
+   * themselves is never replaced (the roster only refreshes the name beside it when it agrees).
+   * Returns the people whose saved details changed.
+   */
+  applyRosterLinks(links: RosterLink[], now: number): string[] {
+    const changed: string[] = [];
+    this.tx(() => {
+      for (const link of links) {
+        const cur = this.get('SELECT fshub_id, fshub_name, source FROM pilot_ids WHERE discord_id = ?', link.discordId);
+        if (!cur) {
+          this.run(`INSERT INTO pilot_ids(discord_id, fshub_id, updated_at, fshub_name, source) VALUES (?,?,?,?, 'roster')`, link.discordId, link.fshubId, now, link.name);
+          changed.push(link.discordId);
+          continue;
+        }
+        const sameId = n(cur.fshub_id) === link.fshubId;
+        if (s(cur.source) === 'typed' && !sameId) continue; // what the pilot typed wins
+        if (sameId && sn(cur.fshub_name) === link.name) continue; // nothing new
+        this.run('UPDATE pilot_ids SET fshub_id = ?, fshub_name = ?, updated_at = ? WHERE discord_id = ?', link.fshubId, link.name, now, link.discordId);
+        changed.push(link.discordId);
+      }
+    });
+    return changed;
+  }
+
+  /** Another Discord account that an airline's FsHub roster says this FsHub pilot is, if there is one. */
+  rosterOwnerOf(fshubId: number, exceptDiscordId: string): string | null {
+    const r = this.get(`SELECT discord_id FROM pilot_ids WHERE fshub_id = ? AND source = 'roster' AND discord_id != ? LIMIT 1`, fshubId, exceptDiscordId);
+    return r ? s(r.discord_id) : null;
+  }
+
+  /* ------------------------------------------------------------------ the airline's recent FsHub flights */
+
+  /** Keep these FsHub flights for a panel (one already kept is brought up to date). Returns how many were new. */
+  upsertFshubFlights(panelId: number, flights: FlownFlight[]): number {
+    let added = 0;
+    this.tx(() => {
+      for (const f of flights) {
+        const existed = this.get('SELECT 1 AS x FROM fshub_flights WHERE panel_id = ? AND flight_id = ?', panelId, f.flightId) !== undefined;
+        this.run(
+          `INSERT OR REPLACE INTO fshub_flights(panel_id, flight_id, pilot_id, pilot_name, dep, arr, departed_at, arrived_at, aircraft_icao, aircraft_name, schedule_status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          panelId,
+          f.flightId,
+          f.pilotId,
+          f.pilotName,
+          f.dep,
+          f.arr,
+          f.departedAt,
+          f.arrivedAt,
+          f.aircraftIcao,
+          f.aircraftName,
+          f.scheduleStatus,
+        );
+        if (!existed) added++;
+      }
+    });
+    return added;
+  }
+
+  /** The airline's FsHub flights from `dep` to `arr` that landed between `from` and `to` (epoch ms), earliest first. */
+  listFshubFlights(panelId: number, dep: string, arr: string, from: number, to: number): FlownFlight[] {
+    return this.all(
+      `SELECT * FROM fshub_flights WHERE panel_id = ? AND dep = ? AND arr = ? AND arrived_at >= ? AND arrived_at <= ?
+       ORDER BY arrived_at, flight_id`,
+      panelId,
+      dep,
+      arr,
+      from,
+      to,
+    ).map(toFlownFlight);
+  }
+
+  countFshubFlights(panelId: number): number {
+    return n(this.get('SELECT count(*) AS c FROM fshub_flights WHERE panel_id = ?', panelId)?.c ?? 0);
+  }
+
+  /** Forget flights that landed before `before`. */
+  pruneFshubFlights(panelId: number, before: number): number {
+    return this.run('DELETE FROM fshub_flights WHERE panel_id = ? AND arrived_at < ?', panelId, before).changes;
+  }
+
+  /** Forget every kept flight of a panel and where the reading had got to (when it is switched off or unlinked). */
+  clearFshubFlights(panelId: number): void {
+    this.run('DELETE FROM fshub_flights WHERE panel_id = ?', panelId);
+    this.run('UPDATE panels SET fshub_flight_cursor = 0, fshub_flights_at = NULL, fshub_flights_note = NULL WHERE id = ?', panelId);
   }
 
   /** Every panel on which this person holds a leg of any flight still kept, so those panels can be redrawn when their details change. */
@@ -606,6 +841,23 @@ export class Store {
        ORDER BY (j.deadline IS NULL), j.deadline, j.id`,
       panelId,
       discordId,
+      deadlineAfter,
+    ).map(toJob);
+    const legs = this.legViews(jobs.map((j) => j.id));
+    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [] }));
+  }
+
+  /**
+   * Every flight on a panel that somebody holds at least one leg of (with every leg shown), not yet completed, that is
+   * open or whose deadline is after `deadlineAfter`. Soonest deadline first. Used by the hourly automatic completion.
+   */
+  listAllHeldJobViews(panelId: number, deadlineAfter: number): JobView[] {
+    const jobs = this.all(
+      `SELECT DISTINCT j.* FROM jobs j JOIN leg_reservations r ON r.job_id = j.id
+       WHERE j.panel_id = ? AND j.completed_at IS NULL
+         AND (j.status = 'open' OR (j.status = 'expired' AND j.deadline IS NOT NULL AND j.deadline > ?))
+       ORDER BY (j.deadline IS NULL), j.deadline, j.id`,
+      panelId,
       deadlineAfter,
     ).map(toJob);
     const legs = this.legViews(jobs.map((j) => j.id));
