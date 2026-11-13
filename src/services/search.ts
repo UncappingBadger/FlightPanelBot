@@ -29,6 +29,49 @@ export function parseAirportCodes(text: string | null | undefined): AirportCodes
   return { codes, ignored };
 }
 
+/* ------------------------------------------------------------------ aircraft types */
+
+/** What was typed into the aircraft box: the types in it, and anything that wasn't one. */
+export interface AircraftTypes {
+  codes: string[];
+  ignored: string[];
+}
+
+/** Words people put between types, which are not types. */
+const TYPE_FILLER = new Set(['AND', 'OR', 'OF', 'THE', 'A', 'AN']);
+
+/**
+ * Aircraft types as people type them: one or several, separated by spaces, commas or slashes, in any case. A type is two to
+ * five letters or numbers (`A320`, `B738`, `B38M`); a few characters are the start of a type, so `B73` finds every B73x.
+ */
+export function parseAircraftTypes(text: string | null | undefined): AircraftTypes {
+  const codes: string[] = [];
+  const ignored: string[] = [];
+  for (const token of (text ?? '').toUpperCase().split(/[\s,;/&+]+/)) {
+    if (!token || TYPE_FILLER.has(token)) continue;
+    if (/^[A-Z0-9]{2,5}$/.test(token)) {
+      if (!codes.includes(token) && codes.length < MAX_CODES) codes.push(token);
+    } else ignored.push(token.slice(0, 12));
+  }
+  return { codes, ignored };
+}
+
+/**
+ * Is the flight's aircraft one of these types? A flight's aircraft is usually a type code (`A320`); where the schedule gives
+ * a few (`A320/A321`) or a name with the type in it (`Airbus A320`), any of those words counts. A type that starts with one of
+ * the codes matches, so `A32` finds A320 and A321. With no types asked for, every flight matches; a flight with no aircraft
+ * named matches none.
+ */
+export function matchesAircraft(aircraft: string | null | undefined, types: string[]): boolean {
+  if (types.length === 0) return true;
+  if (!aircraft) return false;
+  return aircraft
+    .toUpperCase()
+    .split(/[\s,;/&+]+/)
+    .filter(Boolean)
+    .some((word) => types.some((t) => word.startsWith(t)));
+}
+
 /* ------------------------------------------------------------------ dates */
 
 const DAY_MS = 24 * 3_600_000;

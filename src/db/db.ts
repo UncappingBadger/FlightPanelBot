@@ -395,6 +395,17 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE dm_sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'reserve';
   `,
+
+  /* v19: reserved. A test build once added a table here for showing what flights pay from Aeroconomy contracts; that feature was
+     dropped before release. The number stays so a database that test builds already moved to v19 still opens. */
+  `
+  SELECT 1;
+  `,
+
+  /* v20: clears away the table those test builds made (nothing else ever used it). */
+  `
+  DROP TABLE IF EXISTS panel_contracts;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

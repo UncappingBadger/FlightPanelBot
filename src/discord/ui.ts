@@ -205,9 +205,11 @@ export function openCard(view: JobView, now: number): EmbedBuilder {
  * matched, then those flights as the same cards the panel uses (the first few; a long list asks to be narrowed). Only
  * flights the panel itself lists are ever passed in, so the days an admin chose limit the search too.
  */
-export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null): EmbedBuilder[] {
+export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = []): EmbedBuilder[] {
   const route = [from.length > 0 ? `from ${from.join(' or ')}` : '', to.length > 0 ? `to ${to.join(' or ')}` : ''].filter(Boolean).join(' ');
-  const what = [route, day ? `on ${day.label}` : ''].filter(Boolean).join(' ');
+  const kind = aircraft.length > 0 ? `in ${aircraft.join(' or ')}` : '';
+  const what = [route, day ? `on ${day.label}` : '', kind].filter(Boolean).join(' ');
+  const who = [route, kind].filter(Boolean).join(' ');
   const days = `${panel.showDays} day${panel.showDays === 1 ? '' : 's'}`;
   const shown = matches.slice(0, MAX_SEARCH_RESULTS);
   // The flights that count: open at some point on the day asked about, or, with no day, open now or starting within the panel's days.
@@ -215,8 +217,9 @@ export function searchEmbeds(panel: Panel, from: string[], to: string[], matches
   const description =
     matches.length === 0
       ? [
-          day ? `Nothing ${route ? `${route} ` : ''}can be flown on ${day.label} (Zulu time). The panel lists flights open now or starting within the next ${days}.` : `Nothing ${what} is open now or starts within the next ${days}.`,
+          day ? `Nothing ${who ? `${who} ` : ''}can be flown on ${day.label} (Zulu time). The panel lists flights open now or starting within the next ${days}.` : `Nothing ${what} is open now or starts within the next ${days}.`,
           route ? 'Check the airport codes: they are the four-letter ones on the panel (like EGLL), and two or three letters match every airport that starts with them (EG finds EGLL, EGKK and the rest).' : '',
+          kind ? 'Aircraft types are the short codes on the cards (like A320 or B738), and a few characters match every type that starts with them (B73 finds B737, B738 and B739).' : '',
         ]
           .filter(Boolean)
           .join('\n')

@@ -25,7 +25,7 @@ export const helpCommand: Command = {
             {
               name: 'Finding a flight, or standing by',
               value:
-                'Press **Search** under the panel and type where you want to fly from, to, and/or a date (airport codes like `EGLL`; `EG` finds every airport starting EG; dates like `tomorrow`, `sat`, `14 Nov`, in Zulu time). I show the flights that match, only ones the panel lists. Press **Backup pilot** and reply to my DM with the ID of a flight that is already taken, to be its backup; I tell you if it is given back.',
+                'Press **Search** under the panel and type where you want to fly from, to, a date and/or an aircraft type (airport codes like `EGLL`; `EG` finds every airport starting EG; dates like `tomorrow`, `sat`, `14 Nov`, in Zulu time; types like `A320`, and `B73` finds every B73x). I show the flights that match, only ones the panel lists. Press **Backup pilot** and reply to my DM with the ID of a flight that is already taken, to be its backup; I tell you if it is given back.',
             },
             {
               name: 'What your flights made',

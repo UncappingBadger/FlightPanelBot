@@ -46,10 +46,12 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    bot completes the flights FsHub shows you flew and sends you a DM saying so (see
    [Completing automatically](#completing-automatically-every-hour)).
 
-**Looking for a flight.** **Search** (under the panel) opens a small form with three optional boxes: where you want to
-fly **from**, where you want to fly **to**, and the **date**. Fill in any of them, one or together, using the airport codes
-shown on the panel (`EGLL`; several are fine, `EGLL EGKK`; two or three letters match every airport starting with them, so
-`EG` finds EGLL, EGKK and the rest). The bot answers privately with the matching flights as the same cards the panel shows,
+**Looking for a flight.** **Search** (under the panel) opens a small form with four optional boxes: where you want to
+fly **from**, where you want to fly **to**, the **date**, and the **aircraft type**. Fill in any of them, one or together,
+using the airport codes shown on the panel (`EGLL`; several are fine, `EGLL EGKK`; two or three letters match every airport
+starting with them, so `EG` finds EGLL, EGKK and the rest). Aircraft types are the short codes on the flight cards (`A320`,
+`B738`); several are fine (`A320 B738`), and a few characters match every type that starts with them, so `B73` finds B737,
+B738 and B739. An aircraft type on its own lists every flight in that type. The bot answers privately with the matching flights as the same cards the panel shows,
 so you can see at a glance which still need a pilot, then you press **Reserve** and reply with the ID. A flight with several
 legs matches when it leaves from the first airport and later arrives at the second (`LFPG` to `EDDF` finds
 `LFPG → EHAM → EDDF`).
@@ -176,7 +178,7 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.3`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.4`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
@@ -556,7 +558,7 @@ pilot ID they typed.
 ## Development
 
 ```bash
-npm test              # 1103 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1121 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

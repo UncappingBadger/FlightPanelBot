@@ -2,7 +2,7 @@ import type { Holder, JobView, Panel, Store } from '../db/store.js';
 import type { SourceJob } from '../jobs/types.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
-import { dayOf, flyableOn, matchesSearch, type SearchDay } from './search.js';
+import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
 
 export type JobErrorCode = 'NOT_FOUND' | 'EXPIRED' | 'BAD_INPUT';
 
@@ -332,18 +332,19 @@ export class JobService {
   /**
    * The flights a pilot's search finds: those that go from `from` to `to` (see `matchesSearch`) among the flights the panel
    * lists, which is the flights open now or starting within the panel's days. A search never finds more than the panel shows.
-   * With a day, only flights that can be flown at some point on that (Zulu) day, which may be the only thing asked for.
-   * Soonest deadline first.
+   * With a day, only flights that can be flown at some point on that (Zulu) day; with aircraft types, only flights in one of
+   * them. Any one of airports, a day or types may be the only thing asked for. Soonest deadline first.
    */
-  search(panel: Panel, from: string[], to: string[], day?: SearchDay | null): JobView[] {
+  search(panel: Panel, from: string[], to: string[], day?: SearchDay | null, aircraft: string[] = []): JobView[] {
     const now = this.now();
     const byAirport = from.length > 0 || to.length > 0;
-    if (!byAirport && !day) return [];
+    if (!byAirport && !day && aircraft.length === 0) return [];
     return this.open(panel.id).filter(
       (v) =>
         inPanelWindow(v.job, now, panel.showDays) &&
         (v.job.deadline === null || v.job.deadline > now) &&
         (!day || flyableOn(v.job, day)) &&
+        matchesAircraft(v.job.aircraft, aircraft) &&
         (!byAirport || matchesSearch(v, from, to)),
     );
   }

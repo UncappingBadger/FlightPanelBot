@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MIGRATIONS, openDatabase } from '../src/db/db.js';
@@ -463,6 +466,55 @@ describe('what the store keeps about FsHub', () => {
     assert.equal(store.getSession('555', 1)?.purpose, 'backup');
     store.upsertSession({ discordId: '555', panelId: 1, step: 'await_code', expiresAt: 9999999999999 });
     assert.equal(store.getSession('555', 1)?.purpose, 'reserve', 'a conversation with no purpose given is a reservation');
+  });
+
+  describe('a database that a test build of the dropped contract-pay feature already moved to v19', () => {
+    const tableExists = (db: DatabaseSync) => db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'panel_contracts'").get() !== undefined;
+    const version = (db: DatabaseSync) => Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+    /** A database file as it stood at schema v18 (what 0.1.3 uses), optionally with what the test build's v19 added. */
+    const withFile = (testBuildTable: boolean, check: (db: DatabaseSync) => void) => {
+      const dir = mkdtempSync(join(tmpdir(), 'fpb-mig-'));
+      try {
+        const file = join(dir, 'bot.sqlite');
+        const old = new DatabaseSync(file);
+        old.exec('PRAGMA foreign_keys = ON');
+        for (let v = 0; v < 18; v++) old.exec(MIGRATIONS[v] as string);
+        old.exec('PRAGMA user_version = 18');
+        if (testBuildTable) {
+          old.exec("CREATE TABLE panel_contracts (panel_id INTEGER NOT NULL, contract_id INTEGER NOT NULL, schedule TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (panel_id, contract_id))");
+          old.exec('PRAGMA user_version = 19');
+        }
+        old.close();
+        const db = openDatabase(file);
+        try {
+          check(db);
+        } finally {
+          db.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it('still opens, and the table that build made is cleared away', () => {
+      withFile(true, (db) => {
+        assert.equal(tableExists(db), false);
+        assert.equal(version(db), MIGRATIONS.length);
+      });
+    });
+
+    it('is no different for a database at v18, which never had that table', () => {
+      withFile(false, (db) => {
+        assert.equal(tableExists(db), false);
+        assert.equal(version(db), MIGRATIONS.length);
+      });
+    });
+
+    it('is not in a fresh database either', () => {
+      const db = openDatabase(':memory:');
+      assert.equal(tableExists(db), false);
+      db.close();
+    });
   });
 
   it('opens a fresh database at the newest version', () => {

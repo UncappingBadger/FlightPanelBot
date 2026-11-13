@@ -18,7 +18,7 @@ import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
-import { dayOf, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
+import { dayOf, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler } from './context.js';
@@ -404,7 +404,7 @@ const LIST_REQUEST = /^(?:(?:show|list|get|send)\s+(?:me\s+)?)?(?:my\s+)?(?:flig
 
 /* ------------------------------------------------------------------ search */
 
-/** The Search button: a small form asking where from, where to, and on which day. Each is optional, but one is needed. */
+/** The Search button: a small form asking where from, where to, on which day and in which aircraft. Each is optional, but one is needed. */
 async function startSearch(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   const panel = ctx.store.getPanel(panelId);
   if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
@@ -419,6 +419,7 @@ async function startSearch(ctx: BotContext, interaction: ButtonInteraction, pane
       input('from', 'Flying from (airport code)', 'EGLL, or EG for every airport starting EG'),
       input('to', 'Flying to (airport code)', 'LFMN, or several: LFMN LFPG'),
       input('date', 'On this date (Zulu / UTC)', `tomorrow, sat, 14 Nov, or ${new Date(ctx.now()).toISOString().slice(0, 10)}`),
+      input('aircraft', 'Aircraft type (code)', 'A320, or B73 for every B73x. Several: A320 B738'),
     );
   await interaction.showModal(modal);
 }
@@ -431,6 +432,7 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, p
   const from = parseAirportCodes(interaction.fields.getTextInputValue('from'));
   const to = parseAirportCodes(interaction.fields.getTextInputValue('to'));
   const skipped = [...from.ignored, ...to.ignored];
+  const types = parseAircraftTypes(interaction.fields.getTextInputValue('aircraft'));
 
   // The date, if one was typed, is a Zulu day, and has to be one the panel itself shows: today up to the last of its days.
   const dateText = interaction.fields.getTextInputValue('date').trim();
@@ -452,17 +454,21 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, p
     }
   }
 
-  if (from.codes.length === 0 && to.codes.length === 0 && !day) {
+  if (from.codes.length === 0 && to.codes.length === 0 && !day && types.codes.length === 0) {
+    const quote = (list: string[]) => list.map((c) => `\`${c}\``).join(', ');
     throw new UserError(
       skipped.length > 0
-        ? `I couldn't use ${skipped.map((c) => `\`${c}\``).join(', ')} as an airport code. Airport codes are two to four letters or numbers, like \`EGLL\`.`
-        : 'Type where you want to fly from, where you want to fly to, a date, or any of them together.',
+        ? `I couldn't use ${quote(skipped)} as an airport code. Airport codes are two to four letters or numbers, like \`EGLL\`.`
+        : types.ignored.length > 0
+          ? `I couldn't use ${quote(types.ignored)} as an aircraft type. Aircraft types are the short codes on the cards, like \`A320\` or \`B738\`.`
+          : 'Type where you want to fly from, where you want to fly to, a date, an aircraft type, or any of them together.',
     );
   }
-  const matches = ctx.jobs.search(panel, from.codes, to.codes, day);
+  const matches = ctx.jobs.search(panel, from.codes, to.codes, day, types.codes);
+  const quoted = (list: string[]) => list.map((c) => `\`${c}\``).join(', ');
   await interaction.editReply({
-    content: skipped.length > 0 ? `I skipped ${skipped.map((c) => `\`${c}\``).join(', ')}: not airport codes.` : '',
-    embeds: searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day),
+    content: [skipped.length > 0 ? `I skipped ${quoted(skipped)}: not airport codes.` : '', types.ignored.length > 0 ? `I skipped ${quoted(types.ignored)}: not aircraft types.` : ''].filter(Boolean).join('\n'),
+    embeds: searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day, types.codes),
     allowedMentions: noPings,
   });
 }

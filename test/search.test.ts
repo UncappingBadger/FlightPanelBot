@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { componentHandlers, commands } from '../src/discord/commands/index.js';
 import { registerInteractionRouter } from '../src/discord/router.js';
 import { searchEmbeds } from '../src/discord/ui.js';
-import { flyableOn, matchesSearch, MAX_SEARCH_RESULTS, parseAirportCodes, parseSearchDate } from '../src/services/search.js';
+import { flyableOn, matchesAircraft, matchesSearch, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate } from '../src/services/search.js';
 import { CHANNEL, HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpers.js';
 import { FakeUser, fakeComponent, fakeInteraction, fakeModal, makeDiscordHarness, embedText, messageText, settle, type DiscordHarness } from './discord-helpers.js';
 
@@ -105,6 +105,54 @@ describe('reading a date from a search box', () => {
   });
 });
 
+describe('reading aircraft types from a search box', () => {
+  it('takes one or several, in any case, separated by spaces, commas or slashes', () => {
+    assert.deepEqual(parseAircraftTypes('a320').codes, ['A320']);
+    assert.deepEqual(parseAircraftTypes(' b738, A333 / b38m  a359+a20n ').codes, ['B738', 'A333', 'B38M', 'A359', 'A20N']);
+  });
+
+  it('takes two to five letters or numbers, so a few characters can start a type', () => {
+    assert.deepEqual(parseAircraftTypes('B7 A32 C172').codes, ['B7', 'A32', 'C172']);
+    assert.deepEqual(parseAircraftTypes('B').ignored, ['B']);
+    assert.deepEqual(parseAircraftTypes('A320NEO7').ignored, ['A320NEO7']);
+  });
+
+  it('skips the words people put between types, and repeats, keeps at most six, and copes with nothing', () => {
+    assert.deepEqual(parseAircraftTypes('A320 or B738 and A320 an A333').codes, ['A320', 'B738', 'A333']);
+    assert.equal(parseAircraftTypes('AA1 AA2 AA3 AA4 AA5 AA6 AA7 AA8').codes.length, 6);
+    assert.deepEqual(parseAircraftTypes('').codes, []);
+    assert.deepEqual(parseAircraftTypes(null).codes, []);
+    assert.deepEqual(parseAircraftTypes(undefined).ignored, []);
+    assert.deepEqual(parseAircraftTypes('A320 **bold** <@1>').ignored, ['**BOLD**', '<@1>']);
+  });
+});
+
+describe('which aircraft match', () => {
+  it('matches a type that starts with one of the codes, in any case', () => {
+    assert.equal(matchesAircraft('A320', ['A320']), true);
+    assert.equal(matchesAircraft('a320', ['A32']), true);
+    assert.equal(matchesAircraft('A20N', ['A32']), false);
+    assert.equal(matchesAircraft('B738', ['A320', 'B73']), true);
+    assert.equal(matchesAircraft('A320', ['A3200']), false, 'a code longer than the type finds nothing');
+  });
+
+  it('reads each word of a schedule that lists several types or names the type inside a name', () => {
+    assert.equal(matchesAircraft('A320/A321', ['A321']), true);
+    assert.equal(matchesAircraft('A320, A321', ['A321']), true);
+    assert.equal(matchesAircraft('Airbus A320neo', ['A320']), true);
+    assert.equal(matchesAircraft('Airbus A320', ['AIR']), true, 'any word, including the manufacturer');
+    assert.equal(matchesAircraft('Boeing 737-800', ['B738']), false, 'a name that does not carry the code');
+  });
+
+  it('matches everything when no type is asked for, and nothing without an aircraft when one is', () => {
+    assert.equal(matchesAircraft(null, []), true);
+    assert.equal(matchesAircraft('A320', []), true);
+    assert.equal(matchesAircraft(null, ['A320']), false);
+    assert.equal(matchesAircraft('', ['A320']), false);
+    assert.equal(matchesAircraft(undefined, ['A320']), false);
+  });
+});
+
 describe('which flights match a search', () => {
   let h: Harness;
   beforeEach(async () => {
@@ -172,7 +220,7 @@ describe('the search form and its results on a panel', () => {
     await h.close();
   });
 
-  it('is a Search button on the panel that opens a form with three optional boxes: from, to, and a date', async () => {
+  it('is a Search button on the panel that opens a form with four optional boxes: from, to, a date, and an aircraft type', async () => {
     const f = fakeComponent(alice, `panel:search:${pid()}`, {});
     await panelHandler().handle(d.ctx, f.i);
     assert.equal(f.calls.modals.length, 1);
@@ -180,10 +228,12 @@ describe('the search form and its results on a panel', () => {
     assert.equal(modal.custom_id, `panel:searchgo:${pid()}`);
     assert.ok(modal.title.length <= 45);
     const inputs = modal.components.map((r: any) => r.components[0]);
-    assert.deepEqual(inputs.map((i: any) => i.custom_id), ['from', 'to', 'date']);
+    assert.deepEqual(inputs.map((i: any) => i.custom_id), ['from', 'to', 'date', 'aircraft']);
     assert.ok(inputs.every((i: any) => i.required === false && i.label.length <= 45 && i.placeholder.length <= 100));
     assert.match(inputs[2].label, /Zulu/, 'the form says which timezone dates are read in');
     assert.match(inputs[2].placeholder, /2026-11-11/, 'with today as the example');
+    assert.match(inputs[3].label, /Aircraft type/);
+    assert.match(inputs[3].placeholder, /A320/);
   });
 
   it('answers privately with the flights between the two airports, as the same cards the panel uses', async () => {
@@ -264,7 +314,96 @@ describe('the search form and its results on a panel', () => {
     assert.match(some.content, /I skipped `AIRPORT\?`: not airport codes\./);
     assert.deepEqual(titles(some.embeds).slice(0, 1), ['🔎 Flights from EGLL']);
     await assert.rejects(search({ from: '*', to: '??' }), /I couldn't use `\*`, `\?\?` as an airport code/);
-    await assert.rejects(search({ from: '', to: '  ', date: ' ' }), /Type where you want to fly from, where you want to fly to, a date, or any of them together\./);
+    await assert.rejects(search({ from: '', to: '  ', date: ' ', aircraft: ' ' }), /Type where you want to fly from, where you want to fly to, a date, an aircraft type, or any of them together\./);
+  });
+
+  describe('by aircraft type', () => {
+    // 'now' is an A320 EGLL-EGKK; the flights below are added to it (all open now or within the 7 days), with their types.
+    const types = (reply: any) => titles(reply.embeds).slice(1).map((t) => t.split(' · ').at(-1));
+    const codesOf = (reply: any) => titles(reply.embeds).slice(1).map((t) => t.split(' · ')[0]);
+    const codeOf = (key: string) => h.store.listJobs(pid()).find((j) => j.sourceKey === key)!.code;
+    beforeEach(() => {
+      h.jobs.sync(pid(), [
+        starting('a320', 'EGLL-EGKK', 0, { aircraft: 'A320' }),
+        starting('a321', 'EGLL-EGCC', 1, { aircraft: 'A321' }),
+        starting('b738', 'EGKK-EGLL', 1, { aircraft: 'B738' }),
+        starting('b38m', 'EGCC-EGLL', 2, { aircraft: 'B38M' }),
+        starting('a333', 'EGLL-KJFK', 2, { aircraft: 'A333' }),
+        starting('either', 'EGPH-EGLL', 3, { aircraft: 'A320/A321' }),
+        starting('named', 'EGLL-LFPG', 3, { aircraft: 'Airbus A333' }),
+        starting('none', 'EGLL-EDDF', 3, { aircraft: null }),
+        starting('far', 'EGLL-LFMN', 10, { aircraft: 'B738' }),
+      ]);
+    });
+
+    it('finds the flights in that type, with the type in the heading and the description', async () => {
+      const reply = (await search({ aircraft: 'b738' })).edits[0];
+      assert.deepEqual(titles(reply.embeds), ['🔎 Flights in B738', `${codeOf('b738')} · B738`]);
+      assert.deepEqual(types(reply), ['B738']);
+      assert.match(reply.embeds[0].toJSON().description, /^1 flight matches, open now or starting within the next 7 days\.\nTo take one/);
+      assert.deepEqual(reply.allowedMentions, { parse: [] });
+    });
+
+    it('takes a few characters as the start of a type, so B73 finds every B73x and A32 every A32x', async () => {
+      assert.deepEqual(types((await search({ aircraft: 'A32' })).edits[0]).sort(), ['A320', 'A320/A321', 'A321']);
+      assert.deepEqual(types((await search({ aircraft: 'B3' })).edits[0]), ['B38M']);
+      assert.deepEqual(types((await search({ aircraft: 'B7' })).edits[0]), ['B738']);
+    });
+
+    it('takes several types, in any case and with any separators', async () => {
+      const reply = (await search({ aircraft: 'b738, a333 / B38M' })).edits[0];
+      assert.equal(titles(reply.embeds)[0], '🔎 Flights in B738 or A333 or B38M');
+      assert.deepEqual(types(reply).sort(), ['A333', 'Airbus A333', 'B38M', 'B738'], 'the A333, the one named Airbus A333, the B38M and the B738');
+    });
+
+    it("finds a flight whose schedule lists several types, or gives the type inside a name, and not one with no aircraft named", async () => {
+      assert.ok(codesOf((await search({ aircraft: 'A321' })).edits[0]).includes(codeOf('either')), 'either type of A320/A321');
+      assert.ok(codesOf((await search({ aircraft: 'A320' })).edits[0]).includes(codeOf('either')));
+      assert.ok(codesOf((await search({ aircraft: 'A333' })).edits[0]).includes(codeOf('named')), 'Airbus A333');
+      for (const t of ['A32', 'A333', 'B738', 'B7', 'E1']) assert.ok(!codesOf((await search({ aircraft: t })).edits[0]).includes(codeOf('none')), `a flight with no aircraft is not an ${t}`);
+    });
+
+    it('works with where from, where to and a date, narrowing each other', async () => {
+      assert.deepEqual(codesOf((await search({ from: 'EGLL', aircraft: 'A32' })).edits[0]).sort(), [codeOf('a320'), codeOf('a321')].sort(), 'from EGLL: the A320 and the A321');
+      assert.deepEqual(codesOf((await search({ from: 'EGLL', to: 'KJFK', aircraft: 'A333' })).edits[0]), [codeOf('a333')]);
+      assert.deepEqual(codesOf((await search({ from: 'EGLL', to: 'KJFK', aircraft: 'B738' })).edits[0]), [], 'right route, wrong type');
+      const day = (await search({ date: '13 Nov', aircraft: 'A333' })).edits[0];
+      assert.equal(titles(day.embeds)[0], '🔎 Flights on Fri 13 Nov in A333');
+      assert.deepEqual(codesOf(day), [codeOf('a333')]);
+      assert.equal(titles((await search({ from: 'EGLL', date: '13 Nov', aircraft: 'A333' })).edits[0].embeds)[0], '🔎 Flights from EGLL on Fri 13 Nov in A333');
+    });
+
+    it("never goes beyond the panel's days, whatever the type", async () => {
+      assert.ok(!codesOf((await search({ aircraft: 'B738' })).edits[0]).includes(codeOf('far')), 'ten days out is not listed');
+      h.store.updatePanel(pid(), { showDays: 2 });
+      assert.deepEqual(types((await search({ aircraft: 'A32' })).edits[0]).sort(), ['A320', 'A321'], 'only those starting within two days');
+    });
+
+    it('says plainly when no flight is that type, and how types are written', async () => {
+      const some = (await search({ aircraft: 'B77W' })).edits[0];
+      assert.equal(some.embeds.length, 1);
+      assert.match(some.embeds[0].toJSON().description, /^Nothing in B77W is open now or starts within the next 7 days\.\nAircraft types are the short codes on the cards \(like A320 or B738\), and a few characters match every type that starts with them \(B73 finds B737, B738 and B739\)\./);
+      assert.doesNotMatch(some.embeds[0].toJSON().description, /airport codes/);
+      const both = (await search({ from: 'EGLL', aircraft: 'B77W' })).edits[0].embeds[0].toJSON().description;
+      assert.match(both, /^Nothing from EGLL in B77W is open now or starts within the next 7 days\.\nCheck the airport codes[^\n]*\nAircraft types are/);
+      assert.match((await search({ date: '13 Nov', aircraft: 'B77W' })).edits[0].embeds[0].toJSON().description, /^Nothing in B77W can be flown on Fri 13 Nov \(Zulu time\)\./);
+    });
+
+    it('tells you which words it skipped, and asks again when none of it was a type', async () => {
+      const some = (await search({ aircraft: 'A320 ??? <@1>' })).edits[0];
+      assert.equal(some.content, 'I skipped `???`, `<@1>`: not aircraft types.');
+      assert.equal(titles(some.embeds)[0], '🔎 Flights in A320');
+      const both = (await search({ from: 'EGLL', to: 'airport?', aircraft: '?!' })).edits[0];
+      assert.equal(both.content, 'I skipped `AIRPORT?`: not airport codes.\nI skipped `?!`: not aircraft types.');
+      await assert.rejects(search({ aircraft: '*' }), /I couldn't use `\*` as an aircraft type\. Aircraft types are the short codes on the cards, like `A320` or `B738`\./);
+      await assert.rejects(search({ from: '*', aircraft: '??' }), /I couldn't use `\*` as an airport code/, 'the airport words are reported first');
+    });
+
+    it('builds the same reply directly, with the types', () => {
+      const embeds = searchEmbeds(h.panel, [], [], h.jobs.open(pid()).slice(0, 1), T0, null, ['A320', 'B738']);
+      assert.equal(embeds[0]!.toJSON().title, '🔎 Flights in A320 or B738');
+      assert.equal(searchEmbeds(h.panel, ['EGLL'], [], [], T0, null, [])[0]!.toJSON().title, '🔎 Flights from EGLL', 'no types, no change');
+    });
   });
 
   describe('by date', () => {
