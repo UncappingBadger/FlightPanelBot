@@ -792,7 +792,9 @@ export const setupCommand: Command = {
           ctx.jobs.expireDue();
           note = ' (This panel takes flights from `/setup import`, so there is nothing to fetch.)';
         }
-        const result = await ctx.panels.refresh(panel.id);
+        // Always a full redraw: every message is sent again, so a panel posted by an older version picks up whatever is new
+        // (new buttons, a new look) from this, with no need to remove and re-add it.
+        const result = await ctx.panels.refresh(panel.id, { force: true });
         const problem = panelProblem(result);
         await interaction.editReply({ content: problem ? `${problem}${note}` : `Redrew the **${panel.airlineName}** panel (${result}).${note}` });
         return;

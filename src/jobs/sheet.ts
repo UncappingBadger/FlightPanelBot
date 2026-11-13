@@ -175,7 +175,7 @@ export const isCancelled = (v: string) => /^cancel/i.test(v.trim());
 
 /* ------------------------------------------------------------------ the schedule layout */
 
-function findHeader(rows: string[][]): { index: number; names: string[] } | null {
+export function findHeader(rows: string[][]): { index: number; names: string[] } | null {
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const names = (rows[i] as string[]).map(canon);
     if (names.includes('route') && names.includes('date')) return { index: i, names };

@@ -1,7 +1,8 @@
 import type { Holder, JobView, Panel, Store } from '../db/store.js';
 import type { SourceJob } from '../jobs/types.js';
 import { silentLogger, type Logger } from '../util/log.js';
-import { mergeNotices, type JobEvents, type ReleasedNotice } from './events.js';
+import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
+import { dayOf, flyableOn, matchesSearch, type SearchDay } from './search.js';
 
 export type JobErrorCode = 'NOT_FOUND' | 'EXPIRED' | 'BAD_INPUT';
 
@@ -29,6 +30,8 @@ export interface SyncResult {
    * has that ID, so the flight kept the one it had (or got an automatic one). Reported to the admin.
    */
   numberClashes?: string[];
+  /** Backup pilots whose flight is gone or has nobody flying it any more, so their backup spot ended. They are told. */
+  backupEnded?: BackupNotice[];
 }
 
 export interface ReserveResult {
@@ -60,6 +63,8 @@ export const PANEL_DAYS_MAX = 7;
 export const PANEL_HORIZON_MS = PANEL_DAYS_MAX * DAY;
 /** How far ahead a panel set to show `days` days lists flights. */
 export const panelHorizonMs = (days: number): number => Math.min(PANEL_DAYS_MAX, Math.max(PANEL_DAYS_MIN, Math.round(days))) * DAY;
+/** Is this flight one the panel lists: open now, or starting within the panel's days? The search uses the same rule, so it never finds more than the panel shows. */
+export const inPanelWindow = (job: { availableFrom: number | null }, now: number, days: number): boolean => job.availableFrom === null || job.availableFrom <= now + panelHorizonMs(days);
 /**
  * After a pilot completes a flight here, a sheet that still shows the box unticked is not believed
  * for this long: the tick was only just written, and the sheet's published copy can lag behind.
@@ -130,7 +135,7 @@ export class JobService {
     const result = this.store.tx(() => {
       const panel = this.store.getPanel(panelId);
       if (!panel) throw new JobError('NOT_FOUND', 'That panel no longer exists.');
-      const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [], numberClashes: [] };
+      const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [], numberClashes: [], backupEnded: [] };
       const seen = new Set<number>();
       /** The ID a flight gets: its flight number when it has one that no other flight on the panel has, else the automatic one. */
       const claim = (wanted: string | null | undefined, ownCode?: string): string | null => {
@@ -221,6 +226,7 @@ export class JobService {
         });
 
         const oldLegs = this.store.listLegs(existing.id);
+        const releasedBefore = out.released.length;
         for (let i = 0; i < Math.max(oldLegs.length, sj.legs.length); i++) {
           const o = oldLegs[i];
           const nw = sj.legs[i];
@@ -242,6 +248,8 @@ export class JobService {
           if (nw) this.store.insertLeg(existing.id, i + 1, nw.dep, nw.arr, nw.heldBy ?? null);
         }
         if (changed) out.updated++;
+        // A change to the route took the pilots off it: a backup has nobody to stand in for now.
+        if (out.released.length > releasedBefore) this.endBackup(existing.id, 'freed', out.backupEnded!);
       }
 
       for (const job of this.store.listJobs(panelId, 'open')) {
@@ -251,6 +259,7 @@ export class JobService {
           if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: job.code, legNos: [leg.legNo], reason: 'removed' });
           this.store.deleteReservation(job.id, leg.legNo);
         }
+        this.endBackup(job.id, 'removed', out.backupEnded!);
         this.store.updateJob(job.id, { status: 'removed' });
         out.removed++;
       }
@@ -261,7 +270,21 @@ export class JobService {
 
     this.events.emit({ type: 'changed', panelId });
     for (const notice of result.released) this.events.emit({ type: 'released', notice });
+    for (const notice of result.backupEnded ?? []) this.events.emit({ type: 'backup-ended', notice });
     return result;
+  }
+
+  /**
+   * End a flight's backup spot when it has no point any more: for `removed` always (the flight is gone), for `freed` once
+   * nobody (no Discord pilot and no name in the schedule) is flying any leg. The notice is added to `into` for the caller to
+   * announce. Call inside a transaction.
+   */
+  private endBackup(jobId: number, reason: BackupNotice['reason'], into: BackupNotice[]): void {
+    const view = this.store.getJobView(jobId);
+    if (!view?.backup) return;
+    if (reason === 'freed' && view.legs.some((l) => l.holder || l.sheetHolder)) return;
+    this.store.deleteBackup(jobId);
+    into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: view.job.code, reason });
   }
 
   /** Close jobs whose deadline has passed. Returns the panels that changed. */
@@ -304,6 +327,33 @@ export class JobService {
 
   view(jobId: number): JobView | null {
     return this.store.getJobView(jobId);
+  }
+
+  /**
+   * The flights a pilot's search finds: those that go from `from` to `to` (see `matchesSearch`) among the flights the panel
+   * lists, which is the flights open now or starting within the panel's days. A search never finds more than the panel shows.
+   * With a day, only flights that can be flown at some point on that (Zulu) day, which may be the only thing asked for.
+   * Soonest deadline first.
+   */
+  search(panel: Panel, from: string[], to: string[], day?: SearchDay | null): JobView[] {
+    const now = this.now();
+    const byAirport = from.length > 0 || to.length > 0;
+    if (!byAirport && !day) return [];
+    return this.open(panel.id).filter(
+      (v) =>
+        inPanelWindow(v.job, now, panel.showDays) &&
+        (v.job.deadline === null || v.job.deadline > now) &&
+        (!day || flyableOn(v.job, day)) &&
+        (!byAirport || matchesSearch(v, from, to)),
+    );
+  }
+
+  /**
+   * The latest day a search on this panel can ask about: the day that holds the end of the panel's days, because the panel
+   * lists nothing that opens later than that.
+   */
+  lastSearchDay(panel: Panel): SearchDay {
+    return dayOf(this.now() + panelHorizonMs(panel.showDays));
   }
 
   mine(panelId: number, discordId: string): JobView[] {
@@ -383,6 +433,7 @@ export class JobService {
 
   /** Give legs back. With `legNos` omitted, releases everything the person holds on that job. Returns the legs freed. */
   release(jobId: number, discordId: string, legNos?: number[]): number[] {
+    const ended: BackupNotice[] = [];
     const freed = this.store.tx(() => {
       const view = this.store.getJobView(jobId);
       if (!view) return [] as number[];
@@ -391,13 +442,66 @@ export class JobService {
         if (legNos && !legNos.includes(leg.legNo)) continue;
         if (leg.holder?.discordId === discordId && this.store.deleteReservation(jobId, leg.legNo)) out.push(leg.legNo);
       }
+      if (out.length > 0) this.endBackup(jobId, 'freed', ended);
       return out;
     });
     if (freed.length > 0) {
       const job = this.store.getJob(jobId);
       if (job) this.events.emit({ type: 'changed', panelId: job.panelId });
     }
+    for (const notice of ended) this.events.emit({ type: 'backup-ended', notice });
     return freed;
+  }
+
+  /* ------------------------------------------------------------------ backup pilots */
+
+  /**
+   * Why this person can't be the backup for this flight, or null if they can. A flight can have a backup once every leg of
+   * it is taken (until then the free legs can simply be reserved), by a pilot who is not flying it, and only one.
+   */
+  backupProblem(view: JobView, discordId: string): string | null {
+    const code = view.job.code;
+    if (view.job.status !== 'open' || (view.job.deadline !== null && view.job.deadline <= this.now())) return `${code} is no longer open.`;
+    if (view.legs.some((l) => l.holder?.discordId === discordId)) return `You are flying ${code} yourself, so you can't also be its backup.`;
+    if (view.legs.length === 0 || view.legs.some((l) => !l.holder && !l.sheetHolder)) return `${code} still has a leg nobody has, so you can reserve it instead of backing it up.`;
+    if (view.backup) return view.backup.discordId === discordId ? `You are already down as backup for ${code}.` : `${code} already has a backup pilot.`;
+    return null;
+  }
+
+  /** The flights on a panel's list (open now or starting within its days) this person could be the backup for. */
+  backupCandidates(panel: Panel, discordId: string): JobView[] {
+    const now = this.now();
+    return this.open(panel.id).filter((v) => inPanelWindow(v.job, now, panel.showDays) && this.backupProblem(v, discordId) === null);
+  }
+
+  /** Put a pilot down as the backup for a flight. Throws a `JobError` saying why not if they can't be. */
+  addBackup(jobId: number, user: { discordId: string; username: string }): JobView {
+    const now = this.now();
+    const view = this.store.tx(() => {
+      const current = this.store.getJobView(jobId);
+      if (!current || current.job.status !== 'open') throw new JobError('NOT_FOUND', 'That flight is no longer on the panel.');
+      const problem = this.backupProblem(current, user.discordId);
+      if (problem) throw new JobError('BAD_INPUT', problem);
+      if (!this.store.setBackup(jobId, user.discordId, user.username, now)) throw new JobError('BAD_INPUT', `${current.job.code} already has a backup pilot.`);
+      return this.store.getJobView(jobId) as JobView;
+    });
+    this.events.emit({ type: 'changed', panelId: view.job.panelId });
+    return view;
+  }
+
+  /** Stand down as the backup for a flight. True if they were the backup. */
+  removeBackup(jobId: number, discordId: string): boolean {
+    const removed = this.store.deleteBackup(jobId, discordId);
+    if (removed) {
+      const job = this.store.getJob(jobId);
+      if (job) this.events.emit({ type: 'changed', panelId: job.panelId });
+    }
+    return removed;
+  }
+
+  /** The open flights of a panel this person is down as the backup for. */
+  myBackups(panelId: number, discordId: string): JobView[] {
+    return this.store.listBackupsByUser(panelId, discordId);
   }
 
   /** Admin: free every reservation on a job, or one leg of it. The holders are told. */
@@ -414,9 +518,12 @@ export class JobService {
       }
     });
     const merged = mergeNotices(notices);
+    const ended: BackupNotice[] = [];
+    if (merged.length > 0) this.store.tx(() => this.endBackup(view.job.id, 'freed', ended));
     if (merged.length > 0) {
       this.events.emit({ type: 'changed', panelId: panel.id });
       for (const n of merged) this.events.emit({ type: 'released', notice: n });
+      for (const notice of ended) this.events.emit({ type: 'backup-ended', notice });
     }
     this.log.info(`Admin released ${merged.length} reservation holder(s) on ${view.job.code}`);
     return merged;

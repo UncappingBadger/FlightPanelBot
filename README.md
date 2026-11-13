@@ -34,8 +34,10 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
 4. One-leg flight: you're booked and the panel updates. Several legs: the bot asks **All legs** or **Some
    legs**. For some, pick from a menu of the legs still free. If you ask for all but someone holds a leg, it
    tells you who and offers the legs that are free.
-5. **My flights** (under the panel) shows what you hold and lets you give flights back. Say `cancel` in the DM
-   at any point to stop. A conversation closes after 10 minutes.
+5. **My flights** (under the panel) shows what you hold and lets you give flights back. You can also **DM the
+   bot `flights`** (or `my flights`, `list`) at any time to get the same list, for every panel you have flights on,
+   with the same menu to give flights back. Each flight shows when it opens and when it must be completed by (in your own timezone), as on the panel. Say `cancel` in the DM at any point to stop. A conversation closes after
+   10 minutes.
 6. **Complete** (under the panel) is for when you've flown it. On a panel linked to the airline's FsHub (see
    [Completing from FsHub](#completing-from-fshub)) the bot checks FsHub for your landing and completes the
    flights it shows you flew; there is nothing to pick. Otherwise you pick the flights, confirm, and the panel
@@ -43,6 +45,42 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    two days after its window closes. On a FsHub-linked panel you don't even have to press it: **once an hour** the
    bot completes the flights FsHub shows you flew and sends you a DM saying so (see
    [Completing automatically](#completing-automatically-every-hour)).
+
+**Looking for a flight.** **Search** (under the panel) opens a small form with three optional boxes: where you want to
+fly **from**, where you want to fly **to**, and the **date**. Fill in any of them, one or together, using the airport codes
+shown on the panel (`EGLL`; several are fine, `EGLL EGKK`; two or three letters match every airport starting with them, so
+`EG` finds EGLL, EGKK and the rest). The bot answers privately with the matching flights as the same cards the panel shows,
+so you can see at a glance which still need a pilot, then you press **Reserve** and reply with the ID. A flight with several
+legs matches when it leaves from the first airport and later arrives at the second (`LFPG` to `EDDF` finds
+`LFPG → EHAM → EDDF`).
+
+The **date** finds the flights you could fly on that day. Type `today`, `tomorrow`, a weekday (`sat`), `14 Nov`, `14/11`
+(day first) or `2026-11-14`. Dates are **Zulu (UTC)**, the same as the flight times, so a flight counts for a day if it is
+open at some point between 00:00 and 24:00 Zulu that day. A date on its own shows everything that can be flown that day.
+**A search only looks as far ahead as the panel does**: the days your admin chose with `/setup window`, so it never finds
+flights the panel doesn't list, and a date further ahead than that is turned down with the last day it can search. It shows
+the first eight matches and asks you to narrow it down if there are more.
+
+**Backup pilot.** **Backup pilot** (under the panel) lets you put yourself down as the backup for a flight that is already
+taken, so there is someone ready if the pilot who has it can't fly it. It works the way **Reserve** does: the bot sends you
+a DM asking for the ID of the flight (the first time it asks for your FsHub pilot ID too), and you reply with it. A flight
+needs every leg taken (until then you can simply reserve the free legs), you can't back up a flight you're flying, and each
+flight has one backup; if the flight you name can't be backed up, the bot says why and you can send a different ID. The
+panel shows the backup's name on the flight (*BACKUP*). If the pilot gives the flight back, an
+admin frees it, or the airline drops it, the bot DMs the backup that their spot has ended (and, if it's open again, that
+they can take it). Stand down any time from **My flights**. The backup is not made the pilot automatically: they
+press **Reserve** if they still want the flight. A backup named in the sheet's *Backup Pilot* column still shows as a note on
+the flight; a Discord backup is not written to the sheet. Where a role is needed to reserve, it is needed to be a backup too.
+
+**My contributions.** **DM the bot `my contributions`** to see what the flights you completed made for the airline over the
+last 7 days (today and the six days before it, Zulu). The bot reads the airline's linked Google Sheet, finds the flights
+ticked as completed under your name, and adds up the airline's profit from them, taken from the sheet's *Profit Made*
+column, which the managers fill in (a loss counts as a loss). Each flight is listed with its ID, route, day and profit.
+**A flight you completed that has no profit entered yet** isn't left out silently: the bot names it by ID, and the total is
+marked as only what it can see so far, so it changes once the managers enter the rest. Your name in the sheet is the one
+you gave with `name <your name>`, otherwise your Discord name, so if the sheet has you under another name, send `name` first.
+It only answers for airlines in servers you are in, and needs the airline's sheet to be linked (`/setup sheet`) and to have
+a *Profit Made* column.
 
 If a flight is removed, its route changes, or an admin frees it, the people affected get a DM.
 
@@ -138,7 +176,7 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.2`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.3`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
@@ -199,7 +237,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup panels` | List panels with open flights and how many legs are reserved. |
 | `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged when a flight has no pilot 24 hours before it starts. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each announcement at midnight UTC; `off` leaves them in the channel. With no options it shows the current setting. |
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
-| `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. |
+| `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
 | `/setup panel-remove airline` | Delete a panel with its flights and reservations. |
 
 ### Upgrading from a version that used FsHub
@@ -518,7 +556,7 @@ pilot ID they typed.
 ## Development
 
 ```bash
-npm test              # 963 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1103 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

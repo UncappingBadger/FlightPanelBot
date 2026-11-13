@@ -10,6 +10,7 @@ import {
 import type { FlownFlight, Holder, JobView, LegView, Panel } from '../db/store.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
 import { sameAircraft, type Confirmations } from '../services/flightMatch.js';
+import { MAX_SEARCH_RESULTS, type SearchDay } from '../services/search.js';
 import type { Reminder } from '../services/reminders.js';
 import { airlineLabel, legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 
@@ -194,7 +195,40 @@ export function openCard(view: JobView, now: number): EmbedBuilder {
   if (job.pay) fields.push(box('PAY', plainText(truncate(job.pay, 40))));
   const who = legs.length === 1 ? holderText(legs[0] as LegView) : legs.map((l) => `\`${l.legNo}\` ${legText(l)} — ${holderText(l)}`).join('\n');
   fields.push({ name: legs.length > 1 ? 'PILOTS' : 'PILOT', value: truncate(who, 1000) || '*open*', inline: false });
+  // A pilot who has put themselves down to fly it if the pilot who has it can't.
+  if (view.backup) fields.push({ name: 'BACKUP', value: pilotText(view.backup), inline: false });
   return e.addFields(fields);
+}
+
+/**
+ * What a pilot's search found, as the reply to the search form: a header saying what was searched for and how many flights
+ * matched, then those flights as the same cards the panel uses (the first few; a long list asks to be narrowed). Only
+ * flights the panel itself lists are ever passed in, so the days an admin chose limit the search too.
+ */
+export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null): EmbedBuilder[] {
+  const route = [from.length > 0 ? `from ${from.join(' or ')}` : '', to.length > 0 ? `to ${to.join(' or ')}` : ''].filter(Boolean).join(' ');
+  const what = [route, day ? `on ${day.label}` : ''].filter(Boolean).join(' ');
+  const days = `${panel.showDays} day${panel.showDays === 1 ? '' : 's'}`;
+  const shown = matches.slice(0, MAX_SEARCH_RESULTS);
+  // The flights that count: open at some point on the day asked about, or, with no day, open now or starting within the panel's days.
+  const within = day ? `that can be flown on ${day.label} (Zulu time)` : `open now or starting within the next ${days}`;
+  const description =
+    matches.length === 0
+      ? [
+          day ? `Nothing ${route ? `${route} ` : ''}can be flown on ${day.label} (Zulu time). The panel lists flights open now or starting within the next ${days}.` : `Nothing ${what} is open now or starts within the next ${days}.`,
+          route ? 'Check the airport codes: they are the four-letter ones on the panel (like EGLL), and two or three letters match every airport that starts with them (EG finds EGLL, EGKK and the rest).' : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : [
+          `${matches.length === 1 ? '1 flight matches' : `${matches.length} flights match`}, ${within}.`,
+          matches.length > shown.length ? `Showing the first ${shown.length}. Search for something narrower to see the rest.` : '',
+          'To take one, press **Reserve** on the panel and reply with its ID.',
+        ]
+          .filter(Boolean)
+          .join('\n');
+  const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description);
+  return [head, ...shown.map((v) => openCard(v, now))];
 }
 
 /**
@@ -387,6 +421,8 @@ export function renderReminder(panel: Panel, due: Reminder[], now: number) {
 export function panelButtons(panelId: number): ActionRowBuilder<MessageActionRowComponentBuilder> {
   return new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`panel:reserve:${panelId}`).setLabel('Reserve').setEmoji('🛫').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`panel:search:${panelId}`).setLabel('Search').setEmoji('🔎').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`panel:backup:${panelId}`).setLabel('Backup pilot').setEmoji('🛟').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`panel:mine:${panelId}`).setLabel('My flights').setEmoji('📋').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`panel:complete:${panelId}`).setLabel('Complete').setEmoji('✅').setStyle(ButtonStyle.Success),
   );

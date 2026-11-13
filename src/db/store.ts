@@ -165,14 +165,20 @@ export interface LegView extends Leg {
 export interface JobView {
   job: Job;
   legs: LegView[];
+  /** The pilot who has put themselves down as the backup for this flight, if one has. Filled in where views are read for the panel. */
+  backup?: Holder | null;
 }
 
 export type SessionStep = 'await_pilot' | 'await_code' | 'await_mode' | 'await_legs' | 'await_confirm';
+
+/** What a DM conversation is for: picking a flight to fly, or one to stand by for. */
+export type SessionPurpose = 'reserve' | 'backup';
 
 export interface DmSession {
   discordId: string;
   panelId: number;
   step: SessionStep;
+  purpose: SessionPurpose;
   jobId: number | null;
   pendingLegs: number[];
   attempts: number;
@@ -557,18 +563,63 @@ export class Store {
   getJobView(jobId: number): JobView | null {
     const job = this.getJob(jobId);
     if (!job) return null;
-    return { job, legs: this.legViews([jobId]).get(jobId) ?? [] };
+    return { job, legs: this.legViews([jobId]).get(jobId) ?? [], backup: this.backupViews([jobId]).get(jobId) ?? null };
   }
 
-  /** Open jobs for a panel with their legs and holders, soonest deadline first. */
+  /** Open jobs for a panel with their legs, holders and backup pilots, soonest deadline first. */
   listOpenJobViews(panelId: number): JobView[] {
     const jobs = this.all(
       `SELECT * FROM jobs WHERE panel_id = ? AND status = 'open'
        ORDER BY (deadline IS NULL), deadline, id`,
       panelId,
     ).map(toJob);
-    const legs = this.legViews(jobs.map((j) => j.id));
-    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [] }));
+    const ids = jobs.map((j) => j.id);
+    const legs = this.legViews(ids);
+    const backups = this.backupViews(ids);
+    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [], backup: backups.get(job.id) ?? null }));
+  }
+
+  /** The backup pilot of each of these jobs that has one. */
+  private backupViews(jobIds: number[]): Map<number, Holder> {
+    const out = new Map<number, Holder>();
+    if (jobIds.length === 0) return out;
+    const marks = jobIds.map(() => '?').join(',');
+    for (const r of this.all(
+      `SELECT b.job_id, b.discord_id, b.username, b.created_at AS reserved_at, NULL AS sheet_name, p.fshub_id, p.fshub_name
+       FROM job_backups b LEFT JOIN pilot_ids p ON p.discord_id = b.discord_id
+       WHERE b.job_id IN (${marks})`,
+      ...jobIds,
+    )) {
+      out.set(n(r.job_id), toHolder(r));
+    }
+    return out;
+  }
+
+  /** Put someone down as the backup for a job. False if the job already has a backup (nothing is changed). Call inside a transaction. */
+  setBackup(jobId: number, discordId: string, username: string, now: number): boolean {
+    return this.run('INSERT OR IGNORE INTO job_backups(job_id, discord_id, username, created_at) VALUES (?,?,?,?)', jobId, discordId, username, now).changes > 0;
+  }
+
+  /** Take the backup off a job. With `discordId`, only if that person is the backup. True if one was removed. */
+  deleteBackup(jobId: number, discordId?: string): boolean {
+    return discordId === undefined
+      ? this.run('DELETE FROM job_backups WHERE job_id = ?', jobId).changes > 0
+      : this.run('DELETE FROM job_backups WHERE job_id = ? AND discord_id = ?', jobId, discordId).changes > 0;
+  }
+
+  /** The open flights of a panel one person is the backup for. */
+  listBackupsByUser(panelId: number, discordId: string): JobView[] {
+    const jobs = this.all(
+      `SELECT j.* FROM jobs j JOIN job_backups b ON b.job_id = j.id
+       WHERE j.panel_id = ? AND j.status = 'open' AND b.discord_id = ?
+       ORDER BY (j.deadline IS NULL), j.deadline, j.id`,
+      panelId,
+      discordId,
+    ).map(toJob);
+    const ids = jobs.map((j) => j.id);
+    const legs = this.legViews(ids);
+    const backups = this.backupViews(ids);
+    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [], backup: backups.get(job.id) ?? null }));
   }
 
   /** Flights the airline's schedule marked completed since `since`, most recently completed first. */
@@ -651,6 +702,11 @@ export class Store {
        ORDER BY r.job_id, r.leg_no`,
       discordId,
     ).map((r) => ({ jobId: n(r.job_id), legNo: n(r.leg_no), panelId: n(r.panel_id), sourceKey: s(r.source_key), sheetName: s(r.sheet_name) }));
+  }
+
+  /** Every name the bot has written into a sheet for this person (a name they later changed is still on the flights it was written to). */
+  listSheetNamesByUser(discordId: string): string[] {
+    return this.all('SELECT DISTINCT sheet_name FROM leg_reservations WHERE discord_id = ? AND sheet_name IS NOT NULL ORDER BY sheet_name', discordId).map((r) => s(r.sheet_name));
   }
 
   /** Install-level bookkeeping. */
@@ -800,6 +856,11 @@ export class Store {
     this.run('UPDATE panels SET fshub_flight_cursor = 0, fshub_flights_at = NULL, fshub_flights_note = NULL WHERE id = ?', panelId);
   }
 
+  /** Every panel with a flight this person is down as the backup for. */
+  listPanelIdsBackedBy(discordId: string): number[] {
+    return this.all(`SELECT DISTINCT j.panel_id FROM job_backups b JOIN jobs j ON j.id = b.job_id WHERE b.discord_id = ?`, discordId).map((r) => n(r.panel_id));
+  }
+
   /** Every panel on which this person holds a leg of any flight still kept, so those panels can be redrawn when their details change. */
   listPanelIdsHeldBy(discordId: string): number[] {
     return this.all(
@@ -931,14 +992,24 @@ export class Store {
 
   /* ------------------------------------------------------------------ DM sessions */
 
-  upsertSession(sess: { discordId: string; panelId: number; step: SessionStep; jobId?: number | null; pendingLegs?: number[]; attempts?: number; expiresAt: number }): void {
+  upsertSession(sess: {
+    discordId: string;
+    panelId: number;
+    step: SessionStep;
+    purpose?: SessionPurpose;
+    jobId?: number | null;
+    pendingLegs?: number[];
+    attempts?: number;
+    expiresAt: number;
+  }): void {
     this.run(
-      `INSERT INTO dm_sessions(discord_id, panel_id, step, job_id, pending_legs, attempts, expires_at) VALUES (?,?,?,?,?,?,?)
-       ON CONFLICT(discord_id) DO UPDATE SET panel_id = excluded.panel_id, step = excluded.step, job_id = excluded.job_id,
+      `INSERT INTO dm_sessions(discord_id, panel_id, step, purpose, job_id, pending_legs, attempts, expires_at) VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(discord_id) DO UPDATE SET panel_id = excluded.panel_id, step = excluded.step, purpose = excluded.purpose, job_id = excluded.job_id,
          pending_legs = excluded.pending_legs, attempts = excluded.attempts, expires_at = excluded.expires_at`,
       sess.discordId,
       sess.panelId,
       sess.step,
+      sess.purpose ?? 'reserve',
       sess.jobId ?? null,
       JSON.stringify(sess.pendingLegs ?? []),
       sess.attempts ?? 0,
@@ -953,6 +1024,7 @@ export class Store {
       discordId: s(r.discord_id),
       panelId: n(r.panel_id),
       step: s(r.step) as SessionStep,
+      purpose: s(r.purpose) === 'backup' ? 'backup' : 'reserve',
       jobId: nn(r.job_id),
       pendingLegs: parseJsonArray<number>(r.pending_legs, []).map(Number),
       attempts: n(r.attempts),

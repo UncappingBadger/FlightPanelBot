@@ -314,7 +314,7 @@ describe('the channel announcement', () => {
 
     it('carries the buttons for the panel', () => {
       const msg = renderReminder(panel(), dueFor(1), T0)!;
-      assert.deepEqual(msg.components[0]!.toJSON().components.map((c: any) => c.custom_id), [`panel:reserve:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      assert.deepEqual(msg.components[0]!.toJSON().components.map((c: any) => c.custom_id), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
     });
 
     it('never lets text from a flight pull in extra mentions', () => {

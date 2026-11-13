@@ -434,9 +434,9 @@ describe('what the store keeps about FsHub', () => {
     assert.deepEqual([panel.fshubAirlineId, panel.fshubAutoComplete, panel.fshubAutoCompleteAt], [8123, true, null]);
   });
 
-  it('adds the day window, 7, to panels that already exist (and that is the newest step)', () => {
+  it('adds the day window, 7, to panels that already exist', () => {
     const step = MIGRATIONS.findIndex((m) => m.includes('show_days INTEGER'));
-    assert.equal(step, MIGRATIONS.length - 1);
+    assert.ok(step > 0, 'the step exists');
     const old = new DatabaseSync(':memory:');
     old.exec('PRAGMA foreign_keys = ON');
     for (let v = 0; v < step; v++) old.exec(MIGRATIONS[v] as string);
@@ -446,6 +446,23 @@ describe('what the store keeps about FsHub', () => {
     assert.equal(store.listAllPanels()[0]!.showDays, 7);
     store.updatePanel(store.listAllPanels()[0]!.id, { showDays: 3 });
     assert.equal(store.listAllPanels()[0]!.showDays, 3);
+  });
+
+  it('lets a conversation that was open before the update carry on, as a reservation', () => {
+    const step = MIGRATIONS.findIndex((m) => m.includes('dm_sessions ADD COLUMN purpose'));
+    assert.ok(step > 0, 'the step exists');
+    const old = new DatabaseSync(':memory:');
+    old.exec('PRAGMA foreign_keys = ON');
+    for (let v = 0; v < step; v++) old.exec(MIGRATIONS[v] as string);
+    old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
+    old.prepare(`INSERT INTO dm_sessions(discord_id, panel_id, step, attempts, expires_at) VALUES ('555', 1, 'await_code', 0, 9999999999999)`).run();
+    old.exec(MIGRATIONS[step] as string);
+    const store = new Store(old);
+    assert.deepEqual([store.getSession('555', 1)?.purpose, store.getSession('555', 1)?.step], ['reserve', 'await_code']);
+    store.upsertSession({ discordId: '555', panelId: 1, step: 'await_code', purpose: 'backup', expiresAt: 9999999999999 });
+    assert.equal(store.getSession('555', 1)?.purpose, 'backup');
+    store.upsertSession({ discordId: '555', panelId: 1, step: 'await_code', expiresAt: 9999999999999 });
+    assert.equal(store.getSession('555', 1)?.purpose, 'reserve', 'a conversation with no purpose given is a reservation');
   });
 
   it('opens a fresh database at the newest version', () => {

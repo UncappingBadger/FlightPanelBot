@@ -86,7 +86,7 @@ describe('the panel lists the next 7 days of flights', () => {
       h.jobs.sync(pid(), [starting('later', 10)]);
       await d.panels.refresh(pid());
       const ids = messages()[0]!.payload.components[0].toJSON().components.map((c: any) => c.custom_id);
-      assert.deepEqual(ids, [`panel:reserve:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      assert.deepEqual(ids, [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
     });
 
     it('keeps every message inside Discord\'s limit even when the list is full and some were left out', () => {

@@ -40,6 +40,23 @@ export class Notifier {
       this.panels.schedule(event.panelId);
       return;
     }
+    if (event.type === 'backup-ended') {
+      // A backup whose flight has nobody flying it any more (or is gone) is told, so they can take it themselves if they want it.
+      const b = event.notice;
+      try {
+        const user = await this.client.users.fetch(b.discordId);
+        await user.send({
+          content:
+            b.reason === 'removed'
+              ? `Heads up: flight **${b.jobCode}**, which you were down as backup for, is no longer listed, so your backup spot has ended.`
+              : `Heads up: nobody is flying **${b.jobCode}** any more, and you were down as its backup. Your backup spot has ended, and the flight is open again: press **Reserve** on the panel if you want it.`,
+          allowedMentions: noPings,
+        });
+      } catch (e) {
+        this.log.debug(`Could not tell ${b.discordId} that a backup spot ended`, e);
+      }
+      return;
+    }
     const n = event.notice;
     try {
       const user = await this.client.users.fetch(n.discordId);

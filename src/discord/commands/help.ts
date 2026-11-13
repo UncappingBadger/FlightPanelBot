@@ -23,8 +23,18 @@ export const helpCommand: Command = {
                 '1. Press **Reserve** under the panel.\n2. I\'ll DM you. The first time, I\'ll ask for your **FsHub pilot ID** (the number in your profile address, fshub.io/pilot/**1234**/overview) so managers can match you to the airline\'s roster (if the airline\'s FsHub roster already lists your Discord account, I know it and skip this). Change it any time by DMing me `fshub <your ID>`.\n3. Reply with the flight ID shown on the panel (like `DMO-004`).\n4. If the flight has several legs, I\'ll ask whether you\'re flying all of them or only some.\n5. The panel then shows your name, and your FsHub ID, next to the flight.',
             },
             {
+              name: 'Finding a flight, or standing by',
+              value:
+                'Press **Search** under the panel and type where you want to fly from, to, and/or a date (airport codes like `EGLL`; `EG` finds every airport starting EG; dates like `tomorrow`, `sat`, `14 Nov`, in Zulu time). I show the flights that match, only ones the panel lists. Press **Backup pilot** and reply to my DM with the ID of a flight that is already taken, to be its backup; I tell you if it is given back.',
+            },
+            {
+              name: 'What your flights made',
+              value:
+                "DM me `my contributions` to see what the flights you completed in the last 7 days made for the airline, worked out from your airline's Google Sheet (the Profit Made column). A flight a manager hasn't entered the profit for yet is named by ID, and the total is what I can see so far.",
+            },
+            {
               name: 'Changing your mind',
-              value: 'Press **My flights** under the panel to see what you hold and give flights back. Say `cancel` in the DM at any point to stop.',
+              value: 'Press **My flights** under the panel to see what you hold and give flights back, or DM me `flights` to see them all. Say `cancel` in the DM at any point to stop.',
             },
             {
               name: 'When you have flown it',

@@ -3,23 +3,29 @@ import {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
+  ModalBuilder,
   StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
   type Message,
   type MessageActionRowComponentBuilder,
+  type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
 } from 'discord.js';
-import type { DmSession, FlownFlight, Holder, JobView, Panel } from '../db/store.js';
+import type { DmSession, FlownFlight, Holder, JobView, Panel, SessionPurpose } from '../db/store.js';
 import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
+import { dayOf, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler } from './context.js';
+import { CONTRIBUTIONS_REQUEST, showContributions } from './contributions.js';
 import { isDmClosed, UserError } from './errors.js';
 import { memberHasRole } from './guard.js';
-import { flightFacts, noPings, jobBlock } from './ui.js';
+import { flightFacts, noPings, jobBlock, searchEmbeds } from './ui.js';
 
 /** How long a Reserve conversation stays open. */
 export const SESSION_TTL_MS = 10 * 60_000;
@@ -76,13 +82,27 @@ const askCodeText = (ctx: BotContext, panel: Panel) =>
     'Say `cancel` to stop. This conversation closes in 10 minutes.',
   ].join('\n');
 
+/** An ID to give as an example when standing by: a flight this person could really be the backup for, else any on the panel. */
+const exampleBackupId = (ctx: BotContext, panel: Panel, discordId: string): string => ctx.jobs.backupCandidates(panel, discordId)[0]?.job.code ?? exampleId(ctx, panel);
+
+/** The question the Backup pilot button asks, the same way Reserve asks for the flight it wants. */
+const askBackupCodeText = (ctx: BotContext, panel: Panel, discordId: string) =>
+  [
+    `**Stand by as backup for ${panel.airlineName}.**`,
+    `Reply with the ID of the flight you'd fly if the pilot who has it can't, for example \`${exampleBackupId(ctx, panel, discordId)}\`. It has to be a flight that is already taken, and not one you're flying yourself.`,
+    'Say `cancel` to stop. This conversation closes in 10 minutes.',
+  ].join('\n');
+
+/** The button that starts a conversation, as it is named when telling someone to press it again. */
+const startButton = (purpose: SessionPurpose): string => (purpose === 'backup' ? '**Backup pilot**' : '**Reserve**');
+
 /**
  * Asked once, the first time someone reserves a flight (and again only if they never answered).
  * `checked` is whether the bot can look the ID up on FsHub, which changes what it promises.
  */
-const askPilotIdText = (panel: Panel, checked: boolean) =>
+const askPilotIdText = (panel: Panel, checked: boolean, purpose: SessionPurpose = 'reserve') =>
   [
-    `**Reserve a flight for ${panel.airlineName}.** First, what is your FsHub pilot ID?`,
+    `**${purpose === 'backup' ? 'Stand by as backup' : 'Reserve a flight'} for ${panel.airlineName}.** First, what is your FsHub pilot ID?`,
     "Your managers use it to match you to the airline's roster. It is the number in your FsHub profile address: for fshub.io/pilot/**1234**/overview it is `1234`. Reply with the number, or paste the link to your profile.",
     checked
       ? "I'll check it with FsHub, tell you whose profile it is, and show the number next to your name on the flights you take. You can change it any time by sending me `fshub <your ID>`."
@@ -272,42 +292,249 @@ async function startReservation(ctx: BotContext, interaction: ButtonInteraction,
   }
 }
 
+/**
+ * When a flight opens and when it must be completed by, as the panel shows them, each in the reader's own timezone (Discord
+ * does that for these timestamps). The opening time reads "opens" while it is still ahead and "opened" once it has passed.
+ */
+function whenText(job: { availableFrom: number | null; deadline: number | null }, now: number): string {
+  const parts: string[] = [];
+  if (job.availableFrom !== null) parts.push(`🕐 ${job.availableFrom > now ? 'opens' : 'opened'} ${ts(job.availableFrom, 'f')} (${ts(job.availableFrom, 'R')})`);
+  if (job.deadline !== null) parts.push(`⏰ complete by ${ts(job.deadline, 'f')} (${ts(job.deadline, 'R')})`);
+  return parts.join(' · ');
+}
+
+/**
+ * What a pilot holds on one panel, as the message the My flights button and the `flights` DM both show: each flight with
+ * its deadline (and what FsHub shows of it), the flights they are down as backup for, and a menu to give any back. Null
+ * when they hold nothing there. (The text is kept inside what one message can carry.)
+ */
+function myFlightsMessage(ctx: BotContext, panel: Panel, userId: string): { content: string; components: Row[] } | null {
+  const views = ctx.jobs.mine(panel.id, userId);
+  const backups = ctx.jobs.myBackups(panel.id, userId);
+  if (views.length === 0 && backups.length === 0) return null;
+  const options = [
+    ...views.flatMap((v) =>
+      v.legs.map((l) => ({
+        label: truncate(`${v.job.code} · ${v.legs.length > 1 ? `leg ${l.legNo} ` : ''}${legText(l)}`, 100),
+        value: `${v.job.id}:${l.legNo}`,
+      })),
+    ),
+    ...backups.map((v) => ({ label: truncate(`${v.job.code} · stand down as backup (${routeText(v.legs)})`, 100), value: `b:${v.job.id}` })),
+  ];
+  const seen = fshubSeen(ctx, panel, views);
+  const lines = views.map((v) => {
+    const mine = v.legs.map((l) => `${v.legs.length > 1 ? `leg ${l.legNo}: ` : ''}${legText(l)}`).join(', ');
+    // Discord shows these in each person's own timezone. (Dropdown captions can't, which is why the time lives here.)
+    const when = whenText(v.job, ctx.now());
+    const base = `**${v.job.code}** · ${mine}${when ? ` · ${when}` : ''}`;
+    const flown = seen.get(v.job.id);
+    return flown ? `${base}\n${flown.map((f) => `↳ ${f}`).join('\n')}` : base;
+  });
+  const backupLines = backups.map(
+    (v) => `**${v.job.code}** · ${routeText(v.legs)}${whenText(v.job, ctx.now()) ? ` · ${whenText(v.job, ctx.now())}` : ''}\n↳ 🛟 You're the backup, if the pilot who has it can't fly it.`,
+  );
+  const all = [...lines, ...backupLines];
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of all) {
+    if (size + line.length + 1 > 1400) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  const more = all.length - kept.length;
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`panel:release:${panel.id}`)
+    .setPlaceholder(backups.length > 0 ? 'Release a flight or stand down…' : 'Release a flight…')
+    .setMinValues(1)
+    .setMaxValues(Math.min(options.length, 25))
+    .addOptions(options.slice(0, 25));
+  return {
+    content: `**Your flights**\n${kept.join('\n')}${more > 0 ? `\n…and ${more} more.` : ''}\n\n${seen.size > 0 ? 'FsHub shows you have flown some of these: press **Complete** under the panel to mark them done. ' : ''}Pick any you can no longer fly to give them back.`,
+    components: [new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(menu)],
+  };
+}
+
 /** The My flights button: list what the person holds, with a menu to release some. */
 async function showMine(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const panel = ctx.store.getPanel(panelId);
   if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
 
-  const views = ctx.jobs.mine(panel.id, interaction.user.id);
-  if (views.length === 0) {
+  const mine = myFlightsMessage(ctx, panel, interaction.user.id);
+  if (!mine) {
     await interaction.editReply({ content: "You haven't reserved anything on this panel yet. Press **Reserve** to pick a flight." });
     return;
   }
-  const options = views.flatMap((v) =>
-    v.legs.map((l) => ({
-      label: truncate(`${v.job.code} · ${v.legs.length > 1 ? `leg ${l.legNo} ` : ''}${legText(l)}`, 100),
-      value: `${v.job.id}:${l.legNo}`,
-    })),
-  );
-  const seen = fshubSeen(ctx, panel, views);
-  const lines = views.map((v) => {
-    const mine = v.legs.map((l) => `${v.legs.length > 1 ? `leg ${l.legNo}: ` : ''}${legText(l)}`).join(', ');
-    // Discord shows these in each person's own timezone. (Dropdown captions can't, which is why the time lives here.)
-    const base = `**${v.job.code}** · ${mine}${v.job.deadline !== null ? ` · ⏰ complete by ${ts(v.job.deadline, 'f')} (${ts(v.job.deadline, 'R')})` : ''}`;
-    const flown = seen.get(v.job.id);
-    return flown ? `${base}\n${flown.map((f) => `↳ ${f}`).join('\n')}` : base;
-  });
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(`panel:release:${panel.id}`)
-    .setPlaceholder('Release a flight…')
-    .setMinValues(1)
-    .setMaxValues(Math.min(options.length, 25))
-    .addOptions(options.slice(0, 25));
+  await interaction.editReply({ content: `${mine.content}${pilotIdNote(ctx, interaction.user.id)}`, components: mine.components, allowedMentions: noPings });
+}
+
+/** At most this many panels' lists are sent in answer to one `flights` DM. */
+const MAX_PANELS_LISTED = 5;
+
+/**
+ * `flights` in a DM: every flight the person has reserved (or is backup for) on any panel of this bot, one message for each
+ * panel, each with the menu to give flights back. They are shown the same as under the panel's My flights button.
+ */
+async function listMyFlights(ctx: BotContext, user: Message['author']): Promise<void> {
+  const ids = new Set([...ctx.store.listPanelIdsHeldBy(user.id), ...ctx.store.listPanelIdsBackedBy(user.id)]);
+  const lists = [...ids]
+    .map((id) => ctx.store.getPanel(id))
+    .filter((p): p is Panel => p !== null)
+    .sort((a, b) => a.airlineName.localeCompare(b.airlineName))
+    .map((panel) => ({ panel, mine: myFlightsMessage(ctx, panel, user.id) }))
+    .filter((x): x is { panel: Panel; mine: { content: string; components: Row[] } } => x.mine !== null);
+  if (lists.length === 0) {
+    await say(user, "You haven't reserved any flights right now. Press **Reserve** on a flight panel in your server to pick one. (Flights you've already completed aren't listed.)");
+    return;
+  }
+  const shown = lists.slice(0, MAX_PANELS_LISTED);
+  for (const [i, { panel, mine }] of shown.entries()) {
+    const last = i === shown.length - 1;
+    await user.send({
+      content: `**${plainText(truncate(panel.airlineName, 60))}**\n${mine.content}${last ? pilotIdNote(ctx, user.id) : ''}${last && lists.length > shown.length ? `\n…and flights on ${lists.length - shown.length} more panel${lists.length - shown.length === 1 ? '' : 's'}.` : ''}`,
+      components: mine.components,
+      allowedMentions: noPings,
+    });
+  }
+}
+
+/** What people type to ask for their flights: `flights`, `my flights`, `list`, `show my flights`, `my reservations`... */
+const LIST_REQUEST = /^(?:(?:show|list|get|send)\s+(?:me\s+)?)?(?:my\s+)?(?:flights?|reservations?|bookings?)(?:\s+list)?\s*[?!.]*$|^(?:list|mine|my\s+list)\s*[?!.]*$/i;
+
+/* ------------------------------------------------------------------ search */
+
+/** The Search button: a small form asking where from, where to, and on which day. Each is optional, but one is needed. */
+async function startSearch(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
+  const panel = ctx.store.getPanel(panelId);
+  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const input = (id: string, label: string, placeholder: string) =>
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder().setCustomId(id).setLabel(label).setPlaceholder(placeholder).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(40),
+    );
+  const modal = new ModalBuilder()
+    .setCustomId(`panel:searchgo:${panelId}`)
+    .setTitle('Find a flight')
+    .addComponents(
+      input('from', 'Flying from (airport code)', 'EGLL, or EG for every airport starting EG'),
+      input('to', 'Flying to (airport code)', 'LFMN, or several: LFMN LFPG'),
+      input('date', 'On this date (Zulu / UTC)', `tomorrow, sat, 14 Nov, or ${new Date(ctx.now()).toISOString().slice(0, 10)}`),
+    );
+  await interaction.showModal(modal);
+}
+
+/** The search form was sent: find the flights (only ones the panel lists) and answer privately with them. */
+async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, panelId: number): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const panel = ctx.store.getPanel(panelId);
+  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const from = parseAirportCodes(interaction.fields.getTextInputValue('from'));
+  const to = parseAirportCodes(interaction.fields.getTextInputValue('to'));
+  const skipped = [...from.ignored, ...to.ignored];
+
+  // The date, if one was typed, is a Zulu day, and has to be one the panel itself shows: today up to the last of its days.
+  const dateText = interaction.fields.getTextInputValue('date').trim();
+  let day: SearchDay | null = null;
+  if (dateText) {
+    day = parseSearchDate(dateText, ctx.now());
+    if (!day) {
+      // Shown inside a code span, so only a backtick of theirs could break out of it.
+      throw new UserError(`I couldn't read \`${truncate(dateText, 30).replace(/`/g, "'")}\` as a date. Try \`tomorrow\`, a weekday like \`sat\`, \`14 Nov\`, \`14/11\` or \`${new Date(ctx.now()).toISOString().slice(0, 10)}\`. Dates are Zulu (UTC), like the flight times.`);
+    }
+    const last = ctx.jobs.lastSearchDay(panel);
+    if (day.end <= ctx.now()) {
+      throw new UserError(`**${day.label}** has already passed. Search from today (**${dayOf(ctx.now()).label}**) onwards.`);
+    }
+    if (day.start > last.start) {
+      throw new UserError(
+        `**${panel.airlineName}** shows flights up to ${panel.showDays} day${panel.showDays === 1 ? '' : 's'} ahead, so I can only search up to **${last.label}**. **${day.label}** is further than that. Try again nearer the day.`,
+      );
+    }
+  }
+
+  if (from.codes.length === 0 && to.codes.length === 0 && !day) {
+    throw new UserError(
+      skipped.length > 0
+        ? `I couldn't use ${skipped.map((c) => `\`${c}\``).join(', ')} as an airport code. Airport codes are two to four letters or numbers, like \`EGLL\`.`
+        : 'Type where you want to fly from, where you want to fly to, a date, or any of them together.',
+    );
+  }
+  const matches = ctx.jobs.search(panel, from.codes, to.codes, day);
   await interaction.editReply({
-    content: `**Your flights**\n${lines.join('\n')}\n\n${seen.size > 0 ? 'FsHub shows you have flown some of these: press **Complete** under the panel to mark them done. ' : ''}Pick any you can no longer fly to give them back.${pilotIdNote(ctx, interaction.user.id)}`,
-    components: [new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(menu)],
+    content: skipped.length > 0 ? `I skipped ${skipped.map((c) => `\`${c}\``).join(', ')}: not airport codes.` : '',
+    embeds: searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day),
     allowedMentions: noPings,
   });
+}
+
+/* ------------------------------------------------------------------ backup pilot */
+
+/** Why this person can't stand by for flights of this panel at all, or null if they can. */
+function backupBlocked(panel: Panel, interaction: ButtonInteraction): string | null {
+  if (panel.requiredRoleId && !memberHasRole(interaction, panel.requiredRoleId)) {
+    return `Standing by for flights of **${panel.airlineName}** is limited to members with the <@&${panel.requiredRoleId}> role.`;
+  }
+  return null;
+}
+
+/**
+ * The Backup pilot button: open a DM conversation asking for the ID of the flight to stand by for, the same way Reserve asks
+ * for the flight to fly (and, the first time, for the FsHub pilot ID before it).
+ */
+async function startBackup(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const panel = ctx.store.getPanel(panelId);
+  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const blocked = backupBlocked(panel, interaction);
+  if (blocked) throw new UserError(blocked);
+
+  const user = interaction.user;
+  if (ctx.jobs.backupCandidates(panel, user.id).length === 0) {
+    await interaction.editReply({
+      content:
+        "There's no flight for you to be backup for right now. A flight can have a backup once all of it is taken, each flight has just one, and you can't back up a flight you're flying. If a flight still has a free leg, press **Reserve** for it instead.",
+    });
+    return;
+  }
+
+  const needsPilotId = ctx.store.getPilotId(user.id) === null;
+  ctx.store.upsertSession({ discordId: user.id, panelId, purpose: 'backup', step: needsPilotId ? 'await_pilot' : 'await_code', expiresAt: ctx.now() + SESSION_TTL_MS });
+  try {
+    const dm = await user.send({ content: needsPilotId ? askPilotIdText(panel, ctx.fshub !== null, 'backup') : askBackupCodeText(ctx, panel, user.id), allowedMentions: noPings });
+    await interaction.editReply({
+      content: `📬 I've sent you a DM. Reply there with ${needsPilotId ? 'your FsHub pilot ID, then the ID of the flight you want to stand by for' : 'the ID of the flight you want to stand by for'}.\nhttps://discord.com/channels/@me/${dm.channelId}`,
+    });
+  } catch (e) {
+    ctx.store.deleteSession(user.id);
+    if (isDmClosed(e)) {
+      throw new UserError("I couldn't send you a DM. Allow direct messages from server members (Server name → Privacy Settings), then press **Backup pilot** again.");
+    }
+    throw e;
+  }
+}
+
+/**
+ * The flight ID was sent in a backup conversation: put the pilot down for it. If they can't be its backup (it still has a free
+ * leg, it already has a backup, it is theirs) say why and let them try another ID; the conversation stays open.
+ */
+async function backUpFlight(ctx: BotContext, user: Message['author'], session: DmSession, view: JobView): Promise<void> {
+  const problem = ctx.jobs.backupProblem(view, user.id);
+  if (problem) {
+    const attempts = session.attempts + 1;
+    if (attempts >= MAX_ATTEMPTS) {
+      ctx.store.deleteSession(user.id);
+      await say(user, `${problem}\nThat's a few flights I couldn't use, so I've closed this. Press **Backup pilot** on the panel to start again.`);
+      return;
+    }
+    ctx.store.upsertSession({ ...session, attempts, expiresAt: ctx.now() + SESSION_TTL_MS });
+    await say(user, `${problem}\nSend a different flight ID, or say \`cancel\`.`);
+    return;
+  }
+  const done = ctx.jobs.addBackup(view.job.id, { discordId: user.id, username: user.username });
+  ctx.store.deleteSession(user.id);
+  await say(
+    user,
+    `🛟 You're down as backup for **${done.job.code}** (${routeText(done.legs)}). The panel shows your name. If the pilot gives it back I'll tell you, and you can stand down any time from **My flights**.`,
+  );
 }
 
 /**
@@ -339,8 +566,14 @@ function pilotIdNote(ctx: BotContext, discordId: string): string {
 async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInteraction, panelId: number): Promise<void> {
   await interaction.deferUpdate();
   const freed: string[] = [];
+  const stoodDown: string[] = [];
   const written: Array<{ sourceKey: string; name: string }> = [];
   for (const value of interaction.values) {
+    if (value.startsWith('b:')) {
+      const backupJob = ctx.store.getJob(Number(value.slice(2)));
+      if (backupJob && backupJob.panelId === panelId && ctx.jobs.removeBackup(backupJob.id, interaction.user.id)) stoodDown.push(backupJob.code);
+      continue;
+    }
     const [jobId, legNo] = value.split(':').map(Number);
     if (!Number.isInteger(jobId) || !Number.isInteger(legNo)) continue;
     const job = ctx.store.getJob(jobId as number);
@@ -360,8 +593,12 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
       : outcomes.includes('cleared')
         ? "\nI've taken your name off the airline's sheet too."
         : '';
+  const said = [
+    freed.length > 0 ? `Released: ${freed.join(', ')}. The panel is updated and those legs are free again.${note}` : '',
+    stoodDown.length > 0 ? `You're no longer the backup for ${stoodDown.join(', ')}.` : '',
+  ].filter(Boolean);
   await interaction.editReply({
-    content: freed.length > 0 ? `Released: ${freed.join(', ')}. The panel is updated and those legs are free again.${note}` : 'Nothing to release (they may already have been given back).',
+    content: said.length > 0 ? said.join('\n') : 'Nothing to release (they may already have been given back).',
     components: [],
   });
 }
@@ -611,8 +848,9 @@ export async function handleDmMessage(ctx: BotContext, message: Message): Promis
     // A reply typed in a DM has no error screen, so an expected failure (say, the flight closed a
     // moment ago) must be said right here, or the person would just see silence.
     if (e instanceof JobError || e instanceof UserError) {
+      const purpose = ctx.store.getSession(message.author.id, ctx.now())?.purpose ?? 'reserve';
       ctx.store.deleteSession(message.author.id);
-      await say(message.author, `${e.message}\nPress **Reserve** on the panel to try another flight.`).catch(() => undefined);
+      await say(message.author, `${e.message}\nPress ${startButton(purpose)} on the panel to try another flight.`).catch(() => undefined);
       return;
     }
     throw e;
@@ -631,6 +869,18 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
+  // `flights`: the pilot's own flights, on every panel. Also works whether or not a conversation is open (it leaves one alone).
+  if (LIST_REQUEST.test(text)) {
+    await listMyFlights(ctx, user);
+    return;
+  }
+
+  // `my contributions`: what the pilot's completed flights made for the airline, from its sheet. Also leaves an open conversation alone.
+  if (CONTRIBUTIONS_REQUEST.test(text)) {
+    await showContributions(ctx, message, (reply) => say(user, reply));
+    return;
+  }
+
   // `fshub 1234`: the pilot's FsHub pilot ID. Also works whether or not a conversation is open.
   const fshub = /^fshub(?:\s+(.*))?$/is.exec(text);
   if (fshub) {
@@ -646,14 +896,14 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
       lastHint.set(user.id, now);
       // Forget people whose cooldown is over, so the map can't grow for ever with everyone who has ever messaged the bot.
       if (lastHint.size > 5000) for (const [k, t] of lastHint) if (now - t >= HINT_COOLDOWN_MS) lastHint.delete(k);
-      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server. I\'ll ask for the flight ID here.');
+      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, or `my contributions` to see what your completed flights made for the airline.');
     }
     return;
   }
 
   if (CANCEL_WORDS.has(text.toLowerCase())) {
     ctx.store.deleteSession(user.id);
-    await say(user, 'Okay, cancelled. Press **Reserve** on the panel whenever you want to start again.');
+    await say(user, `Okay, cancelled. Press ${startButton(session.purpose)} on the panel whenever you want to start again.`);
     return;
   }
 
@@ -670,7 +920,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
       const attempts = session.attempts + 1;
       if (attempts >= MAX_ATTEMPTS) {
         ctx.store.deleteSession(user.id);
-        await say(user, "I still can't read a FsHub pilot ID in that, so I've closed this. Press **Reserve** on the panel to start again.");
+        await say(user, `I still can't read a FsHub pilot ID in that, so I've closed this. Press ${startButton(session.purpose)} on the panel to start again.`);
         return;
       }
       ctx.store.upsertSession({ ...session, attempts, expiresAt: now + SESSION_TTL_MS });
@@ -682,7 +932,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
       const attempts = session.attempts + 1;
       if (attempts >= MAX_ATTEMPTS) {
         ctx.store.deleteSession(user.id);
-        await say(user, "FsHub doesn't know any of those pilot IDs, so I've closed this. Check your profile address and press **Reserve** on the panel to start again.");
+        await say(user, `FsHub doesn't know any of those pilot IDs, so I've closed this. Check your profile address and press ${startButton(session.purpose)} on the panel to start again.`);
         return;
       }
       ctx.store.upsertSession({ ...session, attempts, expiresAt: now + SESSION_TTL_MS });
@@ -694,7 +944,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     ctx.store.upsertSession({ ...session, step: 'await_code', attempts: 0, expiresAt: now + SESSION_TTL_MS });
     await say(
       user,
-      `Thanks, I've saved your FsHub pilot ID as ${pilotLabel(id, name)}.${name ? ' If that isn\'t you, send `fshub <your ID>` with the right one.' : ''}\n\n${askCodeText(ctx, panel)}`,
+      `Thanks, I've saved your FsHub pilot ID as ${pilotLabel(id, name)}.${name ? ' If that isn\'t you, send `fshub <your ID>` with the right one.' : ''}\n\n${session.purpose === 'backup' ? askBackupCodeText(ctx, panel, user.id) : askCodeText(ctx, panel)}`,
     );
     return;
   }
@@ -709,14 +959,18 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     const attempts = session.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) {
       ctx.store.deleteSession(user.id);
-      await say(user, "That's a few IDs I couldn't find, so I've closed this. Press **Reserve** on the panel to start again.");
+      await say(user, `That's a few IDs I couldn't find, so I've closed this. Press ${startButton(session.purpose)} on the panel to start again.`);
       return;
     }
     ctx.store.upsertSession({ ...session, jobId: null, attempts, expiresAt: now + SESSION_TTL_MS });
-    await say(user, `I can't find an open flight with the ID \`${truncate(text, 40)}\`. IDs look like \`${exampleId(ctx, panel)}\` and are listed on the panel. Try again, or say \`cancel\`.`);
+    await say(user, `I can't find an open flight with the ID \`${truncate(text, 40)}\`. IDs look like \`${session.purpose === 'backup' ? exampleBackupId(ctx, panel, user.id) : exampleId(ctx, panel)}\` and are listed on the panel. Try again, or say \`cancel\`.`);
     return;
   }
 
+  if (session.purpose === 'backup') {
+    await backUpFlight(ctx, user, session, view);
+    return;
+  }
   await proceedWithJob(ctx, user, session, view);
 }
 
@@ -866,6 +1120,9 @@ export const panelHandler: ComponentHandler = {
     if (!Number.isInteger(panelId)) throw new UserError('That button is out of date.');
     if (action === 'reserve' && interaction.isButton()) return startReservation(ctx, interaction, panelId);
     if (action === 'mine' && interaction.isButton()) return showMine(ctx, interaction, panelId);
+    if (action === 'search' && interaction.isButton()) return startSearch(ctx, interaction, panelId);
+    if (action === 'searchgo' && interaction.isModalSubmit()) return runSearch(ctx, interaction, panelId);
+    if (action === 'backup' && interaction.isButton()) return startBackup(ctx, interaction, panelId);
     if (action === 'release' && interaction.isStringSelectMenu()) return releaseSelected(ctx, interaction, panelId);
     if (action === 'complete' && interaction.isButton()) return startCompletion(ctx, interaction, panelId);
     if (action === 'completepick' && interaction.isStringSelectMenu()) return confirmCompletion(ctx, interaction, panelId);
@@ -881,5 +1138,5 @@ export const panelHandler: ComponentHandler = {
 /** Buttons and the leg menu in the DM: `dm:all`, `dm:some`, `dm:legs`, `dm:take`, `dm:cancel`. */
 export const dmHandler: ComponentHandler = {
   prefix: 'dm',
-  handle: handleDmComponent,
+  handle: (ctx, interaction) => (interaction.isModalSubmit() ? Promise.resolve() : handleDmComponent(ctx, interaction)),
 };

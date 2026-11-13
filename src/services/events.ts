@@ -9,10 +9,19 @@ export interface ReleasedNotice {
   reason: 'removed' | 'changed' | 'admin';
 }
 
+/** Someone who was down as a flight's backup is no longer: nobody is flying it any more, or it is no longer listed. */
+export interface BackupNotice {
+  panelId: number;
+  discordId: string;
+  jobCode: string;
+  reason: 'freed' | 'removed';
+}
+
 export type JobEvent =
   /** Something on a panel changed, so its message needs redrawing. */
   | { type: 'changed'; panelId: number }
-  | { type: 'released'; notice: ReleasedNotice };
+  | { type: 'released'; notice: ReleasedNotice }
+  | { type: 'backup-ended'; notice: BackupNotice };
 
 export type JobListener = (event: JobEvent) => void | Promise<void>;
 

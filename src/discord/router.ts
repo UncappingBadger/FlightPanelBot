@@ -27,7 +27,7 @@ export function registerInteractionRouter(client: Client, ctx: BotContext): void
       } else if (interaction.isAutocomplete()) {
         const command = byName.get(interaction.commandName);
         if (command?.autocomplete) await command.autocomplete(ctx, interaction);
-      } else if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
         const handler = byPrefix.get(interaction.customId.split(':')[0] ?? '');
         if (handler) await handler.handle(ctx, interaction);
       }

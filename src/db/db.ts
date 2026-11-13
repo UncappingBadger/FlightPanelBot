@@ -376,6 +376,25 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN show_days INTEGER NOT NULL DEFAULT 7;
   `,
+
+  /* v17: a backup pilot. A pilot can put themselves down as the backup for a flight that is already taken, so there is
+     someone ready if the pilot who has it can't fly it. One backup a flight; it goes if the flight does. */
+  `
+  CREATE TABLE job_backups (
+    job_id      INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    discord_id  TEXT NOT NULL,
+    username    TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX idx_job_backups_user ON job_backups(discord_id);
+  `,
+
+  /* v18: what a DM conversation is for. The Backup pilot button now asks for a flight ID in a DM just as Reserve does, so a
+     conversation says whether it is to reserve a flight ('reserve') or to stand by for one ('backup'). Conversations
+     already open carry on as reservations. */
+  `
+  ALTER TABLE dm_sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'reserve';
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

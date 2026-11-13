@@ -44,6 +44,8 @@ export class PanelService {
   private readonly waiting = new Map<number, Promise<PanelRefreshResult>>();
   /** What each panel message was last made to say (by message id), so unchanged messages are not edited again. */
   private readonly shown = new Map<string, string>();
+  /** Panels whose next redraw must send every message again. */
+  private readonly forced = new Set<number>();
   /** When each drawn panel's list will next change by the passing of time alone (see `listing`). Panels not yet drawn are absent. */
   private readonly changeAt = new Map<number, number>();
   /** Whether the bot has a FsHub token, so the panel can say flights are completed from FsHub automatically. Set at start-up. */
@@ -78,7 +80,10 @@ export class PanelService {
    * about. So a request made while a redraw is under way waits for it and then draws once more, and any number of
    * requests made during that wait share the one redraw (it reads the jobs when it starts, so it shows them all).
    */
-  refresh(panelId: number): Promise<PanelRefreshResult> {
+  refresh(panelId: number, opts: { force?: boolean } = {}): Promise<PanelRefreshResult> {
+    // A forced redraw sends every message again (it forgets what each was last made to say), so that anything new about
+    // a panel, such as buttons added by a newer version of the bot, reaches the messages already in the channel.
+    if (opts.force) this.forced.add(panelId);
     const waiting = this.waiting.get(panelId);
     if (waiting) return waiting;
     const after = this.chains.get(panelId) ?? Promise.resolve();
@@ -139,6 +144,7 @@ export class PanelService {
   private async redraw(panelId: number): Promise<PanelRefreshResult> {
     const panel = this.store.getPanel(panelId);
     if (!panel) this.changeAt.delete(panelId);
+    if (this.forced.delete(panelId) && panel) for (const id of panel.messageIds) this.shown.delete(id);
     if (!panel || !this.client) return 'skipped';
     try {
       const channel = await this.client.channels.fetch(panel.channelId).catch(() => null);
@@ -158,7 +164,7 @@ export class PanelService {
         allowedMentions: noPings,
       });
       /** What a message was last made to say, so an edit that would change nothing is not sent (a long panel is many messages). */
-      const contentOf = (i: number) => JSON.stringify([messages[i]!.map((e) => e.toJSON()), i < parts.open.length]);
+      const contentOf = (i: number) => JSON.stringify([messages[i]!.map((e) => e.toJSON()), payloadFor(i).components.map((c) => c.toJSON())]);
 
       // `force: true` asks Discord itself. Without it discord.js answers from its cache, and the bot
       // is never told when a person deletes a message, so it would "find" panels that are long gone.

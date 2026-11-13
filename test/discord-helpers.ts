@@ -193,9 +193,26 @@ export class FakeClient {
   }
 }
 
-/** A DM sent to the bot. */
-export function fakeDm(user: FakeUser, content: string): Message {
-  return { author: user, guildId: null, content } as unknown as Message;
+/**
+ * A DM sent to the bot. The sender belongs to the panels' server (the one every test panel is in), unless `guilds` names
+ * the servers they are in.
+ */
+export function fakeDm(user: FakeUser, content: string, o: { guilds?: string[] } = {}): Message {
+  const member = (guildId: string) => (o.guilds ?? [GUILD]).includes(guildId);
+  const client = {
+    guilds: {
+      cache: new Map(),
+      fetch: async (guildId: string) => ({
+        members: {
+          fetch: async () => {
+            if (!member(guildId)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
+            return { id: user.id };
+          },
+        },
+      }),
+    },
+  };
+  return { author: user, guildId: null, content, client } as unknown as Message;
 }
 
 interface ComponentOptions {
@@ -209,7 +226,7 @@ interface ComponentOptions {
 
 /** A button press (or, with `values`, a select-menu choice). Records every response. */
 export function fakeComponent(user: FakeUser, customId: string, o: ComponentOptions = {}) {
-  const calls = { defers: [] as any[], edits: [] as any[], updates: [] as any[], replies: [] as any[] };
+  const calls = { defers: [] as any[], edits: [] as any[], updates: [] as any[], replies: [] as any[], modals: [] as any[] };
   const isMenu = o.values !== undefined;
   const i: any = {
     customId,
@@ -222,6 +239,10 @@ export function fakeComponent(user: FakeUser, customId: string, o: ComponentOpti
     replied: false,
     isButton: () => !isMenu,
     isStringSelectMenu: () => isMenu,
+    isModalSubmit: () => false,
+    showModal: async (m: any) => {
+      calls.modals.push(m);
+    },
     deferReply: async (a: any) => {
       i.deferred = true;
       calls.defers.push(a);
@@ -241,6 +262,39 @@ export function fakeComponent(user: FakeUser, customId: string, o: ComponentOpti
     },
   };
   return { i: i as ButtonInteraction & StringSelectMenuInteraction, calls };
+}
+
+/** A form (modal) the user filled in and sent: `fields` are the values of its text boxes by id. */
+export function fakeModal(user: FakeUser, customId: string, fields: Record<string, string>, o: ComponentOptions = {}) {
+  const calls = { defers: [] as any[], edits: [] as any[], replies: [] as any[] };
+  const i: any = {
+    customId,
+    user,
+    guildId: o.guildId === undefined ? GUILD : o.guildId,
+    member: { roles: o.roles ?? [] },
+    memberPermissions: { has: () => !!o.admin },
+    deferred: false,
+    replied: false,
+    fields: { getTextInputValue: (id: string) => fields[id] ?? '' },
+    isChatInputCommand: () => false,
+    isAutocomplete: () => false,
+    isRepliable: () => true,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => true,
+    deferReply: async (a: any) => {
+      i.deferred = true;
+      calls.defers.push(a);
+    },
+    editReply: async (p: any) => {
+      calls.edits.push(p);
+    },
+    reply: async (p: any) => {
+      i.replied = true;
+      calls.replies.push(p);
+    },
+  };
+  return { i, calls };
 }
 
 export interface FakeInteractionOptions {

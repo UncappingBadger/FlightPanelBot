@@ -176,9 +176,9 @@ describe('panel rendering', () => {
     assert.ok(parts.open.length + parts.completed.length <= 10, 'a panel is never more than ten messages');
   });
 
-  it('has Reserve, My flights and Complete buttons that carry the panel id', () => {
+  it('has Reserve, Search, Backup pilot, My flights and Complete buttons that carry the panel id', () => {
     const row = panelButtons(7).toJSON();
-    assert.deepEqual(row.components.map((c: any) => c.custom_id), ['panel:reserve:7', 'panel:mine:7', 'panel:complete:7']);
+    assert.deepEqual(row.components.map((c: any) => c.custom_id), ['panel:reserve:7', 'panel:search:7', 'panel:backup:7', 'panel:mine:7', 'panel:complete:7']);
   });
 });
 
@@ -222,7 +222,7 @@ describe('PanelService', () => {
       h.jobs.sync(pid(), longList());
       await d.panels.refresh(pid());
       assert.ok(openMessages().length > 1, 'the list really is split over several messages');
-      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
       assert.deepEqual(buttonIds(channel().live.at(-1)!), []);
     });
 
@@ -233,7 +233,7 @@ describe('PanelService', () => {
       h.jobs.reserve(h.jobs.open(pid())[0]!.job.id, [1], USER_A);
       await settle();
       assert.deepEqual(channel().live.map((m) => m.id), first, 'edited, not reposted');
-      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
       assert.deepEqual(buttonIds(channel().live.at(-1)!), []);
     });
 
@@ -243,7 +243,7 @@ describe('PanelService', () => {
       h.jobs.sync(pid(), longList());
       await settle();
       assert.ok(openMessages().length > 1);
-      for (const m of openMessages()) assert.equal(buttonIds(m).length, 3);
+      for (const m of openMessages()) assert.equal(buttonIds(m).length, 5);
       assert.equal(buttonIds(channel().live.at(-1)!).length, 0);
     });
   });

@@ -174,6 +174,7 @@ describe('router', () => {
       isAutocomplete: () => false,
       isButton: () => true,
       isStringSelectMenu: () => false,
+      isModalSubmit: () => false,
       update: async (p: any) => calls.updates.push(p),
       reply: async (p: any) => calls.replies.push(p),
     };

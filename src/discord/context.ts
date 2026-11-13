@@ -2,6 +2,7 @@ import type {
   AutocompleteInteraction,
   ButtonInteraction,
   ChatInputCommandInteraction,
+  ModalSubmitInteraction,
   RESTPostAPIChatInputApplicationCommandsJSONBody,
   StringSelectMenuInteraction,
 } from 'discord.js';
@@ -49,7 +50,7 @@ export interface Command {
   autocomplete?(ctx: BotContext, interaction: AutocompleteInteraction): Promise<void>;
 }
 
-export type ComponentInteraction = ButtonInteraction | StringSelectMenuInteraction;
+export type ComponentInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 
 export interface ComponentHandler {
   /** Matches custom IDs that start with `${prefix}:`. */
