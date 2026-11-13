@@ -19,14 +19,15 @@ import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
-import { dayOf, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
+import { dayOf, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
-import type { BotContext, ComponentHandler } from './context.js';
+import type { BotContext, ComponentHandler, ComponentInteraction } from './context.js';
 import { CONTRIBUTIONS_REQUEST, showContributions } from './contributions.js';
 import { isDmClosed, UserError } from './errors.js';
 import { memberHasRole } from './guard.js';
-import { flightFacts, noPings, jobBlock, searchEmbeds } from './ui.js';
+import { MAX_FOLLOWERS } from './panel.js';
+import { avatarIdsOf, flightFacts, noPings, jobBlock, searchEmbeds, stampFiles } from './ui.js';
 
 /** How long a Reserve conversation stays open. */
 export const SESSION_TTL_MS = 10 * 60_000;
@@ -262,8 +263,7 @@ async function renamePilot(ctx: BotContext, user: Person & { send: Message['auth
 /** The Reserve button: open a DM conversation asking for the flight ID. */
 async function startReservation(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   if (panel.requiredRoleId && !memberHasRole(interaction, panel.requiredRoleId)) {
     throw new UserError(`Reserving flights for **${panel.airlineName}** is limited to members with the <@&${panel.requiredRoleId}> role.`);
   }
@@ -359,8 +359,7 @@ function myFlightsMessage(ctx: BotContext, panel: Panel, userId: string): { cont
 /** The My flights button: list what the person holds, with a menu to release some. */
 async function showMine(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
 
   const mine = myFlightsMessage(ctx, panel, interaction.user.id);
   if (!mine) {
@@ -407,8 +406,7 @@ const LIST_REQUEST = /^(?:(?:show|list|get|send)\s+(?:me\s+)?)?(?:my\s+)?(?:flig
 
 /** The Search button: a small form asking where from, where to, on which day and in which aircraft. Each is optional, but one is needed. */
 async function startSearch(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   const input = (id: string, label: string, placeholder: string) =>
     new ActionRowBuilder<TextInputBuilder>().addComponents(
       new TextInputBuilder().setCustomId(id).setLabel(label).setPlaceholder(placeholder).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(40),
@@ -428,8 +426,7 @@ async function startSearch(ctx: BotContext, interaction: ButtonInteraction, pane
 /** The search form was sent: find the flights (only ones the panel lists) and answer privately with them. */
 async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   const from = parseAirportCodes(interaction.fields.getTextInputValue('from'));
   const to = parseAirportCodes(interaction.fields.getTextInputValue('to'));
   const skipped = [...from.ignored, ...to.ignored];
@@ -467,9 +464,11 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, p
   }
   const matches = ctx.jobs.search(panel, from.codes, to.codes, day, types.codes);
   const quoted = (list: string[]) => list.map((c) => `\`${c}\``).join(', ');
+  const embeds = searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day, types.codes, await ctx.panels.avatarsFor(avatarIdsOf(matches.slice(0, MAX_SEARCH_RESULTS))));
   await interaction.editReply({
     content: [skipped.length > 0 ? `I skipped ${quoted(skipped)}: not airport codes.` : '', types.ignored.length > 0 ? `I skipped ${quoted(types.ignored)}: not aircraft types.` : ''].filter(Boolean).join('\n'),
-    embeds: searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day, types.codes),
+    embeds,
+    files: stampFiles(embeds),
     allowedMentions: noPings,
   });
 }
@@ -490,8 +489,7 @@ function backupBlocked(panel: Panel, interaction: ButtonInteraction): string | n
  */
 async function startBackup(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   const blocked = backupBlocked(panel, interaction);
   if (blocked) throw new UserError(blocked);
 
@@ -749,8 +747,7 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
 /** The Complete button: on a panel linked to FsHub, complete what FsHub shows flown; otherwise pick which flights you have flown. */
 async function startCompletion(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   if (completesFromFsHub(ctx, panel)) {
     await completeFromFsHub(ctx, interaction, panel);
     return;
@@ -779,8 +776,7 @@ async function startCompletion(ctx: BotContext, interaction: ButtonInteraction, 
 
 /** The flights were picked: ask for a final yes before touching the sheet. */
 async function confirmCompletion(ctx: BotContext, interaction: StringSelectMenuInteraction, panelId: number): Promise<void> {
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   // A picker left over from before the panel was linked to FsHub must not complete flights FsHub hasn't confirmed.
   if (completesFromFsHub(ctx, panel)) {
     await interaction.update({ content: 'Completing flights now works from FsHub. Press **Complete** under the panel again and I\'ll check FsHub for your landing.', components: [], allowedMentions: noPings });
@@ -807,8 +803,7 @@ async function confirmCompletion(ctx: BotContext, interaction: StringSelectMenuI
 /** Confirmed: write each flight to the sheet (where there is one), then mark it completed here. */
 async function finishCompletion(ctx: BotContext, interaction: ButtonInteraction, panelId: number, rawIds: string): Promise<void> {
   await interaction.deferUpdate(); // Google can be slow; Discord only waits three seconds for an answer
-  const panel = ctx.store.getPanel(panelId);
-  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  const panel = panelFor(ctx, interaction, panelId);
   if (completesFromFsHub(ctx, panel)) {
     await interaction.editReply({ content: 'Completing flights now works from FsHub. Press **Complete** under the panel again and I\'ll check FsHub for your landing.', components: [], allowedMentions: noPings });
     return;
@@ -1135,6 +1130,47 @@ async function handleDmAction(ctx: BotContext, interaction: ButtonInteraction | 
 
 /* ------------------------------------------------------------------ handler registrations */
 
+/* ------------------------------------------------------------------ which panel a button belongs to */
+
+/** The panel a button, menu or form belongs to: it must be a panel of the server where it was pressed. */
+function panelFor(ctx: BotContext, interaction: ComponentInteraction, panelId: number): Panel {
+  const panel = ctx.store.getPanel(panelId);
+  if (!panel || panel.guildId !== interaction.guildId) throw new UserError('That panel is no longer active.');
+  return panel;
+}
+
+/* ------------------------------------------------------------------ the list view */
+
+/** The List view button: post the pilot their own copy of the panel as a list in their DMs, and keep it up to date. */
+async function startList(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const panel = panelFor(ctx, interaction, panelId);
+  const result = await ctx.panels.follow(panel.id, interaction.user);
+  if (!result.ok) {
+    if (result.reason === 'dm-closed') {
+      throw new UserError("I couldn't send you a DM. Allow direct messages from server members (Server name → Privacy Settings), then press **List view** again.");
+    }
+    if (result.reason === 'full') {
+      throw new UserError(`${MAX_FOLLOWERS} people already have a list of this panel in their DMs, which is as many as I keep up to date. Use the panel here instead.`);
+    }
+    throw new UserError('That panel is no longer active.');
+  }
+  await interaction.editReply({
+    content: `📃 Your list is in your DMs, and I'll keep it up to date there whenever the panel changes. Its buttons work like the panel's. Press **Stop updates** under it to end it.\nhttps://discord.com/channels/@me/${result.channelId}`,
+  });
+}
+
+/** The Stop updates button under a pilot's list: take the list out of their DMs and stop keeping it up to date. */
+async function stopList(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const had = await ctx.panels.unfollow(panelId, interaction.user.id);
+  await interaction.editReply({
+    content: had
+      ? "🔕 Done. I've taken your list out of your DMs and I won't keep one up to date for you. Press **List view** on the panel to get it back."
+      : "You don't have a list of that panel in your DMs.",
+  });
+}
+
 /** Buttons on the panel itself: `panel:reserve:<id>`, `panel:mine:<id>`, `panel:release:<id>` (menu). */
 export const panelHandler: ComponentHandler = {
   prefix: 'panel',
@@ -1144,6 +1180,8 @@ export const panelHandler: ComponentHandler = {
     if (!Number.isInteger(panelId)) throw new UserError('That button is out of date.');
     if (action === 'reserve' && interaction.isButton()) return startReservation(ctx, interaction, panelId);
     if (action === 'mine' && interaction.isButton()) return showMine(ctx, interaction, panelId);
+    if (action === 'list' && interaction.isButton()) return startList(ctx, interaction, panelId);
+    if (action === 'unlist' && interaction.isButton()) return stopList(ctx, interaction, panelId);
     if (action === 'search' && interaction.isButton()) return startSearch(ctx, interaction, panelId);
     if (action === 'searchgo' && interaction.isModalSubmit()) return runSearch(ctx, interaction, panelId);
     if (action === 'backup' && interaction.isButton()) return startBackup(ctx, interaction, panelId);

@@ -1,3 +1,4 @@
+import { PermissionFlagsBits } from 'discord.js';
 import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction, Client, Message, StringSelectMenuInteraction } from 'discord.js';
 import type { AeroDaqClient, AirportFuel, Stock } from '../src/aerodaq/client.js';
 import type { Config } from '../src/config.js';
@@ -41,6 +42,23 @@ export class FakeUser {
     if (this.failDms) throw Object.assign(new Error('Cannot send messages to this user'), { code: 50007 });
     this.dms.push(payload);
     return { id: `dm-m${this.dms.length}`, channelId: `dm-${this.id}` };
+  }
+  /** The DM channel with this user, where a list that is kept up to date lives (messages can be fetched, edited and deleted there). */
+  private dm: FakeChannel | null = null;
+  get dmChannel(): FakeChannel {
+    return (this.dm ??= new FakeDmChannel(`dmc-${this.id}`, this));
+  }
+  async createDM() {
+    return this.dmChannel as any;
+  }
+  /** Like discord.js: the address of the person's picture, in the size asked for. */
+  displayAvatarURL(o: { size?: number } = {}): string {
+    return `https://cdn.test/avatars/${this.id}.png?size=${o.size ?? 128}`;
+  }
+  /** The latest message in the DM channel, as text. */
+  get lastListText(): string {
+    const m = this.dmChannel.live.at(-1);
+    return m ? messageText(m) : '';
   }
   get last(): any {
     return this.dms.at(-1);
@@ -130,6 +148,17 @@ export class FakeChannel {
     },
   };
   constructor(readonly id: string) {}
+  /** Members who can't see this channel (for tests of a person losing access). */
+  hiddenFrom = new Set<string>();
+  /** The bot may not attach files here (an older invite did not ask for it). */
+  noAttachFiles = false;
+  /** Like a server channel: it knows the bot's own member, so its permissions can be asked about. */
+  guild = { members: { me: { id: 'the-bot' } } };
+  permissionsFor(member: { id: string }) {
+    return {
+      has: (permission?: bigint) => !this.hiddenFrom.has(member.id) && !(this.noAttachFiles && member.id === 'the-bot' && permission === PermissionFlagsBits.AttachFiles),
+    };
+  }
   isSendable() {
     return true;
   }
@@ -156,10 +185,36 @@ export class FakeChannel {
   }
 }
 
+/** A DM channel: sending fails the way Discord's does when the person has closed their DMs. */
+export class FakeDmChannel extends FakeChannel {
+  constructor(
+    id: string,
+    private readonly owner: FakeUser,
+  ) {
+    super(id);
+  }
+  override async send(payload: any) {
+    if (this.owner.failDms) throw Object.assign(new Error('Cannot send messages to this user'), { code: 50007 });
+    return super.send(payload);
+  }
+}
+
 export class FakeClient {
   channels_ = new Map<string, FakeChannel>();
   users_ = new Map<string, FakeUser>();
   autoCreate = true;
+  /** Who is in the server (null: everyone is). */
+  members: Set<string> | null = null;
+  readonly guilds = {
+    fetch: async (_id: string) => ({
+      members: {
+        fetch: async (userId: string) => {
+          if (this.members && !this.members.has(userId)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
+          return { id: userId, permissions: { has: () => false }, roles: { cache: { has: () => false } } };
+        },
+      },
+    }),
+  };
   readonly channels = {
     fetch: async (id: string) => {
       const c = this.channels_.get(id) ?? (this.autoCreate ? this.channel(id) : undefined);
@@ -216,12 +271,31 @@ export function fakeDm(user: FakeUser, content: string, o: { guilds?: string[] }
 }
 
 interface ComponentOptions {
+  /** Where it was pressed: a server's ID (the default), or null for a DM. */
   guildId?: string | null;
   values?: string[];
   /** The pressing member's role IDs. */
   roles?: string[];
   /** Has Manage Server. */
   admin?: boolean;
+  /** The person is not (or no longer) in the server: looking them up fails the way Discord's does. */
+  notMember?: boolean;
+}
+
+/** What `interaction.client` offers: looking the pressing person up as a member of the server. */
+function memberClient(o: ComponentOptions) {
+  return {
+    guilds: {
+      fetch: async (_guildId: string) => ({
+        members: {
+          fetch: async (userId: string) => {
+            if (o.notMember) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
+            return { id: userId, permissions: { has: () => !!o.admin }, roles: { cache: { has: (r: string) => (o.roles ?? []).includes(r) } } };
+          },
+        },
+      }),
+    },
+  };
 }
 
 /** A button press (or, with `values`, a select-menu choice). Records every response. */
@@ -233,8 +307,9 @@ export function fakeComponent(user: FakeUser, customId: string, o: ComponentOpti
     user,
     guildId: o.guildId === undefined ? GUILD : o.guildId,
     values: o.values ?? [],
-    member: { roles: o.roles ?? [] },
-    memberPermissions: { has: () => !!o.admin },
+    member: o.guildId === null ? null : { roles: o.roles ?? [] },
+    memberPermissions: o.guildId === null ? null : { has: () => !!o.admin },
+    client: memberClient(o),
     deferred: false,
     replied: false,
     isButton: () => !isMenu,
@@ -271,8 +346,9 @@ export function fakeModal(user: FakeUser, customId: string, fields: Record<strin
     customId,
     user,
     guildId: o.guildId === undefined ? GUILD : o.guildId,
-    member: { roles: o.roles ?? [] },
-    memberPermissions: { has: () => !!o.admin },
+    member: o.guildId === null ? null : { roles: o.roles ?? [] },
+    memberPermissions: o.guildId === null ? null : { has: () => !!o.admin },
+    client: memberClient(o),
     deferred: false,
     replied: false,
     fields: { getTextInputValue: (id: string) => fields[id] ?? '' },
@@ -470,7 +546,7 @@ export function makeDiscordHarness(
     h.store.setPilotId(USER_B.discordId, 1002, now());
     h.store.setPilotId(USER_C.discordId, 1003, now());
   }
-  const panels = new PanelService(h.store, h.jobs, silentLogger, now, 0);
+  const panels = new PanelService(h.store, h.jobs, silentLogger, now, 0, 0);
   panels.attach(client as unknown as Client);
   // The same selection the real bot uses: a panel's linked sheet first, then the test's own source.
   const refresher = new SourceRefresher(h.store, h.jobs, sourceSelector({ fallback: opts.source ?? null, fetchFn: opts.fetchFn }), silentLogger, now);

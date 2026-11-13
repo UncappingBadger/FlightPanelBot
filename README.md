@@ -15,10 +15,17 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    panel with `/setup window`): a schedule often runs for weeks, and all of it would bury the flights that can be
    flown soon. A line at the end says how many are further off, and they appear on their own once they come within
    the period. (Only the panel is limited: a flight further off can still be reserved by typing its ID.) Below the open flights is a separate panel of the flights completed lately (see
-   [below](#how-it-works-for-pilots)), so they never crowd the ones that need a pilot. Each flight is its own **card**
+   [below](#how-it-works-for-pilots)), so they never crowd the ones that need a pilot (the server admin can give them
+   a channel of their own with `/setup completed`). Each flight is its own **card**
    (an embed with a coloured stripe: amber while a leg still needs a pilot, blue once every leg is taken, green once it
    has been flown), with the route in large type, labelled boxes and who has it, and a gap between cards so flights are
-   easy to pick out; a message holds up to 10 cards, so a long list takes several messages, each with the buttons:
+   easy to pick out. **You can tell at a glance whether a flight is open:** a flight that still needs a pilot wears a
+   green, worn-ink **OPEN** stamp in the card's corner; once it is taken, the stamp gives way to its pilot's own Discord
+   picture, with their name (a mention, which opens their profile) and FsHub ID beside it. A backup pilot gets the same
+   in a smaller size: their picture on a line above the card, linking to their profile, and their name and FsHub ID in
+   the card. (Discord does not let a picture in a message be a link itself, which is why the name beside it is the
+   link.) Every date and time on a card, in the list view and in the "pilots needed" announcements shows the **day of the
+   week** as well (in your own timezone), so nobody mistakes the 13th for the 14th. A message holds up to 10 cards, so a long list takes several messages, each with the buttons:
 
    ```
    DMO-004 · 2 legs · A320                      (amber stripe: a leg still needs a pilot)
@@ -45,6 +52,14 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    two days after its window closes. On a FsHub-linked panel you don't even have to press it: **once an hour** the
    bot completes the flights FsHub shows you flew and sends you a DM saying so (see
    [Completing automatically](#completing-automatically-every-hour)).
+7. **List view** (a second row of buttons under the panel) is for people who prefer a plain list to cards. It posts
+   the panel to you as a list in your DMs (each flight as a few lines of text, then the flights completed lately) and
+   **keeps it up to date there**: whenever the panel changes, your list changes with it, in the same messages (quietly,
+   with no notification). The list is for reading: its only button is **Stop updates**, which takes it away, and it
+   points you back to the panel's buttons for reserving, searching and the rest. It is for you alone: the panel in the
+   channel does not change for anyone else. Press **List view** again to get a fresh copy at the bottom of the DM. At most 200 people can have a list of one panel at once, and one is dropped if the person leaves the
+   server, can no longer see the panel's channel (checked every half hour) or closes their DMs to the bot. If the
+   admin has put completed flights in a channel of their own, the list leaves them out and says where they are.
 
 **Looking for a flight.** **Search** (under the panel) opens a small form with four optional boxes: where you want to
 fly **from**, where you want to fly **to**, the **date**, and the **aircraft type**. Fill in any of them, one or together,
@@ -162,8 +177,8 @@ file that carries the bot and the Node.js it needs, so the host installs nothing
    works at once. There is no `.env` file and no script to run. (A FsHub token can be added on the same page,
    but only if you want the [FsHub features](#fshub-optional); nothing needs one.)
 3. The icon's colour shows the state (green online, amber starting or needs setup, red needs attention). The
-   menu opens the setup page, copies the invite link, shows the log and data folder, restarts the bot, switches
-   **Start with Windows** on or off, and quits.
+   menu opens the setup page, copies the invite link, opens the **User manual**, shows the log and data folder,
+   restarts the bot, switches **Start with Windows** on or off, and quits.
 
 Settings, the database and logs live in `%APPDATA%\FlightPanelBot`. The setup page listens on this computer
 only, needs a secret key that only the tray program knows, and refuses requests that did not come from its own
@@ -178,14 +193,17 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.5`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.6`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
 
 **Build it:** `npm run build:host` bundles the bot with esbuild, compresses the bundle and this machine's Node.js,
 and compiles a small C# tray launcher (using the compiler that ships with Windows) with both embedded. Output is
-`release/FlightPanelBot.exe` plus its licence notices and a checksum. The exe is **not code-signed**, which is
+`release/FlightPanelBot.exe` plus its licence notices and a checksum. The user manual (a PDF made from the online
+manual, so not kept in this repository) is embedded too and opens from the tray menu: the build takes it from
+`--manual <file>`, else from `FlightPanelBot-Server-Owner-Manual.pdf` beside the new exe or in `release/`, and builds
+without the menu entry if there is none. The exe is **not code-signed**, which is
 why Windows shows a warning; signing needs a certificate. `FPB_HOME` moves the data folder, and `FPB_NO_BROWSER=1`
 stops the tray program opening the browser (used by tests).
 
@@ -211,11 +229,11 @@ You need Node.js 22.13 or newer.
    again whenever the commands change. The bot must also be set to **Public** in the Developer Portal. On
    Windows, if PowerShell says "running scripts is disabled", use `npm.cmd` instead of `npm`. Stop the bot with
    Ctrl-C.
-3. **Invite the bot** (replace `YOUR_CLIENT_ID`). It needs View Channel, Send Messages, Embed Links and Read
-   Message History:
+3. **Invite the bot** (replace `YOUR_CLIENT_ID`). It needs View Channel, Send Messages, Embed Links, Attach Files (for the OPEN stamp;
+   without it the panel works but has no stamp) and Read Message History:
 
    ```
-   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot%20applications.commands&permissions=84992
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot%20applications.commands&permissions=117760
    ```
 
 ## Admin guide
@@ -239,6 +257,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup panels` | List panels with open flights and how many legs are reserved. |
 | `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged when a flight has no pilot 24 hours before it starts. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each announcement at midnight UTC; `off` leaves them in the channel. With no options it shows the current setting. |
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
+| `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
 | `/setup panel-remove airline` | Delete a panel with its flights and reservations. |
 
@@ -553,7 +572,7 @@ that person goes by in airline sheets, and per reservation the name it wrote. It
 key only as a file path in `.env`; the key file itself stays wherever you put it. It also keeps, per Discord user,
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
 (shown beside their name on flights they hold), and per server the channel and message of an AeroDAQ market
-board if one is switched on. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
+board if one is switched on. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing,
 and that roster's pilots who have a Discord
 account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no tokens or passwords from users. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
@@ -565,12 +584,13 @@ the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and
 never sends names, IDs or other personal data to anyone: the only thing asked of FsHub about a person is the
-pilot ID they typed.
+pilot ID they typed. (The green OPEN stamp on a card is a picture kept inside the bot and attached to the panel's
+messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord's own, asked of Discord.)
 
 ## Development
 
 ```bash
-npm test              # 1147 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1203 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

@@ -53,6 +53,21 @@ export interface Panel {
   fshubAutoCompleteAt: number | null;
   /** How many days ahead the panel lists flights (1 to 7): those open now or starting within this long. */
   showDays: number;
+  /** A channel of its own for the completed flights, or null when they are shown on the panel itself (below the open flights). */
+  completedChannelId: string | null;
+  /** The messages the completed flights are drawn in, in that channel (empty while they are shown on the panel). */
+  completedMessageIds: string[];
+  createdAt: number;
+}
+
+/** Someone who asked for a panel as a plain list in their DMs: where it is, so it can be kept up to date. */
+export interface PanelFollower {
+  panelId: number;
+  discordId: string;
+  /** The DM channel the list was posted in. */
+  channelId: string;
+  /** The list's messages in that channel, in order (a long list spans several). */
+  messageIds: string[];
   createdAt: number;
 }
 
@@ -248,6 +263,16 @@ const toPanel = (r: Row): Panel => ({
   fshubAutoCompleteAt: nn(r.fshub_autocomplete_at),
   // Whatever is stored, a panel never shows less than a day or more than a week.
   showDays: r.show_days === undefined || r.show_days === null ? 7 : Math.min(7, Math.max(1, Math.round(n(r.show_days)))),
+  completedChannelId: sn(r.completed_channel_id),
+  completedMessageIds: parseJsonArray<string>(r.completed_message_ids, []).map(String),
+  createdAt: n(r.created_at),
+});
+
+const toFollower = (r: Row): PanelFollower => ({
+  panelId: n(r.panel_id),
+  discordId: s(r.discord_id),
+  channelId: s(r.channel_id),
+  messageIds: parseJsonArray<string>(r.message_ids, []).map(String),
   createdAt: n(r.created_at),
 });
 
@@ -386,6 +411,8 @@ export class Store {
       channelId: string;
       prefix: string;
       messageIds: string[];
+      completedChannelId: string | null;
+      completedMessageIds: string[];
       lastRefreshAt: number | null;
       lastRefreshError: string | null;
       lastRefreshNote: string | null;
@@ -437,6 +464,8 @@ export class Store {
     if (patch.channelId !== undefined) (sets.push('channel_id = ?'), params.push(patch.channelId));
     if (patch.prefix !== undefined) (sets.push('prefix = ?'), params.push(patch.prefix));
     if (patch.messageIds !== undefined) (sets.push('message_ids = ?'), params.push(JSON.stringify(patch.messageIds)));
+    if (patch.completedChannelId !== undefined) (sets.push('completed_channel_id = ?'), params.push(patch.completedChannelId));
+    if (patch.completedMessageIds !== undefined) (sets.push('completed_message_ids = ?'), params.push(JSON.stringify(patch.completedMessageIds)));
     if (patch.lastRefreshAt !== undefined) (sets.push('last_refresh_at = ?'), params.push(patch.lastRefreshAt));
     if (patch.lastRefreshError !== undefined) (sets.push('last_refresh_error = ?'), params.push(patch.lastRefreshError));
     if (sets.length === 0) return;
@@ -978,6 +1007,38 @@ export class Store {
 
   deleteReminderMessage(messageId: string): void {
     this.run('DELETE FROM reminder_messages WHERE message_id = ?', messageId);
+  }
+
+  /* ------------------------------------------------------------------ panel lists kept in people's DMs */
+
+  getFollower(panelId: number, discordId: string): PanelFollower | null {
+    const r = this.get('SELECT * FROM panel_followers WHERE panel_id = ? AND discord_id = ?', panelId, discordId);
+    return r ? toFollower(r) : null;
+  }
+
+  listFollowers(panelId: number): PanelFollower[] {
+    return this.all('SELECT * FROM panel_followers WHERE panel_id = ? ORDER BY created_at, discord_id', panelId).map(toFollower);
+  }
+
+  countFollowers(panelId: number): number {
+    return n(this.get('SELECT COUNT(*) AS c FROM panel_followers WHERE panel_id = ?', panelId)?.c ?? 0);
+  }
+
+  /** Remember (or replace) where someone's list for a panel is. */
+  saveFollower(f: PanelFollower): void {
+    this.run(
+      `INSERT INTO panel_followers(panel_id, discord_id, channel_id, message_ids, created_at) VALUES (?,?,?,?,?)
+       ON CONFLICT(panel_id, discord_id) DO UPDATE SET channel_id = excluded.channel_id, message_ids = excluded.message_ids`,
+      f.panelId,
+      f.discordId,
+      f.channelId,
+      JSON.stringify(f.messageIds),
+      f.createdAt,
+    );
+  }
+
+  deleteFollower(panelId: number, discordId: string): void {
+    this.run('DELETE FROM panel_followers WHERE panel_id = ? AND discord_id = ?', panelId, discordId);
   }
 
   /* ------------------------------------------------------------------ the AeroDAQ market board */

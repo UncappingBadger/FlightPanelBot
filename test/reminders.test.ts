@@ -274,7 +274,7 @@ describe('the channel announcement', () => {
       assert.match(msg.content, /^@here ✈️ 1 flight has no pilot yet and starts within 24 hours\./);
       const text = msg.embeds[0]!.toJSON().description!;
       assert.match(text, /\*\*TST-001\*\* · EGLL → EGKK · ✈ A320/);
-      assert.match(text, /🕐 starts <t:\d+:f> \(<t:\d+:R>\)/, 'a timestamp, which shows in each reader\'s own timezone');
+      assert.match(text, /🕐 starts <t:\d+:F> \(<t:\d+:R>\)/, 'a timestamp, which shows in each reader\'s own timezone');
       assert.match(text, /Can you take it\? Press \*\*Reserve\*\* below/);
       assert.match(msg.embeds[0]!.toJSON().title!, /Pilots needed · Test Air \(TST\)/);
     });
@@ -289,7 +289,7 @@ describe('the channel announcement', () => {
       h.jobs.sync(pid(), [starting('now', -3)]);
       const view = h.jobs.open(pid())[0]!;
       const msg = renderReminder(panel(), [{ view, openLegs: [1], startsAt: view.job.availableFrom! }], T0)!;
-      assert.match(msg.embeds[0]!.toJSON().description!, /⏰ complete by <t:\d+:f>/);
+      assert.match(msg.embeds[0]!.toJSON().description!, /⏰ complete by <t:\d+:F>/);
       assert.doesNotMatch(msg.embeds[0]!.toJSON().description!, /starts/);
     });
 

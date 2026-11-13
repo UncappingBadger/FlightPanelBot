@@ -70,13 +70,13 @@ export function renderPage(version: string): string {
     <h2>2. Add the bot to your Discord server</h2>
     <p id="invite-text" class="muted">Save your Discord token above and the link appears here.</p>
     <div class="row"><a class="btn hidden" id="invite" target="_blank" rel="noopener">Add the bot to a server</a><button class="secondary hidden" id="copy">Copy the link</button></div>
-    <p class="muted" style="margin-top:12px">You need the <b>Manage Server</b> permission on that server. Once it's added, type <code>/setup</code> in any channel to start. The setup manual walks through the rest.</p>
+    <p class="muted" style="margin-top:12px">You need the <b>Manage Server</b> permission on that server. Once it's added, type <code>/setup</code> in any channel to start. The user manual walks through the rest: right-click the tray icon and choose <b>User manual</b>.</p>
     <table id="servers" class="hidden"></table>
   </section>
 
   <section id="s-google">
     <h2>3. Optional: let the bot write to your Google Sheet</h2>
-    <p class="muted">Only needed if you want reservations and completions to appear in your sheet. Choose the JSON key file of your Google service account (see the manual for how to create one).</p>
+    <p class="muted">Only needed if you want reservations and completions to appear in your sheet. Choose the JSON key file of your Google service account (the user manual, from the tray icon's menu, shows how to create one).</p>
     <p id="google-state" class="muted"></p>
     <div class="row"><input type="file" id="google-file" accept=".json,application/json"><button class="secondary" id="google-remove">Remove key</button></div>
     <div class="msg hidden" id="google-msg"></div>

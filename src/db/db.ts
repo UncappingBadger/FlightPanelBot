@@ -406,6 +406,26 @@ export const MIGRATIONS: string[] = [
   `
   DROP TABLE IF EXISTS panel_contracts;
   `,
+
+  /* v21: two optional extras for a panel.
+     - 'completed_channel_id': an admin can have the completed flights shown in a channel of their own, so the flights that
+       can still be flown are not crowded by the ones already flown. Its messages are remembered like the panel's own.
+     - 'panel_followers': a pilot can ask for the panel as a plain list in their DMs. The bot keeps that list up to date
+       whenever the panel is redrawn, so it remembers the DM channel and the messages it posted there. */
+  `
+  ALTER TABLE panels ADD COLUMN completed_channel_id TEXT;
+  ALTER TABLE panels ADD COLUMN completed_message_ids TEXT NOT NULL DEFAULT '[]';
+
+  CREATE TABLE panel_followers (
+    panel_id    INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    discord_id  TEXT NOT NULL,
+    channel_id  TEXT NOT NULL,
+    message_ids TEXT NOT NULL DEFAULT '[]',
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, discord_id)
+  );
+  CREATE INDEX idx_panel_followers_user ON panel_followers(discord_id);
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

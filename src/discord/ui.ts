@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
@@ -12,6 +13,7 @@ import type { AutoCompleted } from '../services/autoComplete.js';
 import { sameAircraft, type Confirmations } from '../services/flightMatch.js';
 import { MAX_SEARCH_RESULTS, type SearchDay } from '../services/search.js';
 import type { Reminder } from '../services/reminders.js';
+import { OPEN_STAMP_PNG_BASE64 } from './openStampImage.js';
 import { airlineLabel, legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 
 export const COLORS = {
@@ -73,8 +75,8 @@ export function jobBlock(view: JobView, now: number): string {
   if (job.aircraft) head.push(`✈ ${job.aircraft}`);
 
   const meta: string[] = [];
-  if (job.availableFrom !== null && job.availableFrom > now) meta.push(`🕐 from ${ts(job.availableFrom, 'f')}`);
-  if (job.deadline !== null) meta.push(`⏰ complete by ${ts(job.deadline, 'f')} (${ts(job.deadline, 'R')})`);
+  if (job.availableFrom !== null && job.availableFrom > now) meta.push(`🕐 from ${ts(job.availableFrom, 'F')}`);
+  if (job.deadline !== null) meta.push(`⏰ complete by ${ts(job.deadline, 'F')} (${ts(job.deadline, 'R')})`);
   if (job.pay) meta.push(`💰 ${job.pay}`);
 
   const lines = [head.join(' · ')];
@@ -171,6 +173,60 @@ export function embedSize(e: EmbedBuilder): number {
   );
 }
 
+/**
+ * The green OPEN stamp shown on a flight that still needs a pilot, in the card's top right corner where a pilot's picture goes
+ * once it is taken. It is drawn by `scripts/make-stamp.mjs`, kept inside the bot, and attached to every message that has a card
+ * wearing it (a card names an attachment of its own message; there is nowhere else for it to live).
+ */
+const OPEN_STAMP_FILE = 'open-stamp.png';
+export const OPEN_STAMP_REF = `attachment://${OPEN_STAMP_FILE}`;
+const openStampBytes = Buffer.from(OPEN_STAMP_PNG_BASE64, 'base64');
+
+/** Whether any of these cards wears the stamp, so the message carrying them must have the picture attached. */
+export const usesStamp = (embeds: Array<{ toJSON(): { thumbnail?: { url?: string } } }>): boolean => embeds.some((e) => e.toJSON().thumbnail?.url === OPEN_STAMP_REF);
+
+/** The picture to attach to a message with these cards (nothing if none wears the stamp). */
+export const stampFiles = (embeds: Array<{ toJSON(): { thumbnail?: { url?: string } } }>): AttachmentBuilder[] =>
+  usesStamp(embeds) ? [new AttachmentBuilder(openStampBytes, { name: OPEN_STAMP_FILE })] : [];
+
+/** A person's picture in the two sizes cards use: the big one beside a flight's pilot, the small one on its backup's line. */
+export interface Avatar {
+  large: string;
+  small: string;
+}
+export type Avatars = ReadonlyMap<string, Avatar>;
+
+/** The picture Discord gives someone who has not chosen one (by account, as Discord picks it). */
+export function defaultAvatar(discordId: string): Avatar {
+  let n = 0;
+  try {
+    n = Number((BigInt(discordId) >> BigInt(22)) % BigInt(6));
+  } catch {
+    n = 0;
+  }
+  const url = `https://cdn.discordapp.com/embed/avatars/${n}.png`;
+  return { large: url, small: url };
+}
+
+/** A link that opens someone's Discord profile. */
+export const profileUrl = (discordId: string): string => `https://discord.com/users/${discordId}`;
+
+/** Whose pictures cards of these flights show: the pilot of each flight that is taken, and each backup. */
+export function avatarIdsOf(views: JobView[]): string[] {
+  const ids = new Set<string>();
+  for (const v of views) {
+    if (isTaken(v)) {
+      const pilot = v.legs.find((l) => l.holder)?.holder;
+      if (pilot) ids.add(pilot.discordId);
+    }
+    if (v.backup) ids.add(v.backup.discordId);
+  }
+  return [...ids];
+}
+
+/** Whether every leg of a flight has a pilot, in Discord or named in the airline's schedule. */
+const isTaken = (view: JobView): boolean => view.legs.length > 0 && view.legs.every((l) => l.holder !== null || l.sheetHolder !== null);
+
 /** The route in large type, with a plane between the airports. */
 const routeHeading = (legs: Array<{ dep: string; arr: string }>): string => `## ${routeText(legs).replace(/ → /g, ' ✈ ')}`;
 
@@ -180,9 +236,9 @@ const box = (name: string, value: string): APIEmbedField => ({ name, value: valu
 const SCHEDULE_WORD: Record<string, string> = { 'ON-TIME': 'on time', DELAYED: 'delayed', LATE: 'late' };
 
 /** A flight that can be reserved (or already has been), as a card. */
-export function openCard(view: JobView, now: number): EmbedBuilder {
+export function openCard(view: JobView, now: number, avatars?: Avatars): EmbedBuilder {
   const { job, legs } = view;
-  const taken = legs.length > 0 && legs.every((l) => l.holder !== null || l.sheetHolder !== null);
+  const taken = isTaken(view);
   const title = [job.code, legs.length > 1 ? `${legs.length} legs` : '', job.aircraft ? plainText(truncate(job.aircraft, 20)) : ''].filter(Boolean).join(' · ');
   const about = [job.title, job.notes].filter(Boolean).join(' - ');
   const e = new EmbedBuilder()
@@ -190,9 +246,22 @@ export function openCard(view: JobView, now: number): EmbedBuilder {
     .setTitle(title)
     .setDescription([routeHeading(legs), about ? `*${truncate(about, 160)}*` : ''].filter(Boolean).join('\n'));
 
+  // At a glance: a flight that still needs a pilot wears the green OPEN stamp; once it is taken, its pilot's picture is there instead.
+  if (!taken) {
+    e.setThumbnail(OPEN_STAMP_REF);
+  } else if (avatars) {
+    const pilot = legs.find((l) => l.holder)?.holder;
+    if (pilot) e.setThumbnail((avatars.get(pilot.discordId) ?? defaultAvatar(pilot.discordId)).large);
+  }
+  // The backup has the same, smaller: their picture on a line of its own above the card, linking to their profile.
+  if (view.backup && avatars) {
+    const backup = view.backup;
+    e.setAuthor({ name: truncate(`🛟 Backup · ${plainText(truncate(backup.username, 40))}`, 100), iconURL: (avatars.get(backup.discordId) ?? defaultAvatar(backup.discordId)).small, url: profileUrl(backup.discordId) });
+  }
+
   const fields: APIEmbedField[] = [];
-  if (job.availableFrom !== null && job.availableFrom > now) fields.push(box('OPENS', ts(job.availableFrom, 'f')));
-  if (job.deadline !== null) fields.push(box('COMPLETE BY', `${ts(job.deadline, 'f')}\n${ts(job.deadline, 'R')}`));
+  if (job.availableFrom !== null && job.availableFrom > now) fields.push(box('OPENS', ts(job.availableFrom, 'F')));
+  if (job.deadline !== null) fields.push(box('COMPLETE BY', `${ts(job.deadline, 'F')}\n${ts(job.deadline, 'R')}`));
   if (job.pay) fields.push(box('PAY', plainText(truncate(job.pay, 40))));
   const who = legs.length === 1 ? holderText(legs[0] as LegView) : legs.map((l) => `\`${l.legNo}\` ${legText(l)} — ${holderText(l)}`).join('\n');
   fields.push({ name: legs.length > 1 ? 'PILOTS' : 'PILOT', value: truncate(who, 1000) || '*open*', inline: false });
@@ -206,7 +275,7 @@ export function openCard(view: JobView, now: number): EmbedBuilder {
  * matched, then those flights as the same cards the panel uses (the first few; a long list asks to be narrowed). Only
  * flights the panel itself lists are ever passed in, so the days an admin chose limit the search too.
  */
-export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = []): EmbedBuilder[] {
+export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = [], avatars?: Avatars): EmbedBuilder[] {
   const route = [from.length > 0 ? `from ${from.join(' or ')}` : '', to.length > 0 ? `to ${to.join(' or ')}` : ''].filter(Boolean).join(' ');
   const kind = aircraft.length > 0 ? `in ${aircraft.join(' or ')}` : '';
   const what = [route, day ? `on ${day.label}` : '', kind].filter(Boolean).join(' ');
@@ -232,7 +301,7 @@ export function searchEmbeds(panel: Panel, from: string[], to: string[], matches
           .filter(Boolean)
           .join('\n');
   const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description);
-  return [head, ...shown.map((v) => openCard(v, now))];
+  return [head, ...shown.map((v) => openCard(v, now, avatars))];
 }
 
 /**
@@ -315,15 +384,10 @@ export interface PanelParts {
  * `later` is how many flights were left out because they start beyond the panel's period (`panel.showDays`); a note after the
  * open flights says so. The disclaimer is on the very last card.
  */
-export function renderPanelParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0): PanelParts {
-  // The example ID is a real one from the panel when there is one (it may be a flight number from the schedule).
-  const example = views[0]?.job.code ?? `${panel.prefix}-001`;
+export function renderPanelParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0, avatars?: Avatars): PanelParts {
   const intro = [
-    autoCompletes
-      ? `Press **Reserve**, then reply to my DM with a flight ID (like \`${example}\`). Flown it? I complete flights that FsHub shows you flew every hour; press **Complete** to do it now.`
-      : `Press **Reserve**, then reply to my DM with a flight ID (like \`${example}\`). Flown it? Press **Complete**.`,
-    `Updated ${ts(now, 'R')}.`,
-    ...(panel.requiredRoleId ? [`Reserving is open to members with <@&${panel.requiredRoleId}>.`] : []),
+    ...panelIntro(panel, views, now, autoCompletes),
+    ...(panel.completedChannelId ? [`Completed flights are in <#${panel.completedChannelId}>.`] : []),
   ].join('\n');
   const label = airlineLabel({ name: panel.airlineName, abbr: panel.airlineAbbr });
 
@@ -336,7 +400,7 @@ export function renderPanelParts(panel: Panel, views: JobView[], now: number, co
     .setDescription(views.length === 0 ? `${intro}\n\nNo flights are listed right now.` : intro);
   const open = layout(
     openHead,
-    views.map((v) => openCard(v, now)),
+    views.map((v) => openCard(v, now, avatars)),
     (notShown) => [...laterNote, ...(notShown > 0 ? [noteCard(`…and ${notShown} more flight${notShown === 1 ? '' : 's'} not shown.`)] : [])],
     MAX_OPEN_MESSAGES,
   );
@@ -351,7 +415,136 @@ export function renderPanelParts(panel: Panel, views: JobView[], now: number, co
     (notShown) => (notShown > 0 ? [noteCard(`…and ${notShown} more.`)] : []),
     MAX_COMPLETED_MESSAGES,
   );
-  (done[done.length - 1] as EmbedBuilder[])[(done[done.length - 1] as EmbedBuilder[]).length - 1]!.setFooter({ text: FOOTER });
+  lastCard(done).setFooter({ text: FOOTER });
+  // With the completed flights in a channel of their own, each board is read alone, so each ends with the disclaimer.
+  if (panel.completedChannelId) lastCard(open).setFooter({ text: FOOTER });
+  return { open, completed: done };
+}
+
+/** The last card of the last message. */
+const lastCard = (messages: EmbedBuilder[][]): EmbedBuilder => {
+  const last = messages[messages.length - 1] as EmbedBuilder[];
+  return last[last.length - 1] as EmbedBuilder;
+};
+
+/** How to use the panel, as the lines that open it (and a pilot's list of it). */
+function panelIntro(panel: Panel, views: JobView[], now: number, autoCompletes: boolean): string[] {
+  // The example ID is a real one from the panel when there is one (it may be a flight number from the schedule).
+  const example = views[0]?.job.code ?? `${panel.prefix}-001`;
+  return [
+    autoCompletes
+      ? `Press **Reserve**, then reply to my DM with a flight ID (like \`${example}\`). Flown it? I complete flights that FsHub shows you flew every hour; press **Complete** to do it now.`
+      : `Press **Reserve**, then reply to my DM with a flight ID (like \`${example}\`). Flown it? Press **Complete**.`,
+    `Updated ${ts(now, 'R')}.`,
+    ...(panel.requiredRoleId ? [`Reserving is open to members with <@&${panel.requiredRoleId}>.`] : []),
+  ];
+}
+
+/* ------------------------------------------------------------------ the panel as a plain list, in a pilot's DMs */
+
+/** The most characters of flights one card of the list holds (Discord allows 4096 in a card's text). */
+const LIST_CARD_CHARS = 3800;
+/** The most one flight (a long multi-leg one) may take up in the list. */
+const LIST_FLIGHT_CHARS = 1500;
+
+/** One flight as the list shows it: the same lines a flight has in a DM, and its backup pilot if it has one. */
+export function listBlock(view: JobView, now: number): string {
+  const block = jobBlock(view, now);
+  return truncate(view.backup ? `${block}\n🛟 backup: ${pilotText(view.backup)}` : block, LIST_FLIGHT_CHARS);
+}
+
+/** A flight that has been completed, as one line of the list. */
+export function completedLine(view: JobView, confirmed?: Map<number, FlownFlight>): string {
+  const { job, legs } = view;
+  const flights = confirmed ? [...confirmed.entries()].sort((a, b) => a[0] - b[0]).map(([, f]) => f) : [];
+  const single = legs.length === 1 ? flights[0] : undefined;
+  const who = flownBy(view);
+  const links = flights.map((f) => fshubFlightLink(f.flightId)).filter(Boolean);
+  return truncate(
+    [
+      `✅ **${job.code}** · ${routeText(legs)}${legs.length > 1 ? ` (${legs.length} legs)` : ''}`,
+      who ? `flown by ${who}` : '',
+      single ? flightFacts(single, job.aircraft) : '',
+      links.length > 0 ? `FsHub ${links.join(', ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    LIST_FLIGHT_CHARS,
+  );
+}
+
+/** Pieces of text packed into cards that each stay inside what a card may say, counting how many pieces each holds. */
+function listCards(pieces: string[], joiner: string, color: number): Array<{ card: EmbedBuilder; count: number }> {
+  const out: Array<{ card: EmbedBuilder; count: number }> = [];
+  let current: string[] = [];
+  let size = 0;
+  const close = () => {
+    if (current.length > 0) out.push({ card: new EmbedBuilder().setColor(color).setDescription(current.join(joiner)), count: current.length });
+    current = [];
+    size = 0;
+  };
+  for (const piece of pieces) {
+    if (current.length > 0 && size + joiner.length + piece.length > LIST_CARD_CHARS) close();
+    size += (current.length > 0 ? joiner.length : 0) + piece.length;
+    current.push(piece);
+  }
+  close();
+  return out;
+}
+
+/**
+ * The panel as a plain list instead of cards, for a pilot's own copy in their DMs: the same flights, in the text form a flight
+ * has in a DM, one after another. It is laid out like the panel (the flights that can be flown, then the ones completed in the
+ * last day) and has the panel's limits. When the completed flights are in a channel of their own, the list leaves them out.
+ */
+export function renderListParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0): PanelParts {
+  const label = airlineLabel({ name: panel.airlineName, abbr: panel.airlineAbbr });
+  const days = `${panel.showDays} day${panel.showDays === 1 ? '' : 's'}`;
+  const intro = [
+    '📃 This is your own copy of the panel, as a list. I keep it up to date here until you press **Stop updates**.',
+    `To reserve a flight, search, stand by, see your flights or complete one, use the buttons under the panel in <#${panel.channelId}>.`,
+    `Updated ${ts(now, 'R')}.`,
+    ...(panel.requiredRoleId ? [`Reserving is open to members with <@&${panel.requiredRoleId}>.`] : []),
+    ...(panel.completedChannelId ? [`Completed flights are in <#${panel.completedChannelId}>.`] : []),
+  ].join('\n');
+
+  const cards = listCards(views.map((v) => listBlock(v, now)), '\n\n', COLORS.panel);
+  const openHead = new EmbedBuilder()
+    .setColor(COLORS.panel)
+    .setTitle(`📃 ${label} · open flights`)
+    .setDescription(views.length === 0 ? `${intro}\n\nNo flights are listed right now.` : intro);
+  const open = layout(
+    openHead,
+    cards.map((c) => c.card),
+    (cardsNotShown) => {
+      const notShown = cards.slice(cards.length - cardsNotShown).reduce((n, c) => n + c.count, 0);
+      return [
+        ...(later > 0 ? [noteCard(`🗓️ ${later} more flight${later === 1 ? ' starts' : 's start'} more than ${days} from now, and will be listed here once ${later === 1 ? 'it is' : 'they are'} within ${days}.`)] : []),
+        ...(notShown > 0 ? [noteCard(`…and ${notShown} more flight${notShown === 1 ? '' : 's'} not shown. Press **Search** to find a particular one.`)] : []),
+      ];
+    },
+    MAX_OPEN_MESSAGES,
+  );
+  if (panel.completedChannelId) {
+    lastCard(open).setFooter({ text: FOOTER });
+    return { open, completed: [] };
+  }
+
+  const doneHead = new EmbedBuilder()
+    .setColor(COLORS.success)
+    .setTitle(`✅ ${label} · completed flights`)
+    .setDescription(completed.length === 0 ? 'Nothing has been completed in the last 24 hours.' : 'Completed in the last 24 hours.');
+  const doneCards = listCards(completed.map((v) => completedLine(v, confirmations?.get(v.job.id))), '\n', COLORS.success);
+  const done = layout(
+    doneHead,
+    doneCards.map((c) => c.card),
+    (cardsNotShown) => {
+      const notShown = doneCards.slice(doneCards.length - cardsNotShown).reduce((n, c) => n + c.count, 0);
+      return notShown > 0 ? [noteCard(`…and ${notShown} more.`)] : [];
+    },
+    MAX_COMPLETED_MESSAGES,
+  );
+  lastCard(done).setFooter({ text: FOOTER });
   return { open, completed: done };
 }
 
@@ -387,9 +580,9 @@ function reminderLine(r: Reminder, now: number): string {
   if (job.aircraft) head.push(`✈ ${job.aircraft}`);
   const when =
     startsAt > now
-      ? `🕐 starts ${ts(startsAt, 'f')} (${ts(startsAt, 'R')})`
+      ? `🕐 starts ${ts(startsAt, 'F')} (${ts(startsAt, 'R')})`
       : job.deadline !== null
-        ? `⏰ complete by ${ts(job.deadline, 'f')} (${ts(job.deadline, 'R')})`
+        ? `⏰ complete by ${ts(job.deadline, 'F')} (${ts(job.deadline, 'R')})`
         : '';
   const partial = legs.length > 1 && openLegs.length < legs.length ? `${openLegs.length === 1 ? 'leg' : 'legs'} ${legList(openLegs)} still open` : '';
   return [head.join(' · '), [when, partial].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
@@ -430,4 +623,23 @@ export function panelButtons(panelId: number): ActionRowBuilder<MessageActionRow
     new ButtonBuilder().setCustomId(`panel:mine:${panelId}`).setLabel('My flights').setEmoji('📋').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`panel:complete:${panelId}`).setLabel('Complete').setEmoji('✅').setStyle(ButtonStyle.Success),
   );
+}
+
+/** Everything under a message of the panel: those buttons, and a second row with the one that sends a pilot their own list. */
+export function panelRows(panelId: number): Array<ActionRowBuilder<MessageActionRowComponentBuilder>> {
+  return [
+    panelButtons(panelId),
+    new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`panel:list:${panelId}`).setLabel('List view').setEmoji('📃').setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+/** Everything under a message of a pilot's own list: just the button that stops it being kept up to date. */
+export function listRows(panelId: number): Array<ActionRowBuilder<MessageActionRowComponentBuilder>> {
+  return [
+    new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`panel:unlist:${panelId}`).setLabel('Stop updates').setEmoji('🔕').setStyle(ButtonStyle.Secondary),
+    ),
+  ];
 }

@@ -35,7 +35,7 @@ describe('panel rendering', () => {
     h.jobs.sync(h.panel.id, [sj('a', 'EGLL-EGKK', { aircraft: 'A20N', deadline: T0 + 5 * HOUR, pay: '12,500', title: 'Gatwick hop', notes: 'quick' })]);
     const text = jobBlock(view(), T0);
     assert.match(text, /\*\*TST-001\*\* · EGLL → EGKK · ✈ A20N/);
-    assert.match(text, /⏰ complete by <t:\d+:f> \(<t:\d+:R>\)/);
+    assert.match(text, /⏰ complete by <t:\d+:F> \(<t:\d+:R>\)/);
     assert.match(text, /💰 12,500/);
     assert.match(text, /\*Gatwick hop - quick\*/);
     assert.match(text, /↳ \*open\*$/);
@@ -83,8 +83,8 @@ describe('panel rendering', () => {
       assert.equal(card.title, 'TST-001 · A20N');
       assert.equal(card.description, '## EGLL ✈ EGKK\n*Gatwick hop - quick*');
       assert.deepEqual(card.fields!.map((f) => [f.name, f.inline]), [['OPENS', true], ['COMPLETE BY', true], ['PAY', true], ['PILOT', false]]);
-      assert.match(card.fields![0]!.value, /^<t:\d+:f>$/);
-      assert.match(card.fields![1]!.value, /^<t:\d+:f>\n<t:\d+:R>$/);
+      assert.match(card.fields![0]!.value, /^<t:\d+:F>$/);
+      assert.match(card.fields![1]!.value, /^<t:\d+:F>\n<t:\d+:R>$/);
       assert.equal(card.fields![2]!.value, '12,500');
       assert.equal(card.fields![3]!.value, '*open*');
     });
@@ -222,7 +222,7 @@ describe('PanelService', () => {
       h.jobs.sync(pid(), longList());
       await d.panels.refresh(pid());
       assert.ok(openMessages().length > 1, 'the list really is split over several messages');
-      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`, `panel:list:${pid()}`]);
       assert.deepEqual(buttonIds(channel().live.at(-1)!), []);
     });
 
@@ -233,7 +233,7 @@ describe('PanelService', () => {
       h.jobs.reserve(h.jobs.open(pid())[0]!.job.id, [1], USER_A);
       await settle();
       assert.deepEqual(channel().live.map((m) => m.id), first, 'edited, not reposted');
-      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`]);
+      for (const m of openMessages()) assert.deepEqual(buttonIds(m), [`panel:reserve:${pid()}`, `panel:search:${pid()}`, `panel:backup:${pid()}`, `panel:mine:${pid()}`, `panel:complete:${pid()}`, `panel:list:${pid()}`]);
       assert.deepEqual(buttonIds(channel().live.at(-1)!), []);
     });
 
@@ -243,7 +243,7 @@ describe('PanelService', () => {
       h.jobs.sync(pid(), longList());
       await settle();
       assert.ok(openMessages().length > 1);
-      for (const m of openMessages()) assert.equal(buttonIds(m).length, 5);
+      for (const m of openMessages()) assert.equal(buttonIds(m).length, 6);
       assert.equal(buttonIds(channel().live.at(-1)!).length, 0);
     });
   });

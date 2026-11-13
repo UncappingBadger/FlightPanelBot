@@ -167,6 +167,18 @@ const nodeVersion = spawnSync(nodeExe, ['--version'], { encoding: 'utf8' }).stdo
 const buildId = createHash('sha1').update(botMjs).update(nodeVersion).update(String(nodeBytes.length)).digest('hex').slice(0, 12);
 const version = pkg.version;
 
+// The user manual (a PDF) is carried inside the exe and opened from the tray menu. It is written outside this repository
+// (from the online manual), so it is looked for: --manual <file>, else next to the new exe, else in release/. With none
+// found the exe is built without it and its menu has no manual entry.
+const MANUAL_NAME = 'FlightPanelBot-Server-Owner-Manual.pdf';
+const manualPdf = [argValue('--manual'), join(outDir, MANUAL_NAME), join(root, 'release', MANUAL_NAME)].filter(Boolean).map((p) => resolve(p)).find(existsSync);
+if (manualPdf) {
+  if (readFileSync(manualPdf).subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error(`${manualPdf} is not a PDF.`);
+  console.log(`  manual ${mb(statSync(manualPdf).size)} (${manualPdf})`);
+} else {
+  console.log(`  no ${MANUAL_NAME} found (pass --manual <file>): building without the in-app manual`);
+}
+
 writeFileSync(
   join(work, 'BuildInfo.cs'),
   `namespace FlightPanelBot { internal static class BuildInfo { public const string Version = "${version}"; public const string BuildId = "${buildId}"; } }\n`,
@@ -207,6 +219,7 @@ const compile = spawnSync(
     `/resource:${join(work, 'node.exe.gz')},node.exe.gz`,
     `/resource:${join(work, 'bot.mjs.gz')},bot.mjs.gz`,
     `/resource:${join(work, 'tray.png')},tray.png`,
+    ...(manualPdf ? [`/resource:${manualPdf},manual.pdf`] : []),
     join(root, 'host', 'launcher', 'Launcher.cs'),
     join(work, 'BuildInfo.cs'),
     join(work, 'AssemblyInfo.cs'),
@@ -242,6 +255,8 @@ writeFileSync(
   ].join('\n'),
 );
 copyFileSync(join(root, 'LICENSE'), join(outDir, 'LICENSE.txt'));
+// The same manual, as a file beside the exe (for the GitHub Release page), whichever folder it was found in.
+if (manualPdf && resolve(manualPdf) !== resolve(join(outDir, MANUAL_NAME))) copyFileSync(manualPdf, join(outDir, MANUAL_NAME));
 writeFileSync(
   join(outDir, 'README.txt'),
   `Flight Panel Bot ${version}
@@ -258,7 +273,7 @@ Runs your virtual airline's flight panel in your own Discord server, from your o
    (If you want, the setup page also takes a FsHub token, so the bot can check the pilot IDs people type and
    match pilots to your airline's FsHub roster. Without one the bot never contacts FsHub.)
 
-Right-click the icon for settings, the log, restarting the bot, "Start with Windows", and Quit.
+Right-click the icon for settings, the user manual, the log, restarting the bot, "Start with Windows", and Quit.
 The bot only works while this program is running, so keep it on a computer that stays on.
 
 Your settings, data and logs are in %APPDATA%\\FlightPanelBot. Deleting that folder resets everything.
@@ -273,7 +288,8 @@ The bot also uses AeroDAQ (aerodaq.com, an in-game market, not real money) for /
 board, but only when someone uses them. If you save a FsHub token, it also asks fshub.io (read-only) about the
 pilot IDs people type and about the roster and recent flights of an airline you link with /setup fshub.
 
-The server owner's manual is in FlightPanelBot-Server-Owner-Manual.pdf (when it is in this folder).
+The server owner's manual is inside the program: right-click the icon and choose User manual. The same PDF is
+FlightPanelBot-Server-Owner-Manual.pdf (when it is in this folder).
 
 Licences: see LICENSE.txt and THIRD_PARTY_NOTICES.txt.
 Checksum: compare FlightPanelBot.exe.sha256 with the file's SHA-256 if you want to be sure it is unaltered.

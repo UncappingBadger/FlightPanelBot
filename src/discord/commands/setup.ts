@@ -384,6 +384,18 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('completed')
+        .setDescription('Show completed flights in a channel of their own (leave empty to check)')
+        .addChannelOption((o) =>
+          o.setName('channel').setDescription('Channel for the completed flights').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        )
+        .addStringOption((o) =>
+          o.setName('mode').setDescription('Put them back on the panel itself').addChoices({ name: 'Panel: show them on the panel, below the open flights (the default)', value: 'panel' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('market')
         .setDescription('Show the AeroDAQ in-game market in a channel, kept up to date (leave empty to check)')
         .addStringOption((o) =>
@@ -452,7 +464,7 @@ export const setupCommand: Command = {
           if (existing.channelId !== channel.id) await ctx.panels.deleteMessages(existing);
           ctx.store.updatePanel(existing.id, {
             channelId: channel.id,
-            ...(existing.channelId !== channel.id ? { messageIds: [] } : {}),
+            ...(existing.channelId !== channel.id ? { messageIds: [], completedMessageIds: [] } : {}),
             ...(roleChange !== undefined ? { requiredRoleId: roleChange } : {}),
           });
           panel = ctx.store.getPanel(existing.id) as Panel;
@@ -506,6 +518,7 @@ export const setupCommand: Command = {
         const panel = pickPanel(ctx, guildId, airlineOpt());
         await ctx.panels.deleteMessages(panel);
         await ctx.panels.deleteReminderMessages(panel);
+        await ctx.panels.deleteListMessages(panel);
         ctx.store.deletePanel(panel.id);
         await interaction.editReply({ content: `Removed the **${panel.airlineName}** panel, with its flights and reservations.` });
         return;
@@ -529,7 +542,7 @@ export const setupCommand: Command = {
           const from = p.sheetId ? 'Google Sheet' : ctx.refresher.hasSource(p) ? 'automatic' : 'file import';
           const ping = reminderTarget(p)?.text ?? 'off';
           const writes = !p.sheetId ? '' : !ctx.writeback ? ' · sheet write-back: unavailable' : ` · sheet write-back: ${p.writeback ? 'on' : 'off'}`;
-          return `• **${airlineLabel({ name: p.airlineName, abbr: p.airlineAbbr })}** in <#${p.channelId}> · \`${p.prefix}-…\` · flights from: ${from} · reserving: ${who} · ${open.length} open flights, ${taken}/${legs} legs reserved${named > 0 ? `, ${named} named in the sheet` : ''} · panel shows the next ${p.showDays} day${p.showDays === 1 ? '' : 's'} · pilot reminders: ${ping}${writes}${fshubStatus(ctx, p)} · ${updated}${err}${note}`;
+          return `• **${airlineLabel({ name: p.airlineName, abbr: p.airlineAbbr })}** in <#${p.channelId}> · \`${p.prefix}-…\` · flights from: ${from} · reserving: ${who} · ${open.length} open flights, ${taken}/${legs} legs reserved${named > 0 ? `, ${named} named in the sheet` : ''} · panel shows the next ${p.showDays} day${p.showDays === 1 ? '' : 's'} · completed flights: ${p.completedChannelId ? `in <#${p.completedChannelId}>` : 'on the panel'} · pilot reminders: ${ping}${writes}${fshubStatus(ctx, p)} · ${updated}${err}${note}`;
         });
         await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
         return;
@@ -709,6 +722,70 @@ export const setupCommand: Command = {
               : 'Every open flight is listed.',
             `Change it with \`/setup window days:\` (${PANEL_DAYS_MIN} to ${PANEL_DAYS_MAX}).`,
           ].join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'completed': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const mode = interaction.options.getString('mode');
+        const picked = interaction.options.getChannel('channel');
+        const name = `**${panel.airlineName}**`;
+        if (mode === 'panel' && picked) throw new UserError('Choose a channel, or `panel` to show completed flights on the panel itself, but not both.');
+
+        if (mode === 'panel') {
+          if (panel.completedChannelId === null) {
+            await interaction.editReply({ content: `The completed flights of ${name} are already shown on the panel itself, below the open flights.` });
+            return;
+          }
+          const was = panel.completedChannelId;
+          await ctx.panels.deleteCompletedMessages(panel);
+          ctx.store.updatePanel(panel.id, { completedChannelId: null });
+          const result = await ctx.panels.refresh(panel.id);
+          await interaction.editReply({
+            content: [`✅ The completed flights of ${name} are back on the panel, below the open flights, and the ones in <#${was}> are gone.`, panelProblem(result)].filter(Boolean).join('\n'),
+            allowedMentions: noPings,
+          });
+          return;
+        }
+
+        if (picked) {
+          const guild = interaction.guild;
+          if (!guild) throw new UserError('This only works inside a server.');
+          if (picked.id === panel.channelId) {
+            throw new UserError(`<#${picked.id}> is where the ${name} panel is. To keep completed flights on the panel, use \`/setup completed mode:panel\`; for a channel of their own, choose a different one.`);
+          }
+          const channel = await guild.channels.fetch(picked.id);
+          if (!channel) throw new UserError("I can't see that channel.");
+          const me = guild.members.me ?? (await guild.members.fetchMe());
+          const perms = channel.permissionsFor(me);
+          const missing = REQUIRED_CHANNEL_PERMS.filter((p) => !perms?.has(p));
+          if (missing.length > 0) {
+            throw new UserError(`I'm missing permissions in <#${channel.id}>: ${new PermissionsBitField(missing).toArray().join(', ')}. Grant those and run this again.`);
+          }
+          // Moving them from one channel to another: the old messages go, and the new channel gets the whole board.
+          if (panel.completedChannelId !== null && panel.completedChannelId !== channel.id) await ctx.panels.deleteCompletedMessages(panel);
+          ctx.store.updatePanel(panel.id, { completedChannelId: channel.id });
+          const result = await ctx.panels.refresh(panel.id);
+          await interaction.editReply({
+            content: [
+              `✅ The completed flights of ${name} are now posted in <#${channel.id}>, and the panel in <#${panel.channelId}> lists only the flights that can still be flown. They stay up for 24 hours after they are completed, as before.`,
+              "A pilot's own list (the **List view** button) leaves them out too. Put them back on the panel with `/setup completed mode:panel`.",
+              panelProblem(result),
+            ]
+              .filter(Boolean)
+              .join('\n'),
+            allowedMentions: noPings,
+          });
+          return;
+        }
+
+        await interaction.editReply({
+          content:
+            panel.completedChannelId !== null
+              ? `The completed flights of ${name} are posted in <#${panel.completedChannelId}>. Change the channel with \`/setup completed channel:\`, or put them back on the panel with \`/setup completed mode:panel\`.`
+              : `The completed flights of ${name} are shown on the panel itself, below the open flights. To give them a channel of their own and keep the panel shorter, use \`/setup completed channel:\`.`,
           allowedMentions: noPings,
         });
         return;

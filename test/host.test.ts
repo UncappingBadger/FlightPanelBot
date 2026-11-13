@@ -184,14 +184,14 @@ describe('the Google key', () => {
 });
 
 describe('the invite link', () => {
-  it('adds the host\'s own bot, with command access and the five permissions it needs', () => {
+  it('adds the host\'s own bot, with command access and the six permissions it needs', () => {
     const url = new URL(inviteUrl(BOT_ID));
     assert.equal(url.origin + url.pathname, 'https://discord.com/oauth2/authorize');
     assert.equal(url.searchParams.get('client_id'), BOT_ID);
     assert.equal(url.searchParams.get('scope'), 'bot applications.commands');
     assert.equal(url.searchParams.get('permissions'), String(INVITE_PERMISSIONS));
-    // View Channel + Send Messages + Embed Links + Read Message History + Mention Everyone
-    assert.equal(INVITE_PERMISSIONS, 1024 + 2048 + 16384 + 65536 + 131072);
+    // View Channel + Send Messages + Embed Links + Attach Files + Read Message History + Mention Everyone
+    assert.equal(INVITE_PERMISSIONS, 1024 + 2048 + 16384 + 32768 + 65536 + 131072);
   });
 });
 

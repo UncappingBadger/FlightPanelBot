@@ -206,6 +206,77 @@ namespace FlightPanelBot
         }
     }
 
+    /// <summary>The user manual (a PDF) carried inside this program, opened from the tray menu.</summary>
+    internal static class Manual
+    {
+        private const string Resource = "manual.pdf";
+        private const string FileName = "Flight Panel Bot - User Manual.pdf";
+
+        /// <summary>False for a build made without a manual next to it; the menu then has no manual entry.</summary>
+        public static bool Available
+        {
+            get { return Assembly.GetExecutingAssembly().GetManifestResourceInfo(Resource) != null; }
+        }
+
+        /// <summary>Where the PDF is unpacked to: a cache beside the runtime, safe to delete.</summary>
+        public static string Folder
+        {
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FlightPanelBot", "manual"); }
+        }
+
+        /// <summary>Writes the manual into the folder (unless that exact file is already there) and returns its path, or null if this build has none.</summary>
+        public static string Prepare(string folder)
+        {
+            byte[] bytes;
+            using (Stream raw = Assembly.GetExecutingAssembly().GetManifestResourceStream(Resource))
+            {
+                if (raw == null) return null;
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    raw.CopyTo(ms);
+                    bytes = ms.ToArray();
+                }
+            }
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, FileName);
+            try
+            {
+                if (File.Exists(path) && SameBytes(File.ReadAllBytes(path), bytes)) return path;
+                File.WriteAllBytes(path, bytes);
+            }
+            catch (IOException)
+            {
+                // The viewer still has an older copy open and locked: open that one rather than nothing.
+                if (!File.Exists(path)) throw;
+            }
+            return path;
+        }
+
+        /// <summary>Unpack the manual and open it in the PC's PDF viewer. False if it could not be shown.</summary>
+        public static bool Open()
+        {
+            try
+            {
+                string path = Prepare(Folder);
+                if (path == null) return false;
+                Shell.Open(path);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Write("Could not open the manual: " + e.Message);
+                return false;
+            }
+        }
+
+        private static bool SameBytes(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+    }
+
     /// <summary>Runs the bot as a hidden child process, and restarts it if it dies.</summary>
     internal class BotProcess
     {
@@ -360,6 +431,12 @@ namespace FlightPanelBot
             ToolStripMenuItem restart = new ToolStripMenuItem("Restart the bot");
             restart.Click += delegate { RestartBot(); };
             startupItem.Click += delegate { ToggleStartup(); };
+            ToolStripMenuItem manual = new ToolStripMenuItem("User manual");
+            manual.Visible = Manual.Available;
+            manual.Click += delegate
+            {
+                if (!Manual.Open()) tray.ShowBalloonTip(4000, "Flight Panel Bot", "The manual could not be opened. The log has the reason.", ToolTipIcon.Warning);
+            };
             ToolStripMenuItem about = new ToolStripMenuItem("About");
             about.Click += delegate { About(); };
             ToolStripMenuItem quit = new ToolStripMenuItem("Quit");
@@ -381,6 +458,7 @@ namespace FlightPanelBot
             menu.Items.Add(restart);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(manual);
             menu.Items.Add(about);
             menu.Items.Add(quit);
             menu.Opening += delegate { RefreshMenu(); };
