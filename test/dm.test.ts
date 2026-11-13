@@ -420,7 +420,7 @@ describe('the Reserve conversation', () => {
       const text = calls.edits[0].content as string;
       const deadline = h.jobs.view(single)!.job.deadline!;
       const unix = Math.floor(deadline / 1000);
-      assert.match(text, new RegExp(`⏰ complete by <t:${unix}:f> \\(<t:${unix}:R>\\)`));
+      assert.match(text, new RegExp(`⏰ complete by <t:${unix}:F> \\(<t:${unix}:R>\\)`));
       assert.doesNotMatch(text, /UTC/);
       for (const option of menuOf(calls.edits[0])[0].options) {
         assert.equal(option.description, undefined, 'dropdown captions cannot be localised, so they carry no time');

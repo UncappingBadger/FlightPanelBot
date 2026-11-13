@@ -36,7 +36,7 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    tells you who and offers the legs that are free.
 5. **My flights** (under the panel) shows what you hold and lets you give flights back. You can also **DM the
    bot `flights`** (or `my flights`, `list`) at any time to get the same list, for every panel you have flights on,
-   with the same menu to give flights back. Each flight shows when it opens and when it must be completed by (in your own timezone), as on the panel. Say `cancel` in the DM at any point to stop. A conversation closes after
+   with the same menu to give flights back. Each flight shows when it opens and when it must be completed by (with the day of the week, in your own timezone). Say `cancel` in the DM at any point to stop. A conversation closes after
    10 minutes.
 6. **Complete** (under the panel) is for when you've flown it. On a panel linked to the airline's FsHub (see
    [Completing from FsHub](#completing-from-fshub)) the bot checks FsHub for your landing and completes the

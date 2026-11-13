@@ -42,7 +42,7 @@ describe('asking the bot for your flights in a DM', () => {
     await say(bob, 'flights');
     assert.equal(bob.dms.length, 1);
     const dm = bob.dms[0];
-    assert.match(dm.content, /^\*\*Test Air\*\*\n\*\*Your flights\*\*\n\*\*TST-001\*\* · EGLL → EGKK · ⏰ complete by <t:\d+:f> \(<t:\d+:R>\)\n\*\*TST-002\*\* · leg 1: EGKK → EGCC, leg 2: EGCC → EGPH · ⏰/);
+    assert.match(dm.content, /^\*\*Test Air\*\*\n\*\*Your flights\*\*\n\*\*TST-001\*\* · EGLL → EGKK · ⏰ complete by <t:\d+:F> \(<t:\d+:R>\)\n\*\*TST-002\*\* · leg 1: EGKK → EGCC, leg 2: EGCC → EGPH · ⏰/);
     assert.doesNotMatch(dm.content, /TST-003/, 'a flight you do not hold is not listed');
     assert.match(dm.content, /Pick any you can no longer fly to give them back\./);
     assert.match(dm.content, /Your FsHub pilot ID is shown as .*1002.*\./);
@@ -153,15 +153,15 @@ describe('asking the bot for your flights in a DM', () => {
       await say(bob, 'flights');
       assert.equal(
         line('TST-001', bob.lastText),
-        `**TST-001** · EGLL → EGKK · 🕐 opens <t:${stamp(T0 + 3 * HOUR)}:f> (<t:${stamp(T0 + 3 * HOUR)}:R>) · ⏰ complete by <t:${stamp(T0 + 20 * HOUR)}:f> (<t:${stamp(T0 + 20 * HOUR)}:R>)`,
+        `**TST-001** · EGLL → EGKK · 🕐 opens <t:${stamp(T0 + 3 * HOUR)}:F> (<t:${stamp(T0 + 3 * HOUR)}:R>) · ⏰ complete by <t:${stamp(T0 + 20 * HOUR)}:F> (<t:${stamp(T0 + 20 * HOUR)}:R>)`,
       );
-      assert.match(line('TST-002', bob.lastText), /^\*\*TST-002\*\* · leg 1: EGKK → EGCC, leg 2: EGCC → EGPH · 🕐 opens <t:\d+:f> \(<t:\d+:R>\) · ⏰ complete by /);
+      assert.match(line('TST-002', bob.lastText), /^\*\*TST-002\*\* · leg 1: EGKK → EGCC, leg 2: EGCC → EGPH · 🕐 opens <t:\d+:F> \(<t:\d+:R>\) · ⏰ complete by /);
     });
 
     it('says "opened" once the window is open, and still gives the closing time', async () => {
       times(T0 - 5 * HOUR, T0 + 20 * HOUR);
       await say(bob, 'flights');
-      assert.match(line('TST-001', bob.lastText), /· 🕐 opened <t:\d+:f> \(<t:\d+:R>\) · ⏰ complete by <t:\d+:f> \(<t:\d+:R>\)$/);
+      assert.match(line('TST-001', bob.lastText), /· 🕐 opened <t:\d+:F> \(<t:\d+:R>\) · ⏰ complete by <t:\d+:F> \(<t:\d+:R>\)$/);
     });
 
     it('gives only what a flight has: a closing time alone, an opening time alone, or neither', async () => {
@@ -171,7 +171,7 @@ describe('asking the bot for your flights in a DM', () => {
       assert.doesNotMatch(line('TST-001', bob.lastText), /🕐/);
       times(T0 + HOUR, null);
       await say(bob, 'flights');
-      assert.match(line('TST-001', bob.lastText), /^\*\*TST-001\*\* · EGLL → EGKK · 🕐 opens <t:\d+:f> \(<t:\d+:R>\)$/);
+      assert.match(line('TST-001', bob.lastText), /^\*\*TST-001\*\* · EGLL → EGKK · 🕐 opens <t:\d+:F> \(<t:\d+:R>\)$/);
       times(null, null);
       await say(bob, 'flights');
       assert.equal(line('TST-001', bob.lastText), '**TST-001** · EGLL → EGKK');
@@ -188,7 +188,7 @@ describe('asking the bot for your flights in a DM', () => {
       times(T0 + 3 * HOUR, T0 + 20 * HOUR);
       h.jobs.addBackup(jobId(pid(), 'a'), USER_A);
       await say(alice, 'flights');
-      assert.match(alice.lastText, /\*\*TST-001\*\* · EGLL → EGKK · 🕐 opens <t:\d+:f> \(<t:\d+:R>\) · ⏰ complete by <t:\d+:f> \(<t:\d+:R>\)\n↳ 🛟/);
+      assert.match(alice.lastText, /\*\*TST-001\*\* · EGLL → EGKK · 🕐 opens <t:\d+:F> \(<t:\d+:R>\) · ⏰ complete by <t:\d+:F> \(<t:\d+:R>\)\n↳ 🛟/);
     });
   });
 

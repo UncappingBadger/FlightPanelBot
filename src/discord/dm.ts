@@ -293,13 +293,14 @@ async function startReservation(ctx: BotContext, interaction: ButtonInteraction,
 }
 
 /**
- * When a flight opens and when it must be completed by, as the panel shows them, each in the reader's own timezone (Discord
- * does that for these timestamps). The opening time reads "opens" while it is still ahead and "opened" once it has passed.
+ * When a flight opens and when it must be completed by, each with the day of the week and in the reader's own timezone
+ * (Discord does that for these timestamps: the `F` style reads "Friday, 13 November 2026 12:00"). The opening time reads
+ * "opens" while it is still ahead and "opened" once it has passed.
  */
 function whenText(job: { availableFrom: number | null; deadline: number | null }, now: number): string {
   const parts: string[] = [];
-  if (job.availableFrom !== null) parts.push(`🕐 ${job.availableFrom > now ? 'opens' : 'opened'} ${ts(job.availableFrom, 'f')} (${ts(job.availableFrom, 'R')})`);
-  if (job.deadline !== null) parts.push(`⏰ complete by ${ts(job.deadline, 'f')} (${ts(job.deadline, 'R')})`);
+  if (job.availableFrom !== null) parts.push(`🕐 ${job.availableFrom > now ? 'opens' : 'opened'} ${ts(job.availableFrom, 'F')} (${ts(job.availableFrom, 'R')})`);
+  if (job.deadline !== null) parts.push(`⏰ complete by ${ts(job.deadline, 'F')} (${ts(job.deadline, 'R')})`);
   return parts.join(' · ');
 }
 
