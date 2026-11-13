@@ -40,7 +40,20 @@ export type Confirmations = Map<number, Map<number, FlownFlight>>;
  * that matter most first (completed flights before open ones). Returns nothing for a panel that doesn't read
  * FsHub flights.
  */
-export function confirmationsFor(store: Store, panel: Panel, views: JobView[], now: number, opts: { strict?: boolean } = {}): Confirmations {
+export function confirmationsFor(
+  store: Store,
+  panel: Panel,
+  views: JobView[],
+  now: number,
+  opts: {
+    strict?: boolean;
+    /**
+     * For flights nobody holds in Discord but the sheet names for a pilot: job ID to the FsHub pilot ID of the person the
+     * sheet's name is taken to be. A leg of such a flight counts only when that pilot's own flight confirms it.
+     */
+    namedPilots?: Map<number, number>;
+  } = {},
+): Confirmations {
   const out: Confirmations = new Map();
   if (!panel.fshubConfirm || panel.fshubAirlineId === null || views.length === 0) return out;
   if (store.countFshubFlights(panel.id) === 0) return out;
@@ -52,7 +65,7 @@ export function confirmationsFor(store: Store, panel: Panel, views: JobView[], n
       const candidates = store
         .listFshubFlights(panel.id, leg.dep.toUpperCase(), leg.arr.toUpperCase(), from, to)
         .filter((f) => !claimed.has(f.flightId));
-      const flight = pick(candidates, leg, opts.strict === true);
+      const flight = pick(candidates, leg, opts.strict === true, opts.namedPilots?.get(view.job.id) ?? null);
       if (!flight) continue;
       claimed.add(flight.flightId);
       const legs = out.get(view.job.id) ?? new Map<number, FlownFlight>();
@@ -66,11 +79,12 @@ export function confirmationsFor(store: Store, panel: Panel, views: JobView[], n
 /**
  * The one flight among the candidates that this leg's pilot flew, or null if there isn't one clear answer. In strict
  * mode (used when a pilot's own claim is being acted on) a flight counts only if the leg's holder has a known FsHub ID
- * and it is theirs: a lone flight by somebody else is never taken as the holder's.
+ * and it is theirs: a lone flight by somebody else is never taken as the holder's. A leg nobody holds in Discord
+ * is matched to `named` (the pilot the sheet's name is taken to be) when there is one, and only to a flight by them.
  */
-function pick(candidates: FlownFlight[], leg: LegView, strict: boolean): FlownFlight | null {
+function pick(candidates: FlownFlight[], leg: LegView, strict: boolean, named: number | null): FlownFlight | null {
   if (candidates.length === 0) return null;
-  const pilot = leg.holder?.fshubId ?? null;
+  const pilot = leg.holder?.fshubId ?? (leg.holder === null ? named : null);
   if (pilot !== null) return candidates.filter((f) => f.pilotId === pilot).at(-1) ?? null;
   if (strict) return null;
   return candidates.length === 1 ? (candidates[0] as FlownFlight) : null;

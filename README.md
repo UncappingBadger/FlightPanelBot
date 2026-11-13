@@ -178,7 +178,7 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.4`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.5`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
@@ -304,6 +304,15 @@ is linked to the airline's FsHub (`/setup fshub`), and reading flights is on (`c
 
 Things this deliberately does and doesn't do:
 
+- **A flight the sheet names for the pilot counts as theirs, if FsHub backs it up.** Pilots often type their own name
+  into the sheet's Pilot column instead of pressing **Reserve**, so the bot has no reservation for them. **Complete**
+  also looks at flights the sheet names for them (the name they gave with `name <your name>`, or else their Discord
+  name, or one the bot wrote for them before; capitals and spaces at the ends don't matter), where nobody holds any leg
+  in Discord and every leg is named for them. A name in a sheet is only someone's word, so such a flight is completed
+  only when FsHub shows the pilot's **own** FsHub ID flying it (the strict rule above): another pilot's landing on the
+  same route never completes it. The flight then becomes the pilot's reservation, is ticked in the sheet under the
+  sheet's own spelling of the name where write-back is on, and the reply says it took the name in the sheet to be them.
+  A pilot with nothing to complete is told to DM `name <your name as the sheet has it>`.
 - **A pilot whose FsHub ID the bot doesn't know** is asked to DM `fshub <your ID>` first. An ID someone *typed* is only
   their word: if the airline's FsHub roster says that pilot is a different Discord account, the bot refuses to
   complete flights for it. An ID from the roster, or a typed one the roster doesn't contradict, is accepted.
@@ -327,8 +336,11 @@ On a panel the bot is *working from FsHub* on (the same conditions), the bot doe
 looks at every flight a pilot holds on the panel that has started, brings the airline's FsHub flights up to date first,
 and completes the ones FsHub shows were flown: exactly what pressing **Complete** does, for everybody at once, with the
 same strict rules (the pilot's FsHub ID must be known, an ID the roster gives to another Discord account is refused, the
-pilot must hold every leg, and FsHub must show each leg flown between the right airports inside the flight's window). It
-also leaves alone a flight only the airline's sheet names a pilot for, because nothing says whose it is.
+pilot must hold every leg, and FsHub must show each leg flown between the right airports inside the flight's window). A
+flight only the airline's sheet names a pilot for (no reservation here) is completed too, but only for a pilot who has
+told the bot that name with `name <your name>` (or had the bot write it for them before), whom no other account shares
+the name with, and whom FsHub shows flying every leg. It does not guess from Discord names it was never told; pressing
+**Complete** does, because the pilot is there to be asked.
 
 - **The pilot is told.** One DM per pilot per check, however many flights it completed: *"FsHub shows you flew a flight
   for **Example Air**, so I marked it completed"*, with the aircraft and landing time, and that there is nothing to do. A
@@ -558,7 +570,7 @@ pilot ID they typed.
 ## Development
 
 ```bash
-npm test              # 1121 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1147 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

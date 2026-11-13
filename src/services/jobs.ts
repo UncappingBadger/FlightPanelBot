@@ -1,7 +1,8 @@
-import type { Holder, JobView, Panel, Store } from '../db/store.js';
+import type { Holder, Job, JobView, Panel, Store } from '../db/store.js';
 import type { SourceJob } from '../jobs/types.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
+import { namedForOneOf } from './pilotNames.js';
 import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
 
 export type JobErrorCode = 'NOT_FOUND' | 'EXPIRED' | 'BAD_INPUT';
@@ -409,6 +410,21 @@ export class JobService {
   }
 
   /**
+   * The flights a pilot may be flying without having pressed Reserve: ones the airline's sheet names for them (as any of
+   * `names`) while nobody holds them in Discord, not completed, open or only just past their deadline. A name in a sheet is
+   * only someone's word, so these are completed only on FsHub's record of the pilot's own landing (see `completeNamed`).
+   */
+  namedFor(panelId: number, names: string[]): JobView[] {
+    if (names.length === 0) return [];
+    return this.store.listNamedJobViews(panelId, this.now() - COMPLETE_AFTER_DEADLINE_MS).filter((v) => namedForOneOf(v, names) !== null);
+  }
+
+  /** Can this flight still be reported completed: not completed already, and open or only just past its deadline? */
+  private completableNow(j: Job | undefined, now: number): j is Job {
+    return j !== undefined && j.completedAt === null && (j.status === 'open' || (j.status === 'expired' && j.deadline !== null && j.deadline > now - COMPLETE_AFTER_DEADLINE_MS));
+  }
+
+  /**
    * A pilot marks a flight completed. They must hold every leg of it. The flight leaves the open
    * list and is shown as completed; the person who completed it is remembered. `via` is `fshub` when
    * FsHub's own record of the landing was what confirmed it (such a completion is not undone by a sheet
@@ -419,13 +435,35 @@ export class JobService {
     const view = this.store.tx(() => {
       const current = this.store.getJobView(jobId);
       const j = current?.job;
-      const stillCompletable =
-        j !== undefined && j.completedAt === null && (j.status === 'open' || (j.status === 'expired' && j.deadline !== null && j.deadline > now - COMPLETE_AFTER_DEADLINE_MS));
-      if (!current || !stillCompletable) throw new JobError('NOT_FOUND', 'That flight is no longer open, so it can\'t be completed from here.');
+      if (!current || !this.completableNow(j, now)) throw new JobError('NOT_FOUND', 'That flight is no longer open, so it can\'t be completed from here.');
       if (current.legs.length === 0 || current.legs.some((l) => l.holder?.discordId !== discordId)) {
         throw new JobError('BAD_INPUT', `You can only complete a flight you hold every leg of, and ${current.job.code} has legs that aren't yours.`);
       }
       this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: discordId, completedVia: via });
+      return this.store.getJobView(jobId) as JobView;
+    });
+    this.events.emit({ type: 'changed', panelId: view.job.panelId });
+    return view;
+  }
+
+  /**
+   * Complete a flight the airline's sheet names for this pilot (as one of `names`) that nobody holds in Discord, for the
+   * pilot FsHub showed flying it. Their name in the sheet becomes a reservation of theirs, so the flight is theirs here as
+   * it is in the sheet, and it is then completed as `complete` does. The caller has the proof (FsHub's record of the pilot's
+   * own landing); the checks here are that the sheet still names them on every leg and that nobody has taken the flight.
+   */
+  completeNamed(jobId: number, user: { discordId: string; username: string }, names: string[], via: 'fshub'): JobView {
+    const now = this.now();
+    const view = this.store.tx(() => {
+      const current = this.store.getJobView(jobId);
+      if (!current || !this.completableNow(current.job, now)) throw new JobError('NOT_FOUND', 'That flight is no longer open, so it can\'t be completed from here.');
+      const sheet = namedForOneOf(current, names);
+      if (!sheet) throw new JobError('BAD_INPUT', `${current.job.code} isn't named for you in the airline's sheet any more, so I haven't completed it for you.`);
+      current.legs.forEach((leg, i) => {
+        this.store.insertReservation(jobId, leg.legNo, user.discordId, user.username, now);
+        this.store.setReservationSheetName(jobId, leg.legNo, sheet[i] as string);
+      });
+      this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: user.discordId, completedVia: via });
       return this.store.getJobView(jobId) as JobView;
     });
     this.events.emit({ type: 'changed', panelId: view.job.panelId });

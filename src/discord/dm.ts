@@ -18,6 +18,7 @@ import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
+import { sheetNamesFor } from '../services/pilotNames.js';
 import { dayOf, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
@@ -639,14 +640,24 @@ const FRESH_FLIGHTS_MS = 30_000;
  * Complete, on a panel that works from FsHub: look at what FsHub recorded for this pilot's flights and complete the ones it
  * shows flown. No picking and no confirming: FsHub's record of the landing is the evidence. A flight FsHub has not
  * (yet) shown is left as it was, and the pilot is told why and what to do.
+ *
+ * A pilot's flights are the ones they reserved here and the ones the airline's sheet names for them without a reservation
+ * (somebody typed their name into the sheet, as pilots often do). A name in a sheet is only someone's word, so those are
+ * completed only when FsHub shows this pilot's own ID flying the route inside the flight's window.
  */
 async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction, panel: Panel): Promise<void> {
   const user = interaction.user;
   const reply = (content: string) => interaction.editReply({ content, allowedMentions: noPings });
 
-  const held = ctx.jobs.completable(panel.id, user.id);
+  const names = sheetNamesFor(ctx.store, user);
+  const reserved = ctx.jobs.completable(panel.id, user.id);
+  const named = ctx.jobs.namedFor(panel.id, names);
+  const namedIds = new Set(named.map((v) => v.job.id));
+  const held = [...reserved, ...named];
   if (held.length === 0) {
-    await reply("You don't have a flight to complete. Reserve one first; once you've flown it, press **Complete** and I'll check FsHub for your landing.");
+    await reply(
+      "You don't have a flight to complete. Reserve one first; once you've flown it, press **Complete** and I'll check FsHub for your landing.\nIf your name is already against a flight in the airline's sheet, send me `name <your name as the sheet has it>` here, then press **Complete** again.",
+    );
     return;
   }
   const started = held.filter((v) => v.job.availableFrom === null || v.job.availableFrom <= ctx.now());
@@ -676,7 +687,9 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
 
   const now = ctx.now();
   const current = ctx.store.getPanel(panel.id) ?? panel;
-  const confirmed = confirmationsFor(ctx.store, current, started, now, { strict: true });
+  // A flight only the sheet names for them is theirs to complete if FsHub shows their own landing, so it is matched to their FsHub ID.
+  const namedPilots = new Map(started.filter((v) => namedIds.has(v.job.id)).map((v) => [v.job.id, link.fshubId] as const));
+  const confirmed = confirmationsFor(ctx.store, current, started, now, { strict: true, namedPilots });
   const lines: string[] = [];
   let doneCount = 0;
   let sheetNotWritten = false;
@@ -695,11 +708,13 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
       continue;
     }
 
-    // Where the airline's sheet follows what pilots do, tick the flight there too, as completing by hand does.
+    // Where the airline's sheet follows what pilots do, tick the flight there too, as completing by hand does. A flight the
+    // sheet names for them is ticked under the name the sheet has, which is what makes it theirs there.
+    const sheetName = namedIds.has(view.job.id) ? (view.legs[0]?.sheetHolder ?? null) : null;
     const inSheet = writesToSheet(ctx, current, view.legs.length);
     if (inSheet) {
       try {
-        await ctx.writeback!.complete(current, view.job.sourceKey, pilotNameFor(ctx, user));
+        await ctx.writeback!.complete(current, view.job.sourceKey, sheetName ?? pilotNameFor(ctx, user));
       } catch (e) {
         if (!(e instanceof WriteBackError)) throw e;
         ctx.log.warn(`Could not complete ${code} in the sheet: ${e.message}`);
@@ -710,7 +725,8 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
       sheetNotWritten = true;
     }
     try {
-      ctx.jobs.complete(view.job.id, user.id, 'fshub');
+      if (sheetName !== null) ctx.jobs.completeNamed(view.job.id, { discordId: user.id, username: user.username }, names, 'fshub');
+      else ctx.jobs.complete(view.job.id, user.id, 'fshub');
     } catch (e) {
       if (!(e instanceof JobError)) throw e;
       lines.push(`⚠️ **${code}**: ${e.message}`);
@@ -722,6 +738,7 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
       return `${view.legs.length > 1 ? `leg ${l.legNo}: ` : ''}${flightFacts(f, view.job.aircraft)}`;
     });
     lines.push(`✅ **${code}** (${route}) is completed from FsHub: ${facts.join('; ')}${inSheet ? " and ticked in the airline's sheet" : ''}. Nice flying!`);
+    if (sheetName !== null) lines.push(`ℹ️ The airline's sheet had **${plainText(truncate(sheetName, 40))}** against **${code}**, a name I know you by, and FsHub shows you flew it, so I counted it as yours.`);
   }
   const waiting = held.length - started.length;
   if (waiting > 0) lines.push(`${waiting} other flight${waiting === 1 ? '' : 's'} you hold ${waiting === 1 ? "hasn't" : "haven't"} started yet.`);

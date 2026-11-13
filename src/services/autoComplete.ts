@@ -3,6 +3,7 @@ import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor } from './flightMatch.js';
 import type { FsHubSync } from './fshubSync.js';
 import { COMPLETE_AFTER_DEADLINE_MS, JobError, type JobService } from './jobs.js';
+import { nameKey } from './pilotNames.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
 
 /** How often a FsHub-linked panel's flights are checked for ones that have been flown. */
@@ -23,6 +24,8 @@ export interface AutoCompleted {
   flights: Map<number, FlownFlight>;
   /** Whether the airline's sheet was ticked too (write-back). */
   sheetTicked: boolean;
+  /** For a flight nobody reserved here: the name the airline's sheet had against it, which was taken to be this pilot. */
+  namedAs?: string | null;
 }
 
 export interface AutoCompleteResult {
@@ -36,7 +39,7 @@ export interface AutoCompleteResult {
 
 export interface AutoCompleteDeps {
   store: Store;
-  jobs: Pick<JobService, 'complete'>;
+  jobs: Pick<JobService, 'complete' | 'completeNamed'>;
   sync: Pick<FsHubSync, 'refreshFlights'>;
   /** Writes the tick to the airline's sheet; null when the bot has no Google credentials. */
   writeback: Pick<SheetWriteBack, 'enabledFor' | 'complete'> | null;
@@ -54,7 +57,9 @@ export interface AutoCompleteDeps {
  * - a flight is only completed for a pilot who holds every leg of it, whose FsHub ID the bot knows, and who FsHub
  *   shows flying each leg between the right two airports inside its window;
  * - an ID somebody typed is not trusted if the airline's FsHub roster gives it to another Discord account;
- * - a flight named only in the airline's sheet (no Discord holder) is left alone: nothing says whose it is;
+ * - a flight named only in the airline's sheet (no Discord holder) is completed only for a pilot who has told the bot that
+ *   name (or had it written for them), whom no other account shares it with, and whom FsHub shows flying it: a name in a
+ *   sheet is only someone's word, and a name two pilots answer to is nobody's;
  * - where write-back is on, the sheet is ticked first, and a flight the sheet will not accept is left alone.
  */
 export class AutoCompleter {
@@ -82,16 +87,31 @@ export class AutoCompleter {
     }
 
     const current = store.getPanel(panel.id) ?? panel;
-    const candidates = store
+    const started = (v: JobView) => v.job.availableFrom === null || v.job.availableFrom <= now;
+    const held = store
       .listAllHeldJobViews(current.id, now - COMPLETE_AFTER_DEADLINE_MS)
-      .filter((v) => v.job.availableFrom === null || v.job.availableFrom <= now)
-      .map((v) => ({ view: v, holder: soleHolder(v) }))
-      .filter((c): c is { view: JobView; holder: string } => c.holder !== null)
+      .filter(started)
+      .map((v) => ({ view: v, holder: soleHolder(v), named: null as string | null }))
+      .filter((c): c is { view: JobView; holder: string; named: null } => c.holder !== null)
       .filter((c) => this.trusted(c.holder));
 
-    const confirmed = confirmationsFor(store, current, candidates.map((c) => c.view), now, { strict: true });
+    // Flights nobody reserved here but the airline's sheet names for a pilot who has told me that name (or had it written for them).
+    const owners = ownersOfNames(store.listKnownPilotNames());
+    const namedPilots = new Map<number, number>();
+    const named: Array<{ view: JobView; holder: string; named: string }> = [];
+    for (const view of store.listNamedJobViews(current.id, now - COMPLETE_AFTER_DEADLINE_MS).filter(started)) {
+      const owner = soleOwner(view, owners);
+      if (owner === null || !this.trusted(owner)) continue;
+      const fshubId = store.getPilotLink(owner)?.fshubId;
+      if (fshubId === undefined) continue;
+      namedPilots.set(view.job.id, fshubId);
+      named.push({ view, holder: owner, named: view.legs[0]?.sheetHolder ?? '' });
+    }
+
+    const candidates = [...held, ...named];
+    const confirmed = confirmationsFor(store, current, candidates.map((c) => c.view), now, { strict: true, namedPilots });
     const completed: AutoCompleted[] = [];
-    for (const { view, holder } of candidates) {
+    for (const { view, holder, named: sheetName } of candidates) {
       const legs = confirmed.get(view.job.id);
       if (!legs || legs.size < view.legs.length) continue; // FsHub has not shown every leg
 
@@ -99,7 +119,7 @@ export class AutoCompleter {
       let sheetTicked = false;
       if (current.sheetId && this.d.writeback?.enabledFor(current) && view.legs.length === 1) {
         try {
-          await this.d.writeback.complete(current, view.job.sourceKey, store.getPilotName(holder) ?? view.legs[0]?.holder?.username ?? 'pilot');
+          await this.d.writeback.complete(current, view.job.sourceKey, sheetName ?? store.getPilotName(holder) ?? view.legs[0]?.holder?.username ?? 'pilot');
           sheetTicked = true;
         } catch (e) {
           if (!(e instanceof WriteBackError)) throw e;
@@ -108,12 +128,13 @@ export class AutoCompleter {
         }
       }
       try {
-        this.d.jobs.complete(view.job.id, holder, 'fshub');
+        if (sheetName !== null) this.d.jobs.completeNamed(view.job.id, { discordId: holder, username: sheetName }, view.legs.map((l) => l.sheetHolder ?? ''), 'fshub');
+        else this.d.jobs.complete(view.job.id, holder, 'fshub');
       } catch (e) {
         if (!(e instanceof JobError)) throw e;
         continue; // completed or changed meanwhile
       }
-      const done: AutoCompleted = { panel: current, view, discordId: holder, flights: legs, sheetTicked };
+      const done: AutoCompleted = { panel: current, view, discordId: holder, flights: legs, sheetTicked, namedAs: sheetName };
       completed.push(done);
       this.log.info(`Auto-completed ${view.job.code} for ${current.airlineName} from FsHub`);
     }
@@ -149,6 +170,33 @@ export class AutoCompleter {
     if (!link) return false;
     return !(link.source === 'typed' && this.d.store.rosterOwnerOf(link.fshubId, discordId) !== null);
   }
+}
+
+/** Who answers to each name (lower case): the Discord accounts that have given the bot that name or had it written for them. */
+function ownersOfNames(known: Array<{ discordId: string; name: string }>): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const { discordId, name } of known) {
+    const key = nameKey(name);
+    if (key) out.set(key, (out.get(key) ?? new Set()).add(discordId));
+  }
+  return out;
+}
+
+/**
+ * The one Discord account the sheet's names on this flight can be taken to be: every leg is named, and each name belongs
+ * to exactly one account, the same on every leg. A name two accounts answer to is nobody's here: nothing says which.
+ */
+function soleOwner(view: JobView, owners: Map<string, Set<string>>): string | null {
+  let owner: string | null = null;
+  for (const leg of view.legs) {
+    if (leg.holder !== null || leg.sheetHolder === null) return null;
+    const who = owners.get(nameKey(leg.sheetHolder));
+    if (!who || who.size !== 1) return null;
+    const only = [...who][0] as string;
+    if (owner !== null && owner !== only) return null;
+    owner = only;
+  }
+  return owner;
 }
 
 /** The one Discord account that holds every leg of the flight, or null if it is open, shared or only named in the sheet. */

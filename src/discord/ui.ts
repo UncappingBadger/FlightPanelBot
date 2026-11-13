@@ -122,7 +122,8 @@ export function autoCompletedMessage(done: AutoCompleted[]): string {
       c.view.legs.length === 1
         ? flightFacts(legs[0]![1], c.view.job.aircraft)
         : legs.map(([no, f]) => `leg ${no}: ${flightFacts(f, c.view.job.aircraft)}`).join('; ');
-    return `✅ **${c.view.job.code}** (${routeText(c.view.legs)}): ${facts}${c.sheetTicked ? " · ticked in the airline's sheet" : ''}`;
+    const named = c.namedAs ? ` · the airline's sheet had **${plainText(truncate(c.namedAs, 40))}** against it, a name I know you by` : '';
+    return `✅ **${c.view.job.code}** (${routeText(c.view.legs)}): ${facts}${c.sheetTicked ? " · ticked in the airline's sheet" : ''}${named}`;
   });
   const airline = plainText(truncate(done[0]?.panel.airlineName ?? 'the airline', 60));
   const many = done.length > 1;

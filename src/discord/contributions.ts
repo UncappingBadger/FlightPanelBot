@@ -1,8 +1,9 @@
 import type { Message } from 'discord.js';
 import type { Panel } from '../db/store.js';
-import { ImportError, str } from '../jobs/import.js';
+import { ImportError } from '../jobs/import.js';
 import { downloadSheetCsv, sheetRefOf } from '../jobs/sheet.js';
 import { CONTRIBUTION_DAYS, contributionPeriod, contributionsOf, dayName, formatMoney, readSheetFlights, type Contributions, type SheetFlight } from '../services/contributions.js';
+import { sheetNamesFor } from '../services/pilotNames.js';
 import { plainText, truncate } from '../util/format.js';
 import type { BotContext } from './context.js';
 
@@ -29,15 +30,6 @@ async function inGuild(message: Message, guildId: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/** The names this person may be written as in a sheet: the one they gave (or Discord's names for them), and any the bot wrote before. */
-function sheetNames(ctx: BotContext, user: Person): string[] {
-  const given = ctx.store.getPilotName(user.id);
-  const all = [given, ...(given ? [] : [str(user.globalName ?? '', 40), str(user.username, 40)]), ...ctx.store.listSheetNamesByUser(user.id)];
-  const out: string[] = [];
-  for (const n of all) if (n && !out.some((o) => o.toLowerCase() === n.toLowerCase())) out.push(n);
-  return out;
 }
 
 /** What to call a flight: its ID on the panel if it is still there, else the airline's own flight number, else its row in the sheet. */
@@ -128,7 +120,7 @@ export async function showContributions(ctx: BotContext, message: Message, reply
       return;
     }
 
-    const names = sheetNames(ctx, user);
+    const names = sheetNamesFor(ctx.store, user);
     const answers: string[] = [];
     const kinds = new Set<string>();
     for (const panel of panels) {

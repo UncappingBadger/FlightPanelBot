@@ -925,6 +925,33 @@ export class Store {
     return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [] }));
   }
 
+  /**
+   * Flights on a panel that the airline's sheet puts a name against while nobody holds any leg of them in Discord, not yet
+   * completed, that are open or whose deadline is after `deadlineAfter`. Soonest deadline first. These are the flights a
+   * pilot may be flying without having pressed Reserve.
+   */
+  listNamedJobViews(panelId: number, deadlineAfter: number): JobView[] {
+    const jobs = this.all(
+      `SELECT DISTINCT j.* FROM jobs j JOIN job_legs l ON l.job_id = j.id
+       WHERE j.panel_id = ? AND j.completed_at IS NULL AND l.sheet_holder IS NOT NULL
+         AND (j.status = 'open' OR (j.status = 'expired' AND j.deadline IS NOT NULL AND j.deadline > ?))
+         AND NOT EXISTS (SELECT 1 FROM leg_reservations r WHERE r.job_id = j.id)
+       ORDER BY (j.deadline IS NULL), j.deadline, j.id`,
+      panelId,
+      deadlineAfter,
+    ).map(toJob);
+    const legs = this.legViews(jobs.map((j) => j.id));
+    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [] }));
+  }
+
+  /** Every name any pilot has given the bot or had it write in a sheet, with whose it is (a name may be more than one person's). */
+  listKnownPilotNames(): Array<{ discordId: string; name: string }> {
+    return this.all(
+      `SELECT discord_id, name FROM pilot_names
+       UNION SELECT discord_id, sheet_name AS name FROM leg_reservations WHERE sheet_name IS NOT NULL`,
+    ).map((r) => ({ discordId: s(r.discord_id), name: s(r.name) }));
+  }
+
   /* ------------------------------------------------------------------ "pilots needed" messages, kept so they can be cleared */
 
   addReminderMessage(panelId: number, channelId: string, messageId: string, postedAt: number): void {
