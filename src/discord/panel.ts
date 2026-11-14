@@ -1,5 +1,6 @@
 import { MessageFlags, PermissionFlagsBits, type ActionRowBuilder, type Client, type DMChannel, type EmbedBuilder, type MessageActionRowComponentBuilder, type SendableChannels, type User } from 'discord.js';
 import type { Panel, PanelFollower, Store } from '../db/store.js';
+import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor } from '../services/flightMatch.js';
 import { COMPLETED_SHOW_MS, panelHorizonMs, type JobService } from '../services/jobs.js';
@@ -14,6 +15,9 @@ interface Payload {
   components: Array<ActionRowBuilder<MessageActionRowComponentBuilder>>;
   allowedMentions: typeof noPings;
 }
+
+/** Debug build: which panels have had the bot's permissions in their channel written to the log already. */
+const permsLogged = new Set<number>();
 
 /** What a message was last made to say, so an edit that would change nothing is not sent (a long panel is many messages). */
 const contentOf = (p: Payload): string => JSON.stringify([p.embeds.map((e) => e.toJSON()), p.components.map((c) => c.toJSON())]);
@@ -87,6 +91,8 @@ export class PanelService {
   private readonly lastFollowPassAt = new Map<number, number>();
   /** Panels whose channel the bot may not attach files in, so the warning is given once. */
   private readonly warnedNoAttach = new Set<number>();
+  /** Debug build: what the last message sent or edited looked like, for a failure to be read against. */
+  private lastPayloadNote = '(nothing yet)';
   /** The pictures of the people on the panel's cards, and when each was last asked for. */
   private readonly avatarCache = new Map<string, { at: number; avatar: Avatar }>();
 
@@ -250,6 +256,11 @@ export class PanelService {
       // long list never makes people scroll to the end to reserve. The completed flights, below them, are only for reading.
       const open: Payload[] = parts.open.map((embeds) => ({ embeds, components: panelRows(panel.id), allowedMentions: noPings }));
       const done: Payload[] = parts.completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings }));
+      if (DEBUG_BUILD && !permsLogged.has(panel.id) && 'guild' in channel && 'permissionsFor' in channel) {
+        permsLogged.add(panel.id);
+        const me = channel.guild?.members?.me;
+        dbg(this.log, `panel ${panel.id} (${panel.airlineName}) channel ${panel.channelId}: the bot's permissions there are [${me ? (channel.permissionsFor(me)?.toArray().join(', ') ?? 'unknown') : 'unknown'}]`);
+      }
       // Where the bot may not attach files (older invites did not ask for it), the stamp is left off rather than the panel not drawn.
       if (!this.canAttachFiles(channel)) {
         if (!this.warnedNoAttach.has(panel.id)) {
@@ -269,6 +280,8 @@ export class PanelService {
       return result;
     } catch (e) {
       if (isMissingAccess(e)) {
+        if (DEBUG_BUILD) permsLogged.delete(panel.id); // log the permissions again at the next redraw, next to this failure
+        dbg(this.log, `panel ${panel.id} redraw hit Missing Permissions; payload had ${this.lastPayloadNote}`);
         this.log.warn(`Missing access posting the panel for ${panel.airlineName} in ${panel.channelId}`, e);
         return 'no-access';
       }
@@ -296,6 +309,7 @@ export class PanelService {
             const id = ids[i]!;
             const content = contentOf(payloads[i]!);
             if (this.shown.get(id) === content) continue; // already says exactly this
+            if (DEBUG_BUILD) this.lastPayloadNote = `message ${i + 1}/${payloads.length} (edit): ${payloads[i]!.embeds.length} embed(s), ${(forEdit(payloads[i]!) as { files?: unknown[] }).files?.length ?? 0} file(s), attachments=${JSON.stringify((forEdit(payloads[i]!) as { attachments?: unknown[] }).attachments ?? 'untouched')}`;
             await existing[i]!.edit(forEdit(payloads[i]!));
             this.shown.set(id, content);
           }
@@ -316,6 +330,7 @@ export class PanelService {
     const fresh: string[] = [];
     try {
       for (const payload of payloads) {
+        if (DEBUG_BUILD) this.lastPayloadNote = `message ${fresh.length + 1}/${payloads.length} (send): ${payload.embeds.length} embed(s), ${forSend(payload).files.length} file(s)`;
         const sent = await channel.send(forSend(payload));
         fresh.push(sent.id);
         this.shown.set(sent.id, contentOf(payload));

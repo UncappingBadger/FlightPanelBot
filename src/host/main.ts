@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { arch, release } from 'node:os';
+import { DEBUG_BUILD } from '../util/debugBuild.js';
 import { createFileLogger } from './fileLogger.js';
 import { appHome, hostPaths } from './paths.js';
 import { forgetLegacySettings, loadSettings } from './settings.js';
@@ -19,9 +21,14 @@ async function main(): Promise<void> {
   const version = process.env.FPB_VERSION ?? 'dev';
 
   const scrubbed = forgetLegacySettings(paths);
-  const logger = createFileLogger({ file: paths.logFile, level: loadSettings(paths).logLevel });
+  // The debug build always logs everything, to its own file, and keeps more of it before rolling over.
+  const logger = createFileLogger({ file: paths.logFile, level: DEBUG_BUILD ? 'debug' : loadSettings(paths).logLevel, ...(DEBUG_BUILD ? { maxBytes: 10_000_000, keep: 5, recent: 1000 } : {}) });
   const log = logger.log;
   log.info(`Flight Panel Bot ${version} starting (data in ${paths.home})`);
+  if (DEBUG_BUILD) {
+    log.info(`[dbg] DEBUG BUILD: a diagnostic build, not a release. Everything is written to ${paths.logFile}; the normal bot.log is not touched. Node ${process.version}, Windows ${release()} ${arch()}, pid ${process.pid}.`);
+    log.info('[dbg] This log holds Discord user and server IDs, flight codes and the pilot names in the airline sheet. It holds no bot token, no Google key and no FsHub token.');
+  }
   if (scrubbed) log.info('Removed a FsHub token left in the settings by an older version; it is not used any more.');
 
   const key = randomBytes(18).toString('base64url');
@@ -41,7 +48,7 @@ async function main(): Promise<void> {
   const updates = new UpdateChecker({
     version,
     statePath: paths.updateState,
-    autoEnabled: () => loadSettings(paths).checkForUpdates,
+    autoEnabled: () => (DEBUG_BUILD ? false : loadSettings(paths).checkForUpdates), // a diagnostic build never announces releases
     onChange: () => publish(supervisor.state()),
     logger: log,
   });

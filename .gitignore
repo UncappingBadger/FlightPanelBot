@@ -8,3 +8,4 @@ data/
 *.sqlite-shm
 release/
 release-next*/
+release-debug*/

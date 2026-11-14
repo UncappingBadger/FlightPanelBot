@@ -1,4 +1,5 @@
 import type { Client } from 'discord.js';
+import { dbg } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
 import type { JobEvent, JobEvents, ReleasedNotice } from '../services/events.js';
 import { legList } from '../util/format.js';
@@ -54,6 +55,7 @@ export class Notifier {
         });
       } catch (e) {
         this.log.debug(`Could not tell ${b.discordId} that a backup spot ended`, e);
+      dbg(this.log, `backup-ended notice NOT DELIVERED to ${b.discordId}: ${b.jobCode} - ${e instanceof Error ? e.message : e}`);
       }
       return;
     }
@@ -62,9 +64,11 @@ export class Notifier {
       const user = await this.client.users.fetch(n.discordId);
       const legs = n.legNos.length === 1 ? `leg ${n.legNos[0]}` : `legs ${legList(n.legNos)}`;
       await user.send({ content: `Heads up: flight **${n.jobCode}** (${legs}) ${REASON[n.reason]}.`, allowedMentions: noPings });
+      dbg(this.log, `release notice DELIVERED to ${n.discordId}: ${n.jobCode} ${legs} (${n.reason})`);
     } catch (e) {
       // Closed DMs or an unknown user; the panel is already right, so this is only a courtesy.
       this.log.debug(`Could not tell ${n.discordId} about a released reservation`, e);
+      dbg(this.log, `release notice NOT DELIVERED to ${n.discordId}: ${n.jobCode} (${n.reason}) - ${e instanceof Error ? e.message : e}`);
     }
   }
 }

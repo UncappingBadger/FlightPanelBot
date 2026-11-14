@@ -1,6 +1,7 @@
 import type { Panel } from '../db/store.js';
 import { SheetsError, type Cell, type SheetsApi } from '../google/sheetsApi.js';
 import { colLetter, isCancelled, isTicked, parseScheduleValues, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
+import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
 export type WriteBackErrorCode =
@@ -178,6 +179,7 @@ export class SheetWriteBack {
     try {
       await this.api.update(at.ref, at.title, cells);
       this.log.info(`Wrote ${cells.map((c) => c.a1).join(', ')} in the airline's sheet`);
+      if (DEBUG_BUILD) dbg(this.log, `write-back: ${at.title} ${cells.map((c) => `${c.a1}=${JSON.stringify(c.value)}`).join(', ')} (was pilot "${at.pilot}", ticked ${at.ticked}) via ${callerPath(2, 5)}`);
     } catch (e) {
       throw this.wrap(e);
     }

@@ -36,7 +36,9 @@ namespace FlightPanelBot
         }
         public static string Status { get { return Path.Combine(AppHome, "status.json"); } }
         public static string LogsDir { get { return Path.Combine(AppHome, "logs"); } }
-        public static string BotLog { get { return Path.Combine(LogsDir, "bot.log"); } }
+        public static string BotLog { get { return Path.Combine(LogsDir, BuildInfo.Debug ? "bot-debug.log" : "bot.log"); } }
+        /// <summary>The name shown in the tray tooltip; a diagnostic build says so, so nobody mistakes it for a release.</summary>
+        public static string Title { get { return BuildInfo.Debug ? "Flight Panel Bot DEBUG" : "Flight Panel Bot"; } }
         public static string LauncherLog { get { return Path.Combine(LogsDir, "launcher.log"); } }
         public static string RuntimeRoot
         {
@@ -471,7 +473,7 @@ namespace FlightPanelBot
                 else if (lastBalloonKind == "update") OpenUpdatePage();
             };
             SetIcon("starting");
-            tray.Text = "Flight Panel Bot: starting";
+            tray.Text = Paths.Title + ": starting";
             tray.Visible = true;
 
             bot.Exited += delegate(string kind)
@@ -530,7 +532,7 @@ namespace FlightPanelBot
             {
                 shownKey = key;
                 SetIcon(phase);
-                tray.Text = Truncate("Flight Panel Bot: " + Friendly(phase), 63);
+                tray.Text = Truncate(Paths.Title + ": " + Friendly(phase), 63);
                 OnPhase(phase, text);
             }
             AnnounceUpdate();
@@ -715,7 +717,7 @@ namespace FlightPanelBot
         {
             if (quitting) return;
             quitting = true;
-            tray.Text = "Flight Panel Bot: stopping";
+            tray.Text = Paths.Title + ": stopping";
             ThreadPool.QueueUserWorkItem(delegate
             {
                 try { bot.Stop(status ?? BotStatus.Read()); } catch (Exception) { }

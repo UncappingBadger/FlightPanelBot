@@ -1,5 +1,6 @@
 import type { Holder, Job, JobView, Panel, Store } from '../db/store.js';
 import type { SourceJob } from '../jobs/types.js';
+import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
 import { namedForOneOf } from './pilotNames.js';
@@ -138,6 +139,7 @@ export class JobService {
       if (!panel) throw new JobError('NOT_FOUND', 'That panel no longer exists.');
       const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [], numberClashes: [], backupEnded: [] };
       const seen = new Set<number>();
+      if (DEBUG_BUILD) dbg(this.log, `sync ${panel.airlineName} (panel ${panelId}): the source lists ${jobs.length} flight(s); ${this.store.listJobs(panelId, 'open').length} are open here now`);
       /** The ID a flight gets: its flight number when it has one that no other flight on the panel has, else the automatic one. */
       const claim = (wanted: string | null | undefined, ownCode?: string): string | null => {
         if (!wanted || wanted === ownCode) return null;
@@ -183,6 +185,7 @@ export class JobService {
             now,
           });
           sj.legs.forEach((l, i) => this.store.insertLeg(job.id, i + 1, l.dep, l.arr, l.heldBy ?? null));
+          if (DEBUG_BUILD) dbg(this.log, `sync: NEW ${job.code} key=${sj.key} status=${expired ? 'expired' : 'open'}${sj.legs.some((l) => l.heldBy) ? ` sheet-name=${sj.legs.find((l) => l.heldBy)?.heldBy}` : ''}`);
           seen.add(job.id);
           if (completed) out.completed++;
           else out.added++;
@@ -212,6 +215,17 @@ export class JobService {
           existing.completedAt !== completedAt ||
           existing.completedBy !== completedBy ||
           existing.completedVia !== completedVia;
+        if (DEBUG_BUILD && changed) {
+          const what: string[] = [];
+          if (number !== null) what.push(`code ${existing.code}->${number}`);
+          if (existing.aircraft !== sj.aircraft) what.push(`aircraft ${existing.aircraft}->${sj.aircraft}`);
+          if (existing.availableFrom !== sj.availableFrom) what.push('window start');
+          if (existing.deadline !== sj.deadline) what.push('window end/deadline');
+          if (existing.notes !== sj.notes) what.push(`notes ${existing.notes}->${sj.notes}`);
+          if (existing.status !== status) what.push(`status ${existing.status}->${status}`);
+          if (existing.completedAt !== completedAt) what.push(`completedAt ${existing.completedAt === null ? 'none' : 'set'}->${completedAt === null ? 'none' : 'set'}`);
+          if (what.length > 0) dbg(this.log, `sync: CHANGED ${existing.code} key=${sj.key}: ${what.join('; ')}`);
+        }
         this.store.updateJob(existing.id, {
           title: sj.title,
           aircraft: sj.aircraft,
@@ -235,12 +249,17 @@ export class JobService {
             // Same flight; the source may have a different name against it now.
             const named = nw.heldBy ?? null;
             if (o.sheetHolder !== named) {
+              if (DEBUG_BUILD) {
+                const h = this.store.getHolder(existing.id, o.legNo);
+                dbg(this.log, `sync: SHEET NAME on ${existing.code} leg ${o.legNo}: "${o.sheetHolder ?? ''}" -> "${named ?? ''}" (Discord reservation on that leg: ${h ? `${h.username} (${h.discordId}), kept` : 'none'})`);
+              }
               this.store.setLegSheetHolder(existing.id, o.legNo, named);
               changed = true;
             }
             continue;
           }
           changed = true;
+          if (DEBUG_BUILD) dbg(this.log, `sync: LEG CHANGED on ${existing.code} key=${sj.key} leg ${i + 1}: ${o ? `${o.dep}-${o.arr}` : '(none)'} -> ${nw ? `${nw.dep}-${nw.arr}` : '(none)'}`);
           if (o) {
             const holder = this.store.getHolder(existing.id, o.legNo);
             if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: existing.code, legNos: [o.legNo], reason: 'changed' });
@@ -255,6 +274,10 @@ export class JobService {
 
       for (const job of this.store.listJobs(panelId, 'open')) {
         if (seen.has(job.id)) continue;
+        if (DEBUG_BUILD) {
+          const holders = this.store.listLegs(job.id).map((l) => ({ l, h: this.store.getHolder(job.id, l.legNo) })).filter((x) => x.h);
+          dbg(this.log, `sync: REMOVED ${job.code} key=${job.sourceKey} (no row in the source reads as this flight any more)${holders.length > 0 ? `; Discord holders released: ${holders.map((x) => `leg ${x.l.legNo} ${x.h!.username} (${x.h!.discordId})`).join(', ')}` : '; nobody held it in Discord'}`);
+        }
         for (const leg of this.store.listLegs(job.id)) {
           const holder = this.store.getHolder(job.id, leg.legNo);
           if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: job.code, legNos: [leg.legNo], reason: 'removed' });
@@ -269,6 +292,9 @@ export class JobService {
       return out;
     });
 
+    if (DEBUG_BUILD) {
+      dbg(this.log, `sync done (panel ${panelId}): +${result.added} ~${result.updated} -${result.removed} completed ${result.completed}; ${result.released.length} reservation holder(s) released${result.released.length > 0 ? `: ${result.released.map((n) => `${n.jobCode} legs ${n.legNos.join('/')} ${n.discordId} (${n.reason})`).join(', ')}` : ''}`);
+    }
     this.events.emit({ type: 'changed', panelId });
     for (const notice of result.released) this.events.emit({ type: 'released', notice });
     for (const notice of result.backupEnded ?? []) this.events.emit({ type: 'backup-ended', notice });

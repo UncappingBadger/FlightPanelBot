@@ -1,4 +1,7 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import { callerPath } from '../util/debugBuild.js';
+import type { Logger } from '../util/log.js';
+import { installReservationAudit, type AuditRow } from './debugAudit.js';
 
 /* ------------------------------------------------------------------ types */
 
@@ -331,6 +334,30 @@ const toJob = (r: Row): Job => ({
 export class Store {
   constructor(private readonly db: DatabaseSync) {}
 
+  /** Debug build only: reads what the reservation triggers recorded (see `enableAudit`). Null in every other build. */
+  private audit: (() => AuditRow[]) | null = null;
+  private auditLog: Logger | null = null;
+
+  /**
+   * Debug build only. Logs every reservation and backup row that is added, changed or removed, with the call path that did
+   * it, however it happened (including by cascade). Never called in a normal build.
+   */
+  enableAudit(log: Logger): void {
+    this.audit = installReservationAudit(this.db);
+    this.auditLog = log;
+  }
+
+  private flushAudit(sql: string): void {
+    if (!this.audit || !this.auditLog) return;
+    const rows = this.audit();
+    if (rows.length === 0) return;
+    const who = callerPath(3);
+    for (const r of rows) {
+      const leg = r.legNo === null ? '' : ` leg ${r.legNo}`;
+      this.auditLog.info(`[dbg] ${r.table === 'job_backups' ? 'BACKUP' : 'RESERVATION'} ${r.op}: ${r.code ?? `job #${r.jobId}`}${leg} ${r.username} (${r.discordId}) <- ${who} | ${sql.replace(/\s+/g, ' ').slice(0, 70)}`);
+    }
+  }
+
   /** Run `fn` inside a transaction; rolls back if it throws. */
   tx<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -340,6 +367,7 @@ export class Store {
       return out;
     } catch (e) {
       this.db.exec('ROLLBACK');
+      this.auditLog?.info(`[dbg] ROLLBACK: the reservation changes logged just above in this transaction were undone (${e instanceof Error ? e.message : e})`);
       throw e;
     }
   }
@@ -356,6 +384,7 @@ export class Store {
   }
   private run(sql: string, ...p: SQLInputValue[]): { changes: number; lastId: number } {
     const r = this.db.prepare(sql).run(...p);
+    if (this.audit) this.flushAudit(sql);
     return { changes: Number(r.changes), lastId: Number(r.lastInsertRowid) };
   }
 

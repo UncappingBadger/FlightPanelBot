@@ -24,6 +24,7 @@ import { SourceRefresher } from './services/refresh.js';
 import { ReminderService } from './services/reminders.js';
 import { Scheduler } from './services/scheduler.js';
 import { SheetWriteBack } from './services/writeback.js';
+import { DEBUG_BUILD, dbg } from './util/debugBuild.js';
 import { createLogger, type Logger } from './util/log.js';
 
 /** A Discord server the bot is in. */
@@ -64,6 +65,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const log = opts.log ?? createLogger(config.logLevel);
 
   const store = new Store(openDatabase(config.databasePath));
+  if (DEBUG_BUILD) store.enableAudit(log); // every reservation row that appears, changes or goes is logged, with who did it
   const events = new JobEvents(log);
   const jobs = new JobService(store, events, { logger: log });
 
@@ -149,6 +151,14 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   };
 
   client.on(Events.Error, (e) => log.error('Discord client error', e));
+  if (DEBUG_BUILD) {
+    client.on(Events.ShardDisconnect, (ev, id) => dbg(log, `gateway: shard ${id} disconnected (code ${ev.code})`));
+    client.on(Events.ShardReconnecting, (id) => dbg(log, `gateway: shard ${id} reconnecting`));
+    client.on(Events.ShardResume, (id, replayed) => dbg(log, `gateway: shard ${id} resumed (${replayed} events replayed)`));
+    client.on(Events.ShardError, (e, id) => dbg(log, `gateway: shard ${id} error: ${e.message}`));
+    client.on(Events.Invalidated, () => dbg(log, 'gateway: the session was invalidated'));
+    client.on(Events.GuildRoleDelete, (role) => dbg(log, `role deleted in guild ${role.guild.id}: ${role.id} (${role.name}); ${store.listRefreshRoles(role.guild.id).includes(role.id) ? 'it WAS one of the /setup refresh roles' : 'not a refresh role'}`));
+  }
   client.on(Events.GuildCreate, (guild) => {
     log.info(`Added to server "${guild.name}"`);
     void registerFor(guild.id, guild.name).catch((e) => log.warn('Command registration failed', e));
@@ -163,6 +173,17 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const ready = new Promise<void>((resolve) => {
     client.once(Events.ClientReady, (c) => {
       log.info(`Logged in as ${c.user.tag} in ${c.guilds.cache.size} server(s)`);
+      if (DEBUG_BUILD) {
+        // What this installation is set up as, so the log can be read without asking. No tokens, keys or sheet IDs.
+        const all = store.listAllPanels();
+        dbg(log, `startup: ${all.length} panel(s), ${[...c.guilds.cache.values()].map((g) => `${g.name} (${g.id}, ${g.memberCount} members)`).join('; ')}`);
+        for (const p of all) {
+          const open = store.listOpenJobViews(p.id);
+          const held = open.reduce((n, v) => n + v.legs.filter((l) => l.holder).length, 0);
+          dbg(log, `startup: panel ${p.id} "${p.airlineName}" guild ${p.guildId} channel ${p.channelId} sheet=${p.sheetId ? 'linked' : 'none'} write-back=${p.writeback} window=${p.showDays}d required-role=${p.requiredRoleId ?? 'none'} open flights=${open.length} legs held in Discord=${held} last refresh=${p.lastRefreshAt === null ? 'never' : new Date(p.lastRefreshAt).toISOString()}${p.lastRefreshError ? ` last error="${p.lastRefreshError}"` : ''}`);
+        }
+        for (const g of c.guilds.cache.values()) dbg(log, `startup: guild ${g.id} /setup refresh roles = [${store.listRefreshRoles(g.id).join(',')}]`);
+      }
       // Bring every panel up to date after a restart, then start background work.
       for (const p of store.listAllPanels()) panels.schedule(p.id);
       scheduler.start();

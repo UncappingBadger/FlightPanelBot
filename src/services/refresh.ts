@@ -1,5 +1,6 @@
 import type { Panel, Store } from '../db/store.js';
 import { normalizeFetched, type JobSource } from '../jobs/types.js';
+import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { JobError, type JobService, type SyncResult } from './jobs.js';
 
@@ -42,9 +43,11 @@ export class SourceRefresher {
     if (!source) throw new JobError('BAD_INPUT', "This panel's flights come from file imports, so there's nothing to fetch. Use `/setup import`.");
     const now = this.now();
     this.lastAttempt.set(panel.id, now);
+    if (DEBUG_BUILD) dbg(this.log, `refresh START ${panel.airlineName} (panel ${panel.id}), source ${source.kind}, last refresh ${panel.lastRefreshAt === null ? 'never' : new Date(panel.lastRefreshAt).toISOString()}, asked by ${callerPath(1, 5)}`);
     try {
       const fetched = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
       const { jobs } = fetched;
+      if (DEBUG_BUILD) dbg(this.log, `refresh: the source returned ${jobs.length} flight(s) and ${fetched.warnings.length} warning(s)${fetched.warnings.length > 0 ? `: ${fetched.warnings.join(' | ')}` : ''}`);
       const result = this.jobs.sync(panel.id, jobs);
       const clashes = [...new Set(result.numberClashes ?? [])];
       const warnings =
@@ -59,6 +62,7 @@ export class SourceRefresher {
       this.log.info(`Refreshed ${panel.airlineName} from ${source.kind}: +${result.added} ~${result.updated} -${result.removed}${warnings.length > 0 ? ` (${warnings.length} warning${warnings.length === 1 ? '' : 's'})` : ''}`);
       return { ...result, warnings };
     } catch (e) {
+      if (DEBUG_BUILD) dbg(this.log, `refresh FAILED for ${panel.airlineName} (panel ${panel.id}): ${e instanceof Error ? e.message : e}`);
       this.store.updatePanel(panel.id, { lastRefreshError: e instanceof Error ? e.message.slice(0, 200) : 'refresh failed' });
       throw e;
     }

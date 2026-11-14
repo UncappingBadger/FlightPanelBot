@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { DEBUG_BUILD } from '../util/debugBuild.js';
 
 export const APP_NAME = 'FlightPanelBot';
 
@@ -31,7 +32,8 @@ export function hostPaths(home: string): HostPaths {
     dataDir: join(home, 'data'),
     database: join(home, 'data', 'bot.sqlite'),
     logsDir: join(home, 'logs'),
-    logFile: join(home, 'logs', 'bot.log'),
+    // The debug build keeps its own file, so what it writes is never mixed up with the normal build's log.
+    logFile: join(home, 'logs', DEBUG_BUILD ? 'bot-debug.log' : 'bot.log'),
     status: join(home, 'status.json'),
     updateState: join(home, 'update-state.json'),
   };

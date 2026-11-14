@@ -40,7 +40,8 @@ describe('who may run /setup refresh', () => {
     it('adds a role, says what it lets them do, and what Discord needs besides', async () => {
       const text = await admin('refresh-roles', { role: { id: REFRESHERS } });
       assert.match(text, new RegExp(`Members with <@&${REFRESHERS}> can now refresh the panels`));
-      assert.match(text, /\/setup refresh` and nothing else from `\/setup`/);
+      assert.match(text, /\/setup refresh` and `\/setup id-add`, and nothing else from `\/setup`/);
+      assert.match(text, /set pilots' FsHub IDs/);
       assert.match(text, /Server Settings, Integrations/);
       assert.deepEqual(h.store.listRefreshRoles(GUILD), [REFRESHERS]);
     });

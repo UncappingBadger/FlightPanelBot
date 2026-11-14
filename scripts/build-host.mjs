@@ -3,6 +3,8 @@
 //   npm run build:host                     bundles the bot, embeds this machine's Node.js, compiles the launcher
 //   npm run build:host -- --node <node.exe> use a different Node.js binary
 //   npm run build:host -- --out <folder>    write the result somewhere other than release/ (the old exe may be running)
+//   npm run build:host -- --debug           a DIAGNOSTIC build for chasing a problem on someone else's machine: writes release-debug/FlightPanelBot-DEBUG.exe,
+//                                           which logs everything to its own bot-debug.log. Not part of the release cycle; never published.
 //
 // The result is ONE exe. It carries the bot and a Node.js runtime inside it, unpacks them on first run, and
 // needs nothing installed on the host's computer. Everything is built with tools already in this repo plus
@@ -18,13 +20,15 @@ import { crc32, gzipSync, deflateSync } from 'node:zlib';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
+const debug = args.includes('--debug');
 const argValue = (name) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 };
 const nodeExe = resolve(argValue('--node') ?? process.execPath);
 // A running FlightPanelBot.exe is locked by Windows, so --out lets a new build go somewhere else meanwhile.
-const outDir = resolve(argValue('--out') ?? join(root, 'release'));
+const outDir = resolve(argValue('--out') ?? join(root, debug ? 'release-debug' : 'release'));
+const EXE_NAME = debug ? 'FlightPanelBot-DEBUG.exe' : 'FlightPanelBot.exe';
 const work = join(outDir, 'work');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -52,6 +56,8 @@ await build({
   // Some bundled packages use require(); give the ES module one.
   banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
   legalComments: 'external',
+  // src/util/debugBuild.ts reads this: true only for a --debug build, so a normal build carries none of the extra logging.
+  define: { __FPB_DEBUG__: String(debug) },
   logLevel: 'warning',
 });
 const botMjs = readFileSync(join(work, 'bot.mjs'));
@@ -165,13 +171,14 @@ console.log(`  node.exe.gz ${mb(statSync(join(work, 'node.exe.gz')).size)}, bot.
 
 const nodeVersion = spawnSync(nodeExe, ['--version'], { encoding: 'utf8' }).stdout.trim();
 const buildId = createHash('sha1').update(botMjs).update(nodeVersion).update(String(nodeBytes.length)).digest('hex').slice(0, 12);
-const version = pkg.version;
+const version = debug ? `${pkg.version}-debug` : pkg.version;
 
 // The user manual (a PDF) is carried inside the exe and opened from the tray menu. It is written outside this repository
 // (from the online manual), so it is looked for: --manual <file>, else next to the new exe, else in release/. With none
 // found the exe is built without it and its menu has no manual entry.
 const MANUAL_NAME = 'FlightPanelBot-Server-Owner-Manual.pdf';
-const manualPdf = [argValue('--manual'), join(outDir, MANUAL_NAME), join(root, 'release', MANUAL_NAME)].filter(Boolean).map((p) => resolve(p)).find(existsSync);
+// A diagnostic build goes to someone who already has the manual, so it is left out.
+const manualPdf = debug ? undefined : [argValue('--manual'), join(outDir, MANUAL_NAME), join(root, 'release', MANUAL_NAME)].filter(Boolean).map((p) => resolve(p)).find(existsSync);
 if (manualPdf) {
   if (readFileSync(manualPdf).subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error(`${manualPdf} is not a PDF.`);
   console.log(`  manual ${mb(statSync(manualPdf).size)} (${manualPdf})`);
@@ -181,7 +188,7 @@ if (manualPdf) {
 
 writeFileSync(
   join(work, 'BuildInfo.cs'),
-  `namespace FlightPanelBot { internal static class BuildInfo { public const string Version = "${version}"; public const string BuildId = "${buildId}"; } }\n`,
+  `namespace FlightPanelBot { internal static class BuildInfo { public const string Version = "${version}"; public const string BuildId = "${buildId}"; public const bool Debug = ${debug}; } }\n`,
 );
 writeFileSync(
   join(work, 'AssemblyInfo.cs'),
@@ -191,8 +198,8 @@ writeFileSync(
 [assembly: AssemblyCompany("UncappingBadger")]
 [assembly: AssemblyProduct("Flight Panel Bot")]
 [assembly: AssemblyCopyright("MIT licence. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ or Discord.")]
-[assembly: AssemblyVersion("${version}.0")]
-[assembly: AssemblyFileVersion("${version}.0")]
+[assembly: AssemblyVersion("${pkg.version}.0")]
+[assembly: AssemblyFileVersion("${pkg.version}.0")]
 `,
 );
 
@@ -202,7 +209,7 @@ step('Compiling the launcher with the C# compiler that comes with Windows');
 const csc = join(process.env.windir ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
 if (!existsSync(csc)) throw new Error(`The C# compiler was not found at ${csc}`);
 mkdirSync(outDir, { recursive: true });
-const exe = join(outDir, 'FlightPanelBot.exe');
+const exe = join(outDir, EXE_NAME);
 rmSync(exe, { force: true });
 const compile = spawnSync(
   csc,
@@ -233,6 +240,28 @@ if (compile.status !== 0) throw new Error('The launcher did not compile.');
 /* ------------------------------------------------------------------ 5. notices and checksum */
 
 step('Writing the licence notices and checksum');
+const debugReadme = (v) => `Flight Panel Bot ${v}  -  DIAGNOSTIC BUILD (not a release)
+
+This is a special build of the bot made only to find out what is going wrong. It does the same job as the normal
+program, with the same settings and data, but it writes a very detailed log of its own.
+
+What to do:
+ 1. Right-click the Flight Panel Bot icon near the clock and choose Quit, so the normal bot is not running.
+    (Only one copy can run at a time.)
+ 2. Double-click FlightPanelBot-DEBUG.exe. It uses your existing settings, so the bot comes back by itself.
+    Its icon's tooltip says "Flight Panel Bot DEBUG".
+ 3. Use the bot for about an hour as you normally would, and also try the things you have had trouble with
+    (for example /setup refresh, and /setup refresh-roles with a member who has the role). Write down roughly
+    what time you tried each one.
+ 4. Right-click the icon, choose Quit, and send us the file  bot-debug.log  from the folder
+        %APPDATA%\FlightPanelBot\logs
+    (the icon's menu item "Open the log" opens it). Then start the normal FlightPanelBot.exe again.
+
+The log holds Discord user and server IDs, flight codes and the pilot names in your airline's sheet. It does not
+hold your bot token, your Google key or a FsHub token. The normal bot.log is left alone.
+
+This build never checks for updates. Please do not enable "Start with Windows" while using it.
+`;
 // Node.js's own licence file (it also covers V8, OpenSSL, ICU and the rest that node.exe contains). Windows
 // installs don't ship it next to node.exe, so a copy for the version we embed is kept in the repo.
 const nodeLicense = [join(dirname(nodeExe), 'LICENSE'), join(dirname(nodeExe), 'LICENSE.txt'), join(root, 'host', 'licenses', 'NODE_LICENSE.txt')].find(existsSync);
@@ -259,7 +288,9 @@ copyFileSync(join(root, 'LICENSE'), join(outDir, 'LICENSE.txt'));
 if (manualPdf && resolve(manualPdf) !== resolve(join(outDir, MANUAL_NAME))) copyFileSync(manualPdf, join(outDir, MANUAL_NAME));
 writeFileSync(
   join(outDir, 'README.txt'),
-  `Flight Panel Bot ${version}
+  debug
+    ? debugReadme(version)
+    : `Flight Panel Bot ${version}
 By UncappingBadger. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ or Discord.
 
 Runs your virtual airline's flight panel in your own Discord server, from your own Windows PC.
@@ -296,7 +327,7 @@ Checksum: compare FlightPanelBot.exe.sha256 with the file's SHA-256 if you want 
 `,
 );
 const sha = createHash('sha256').update(readFileSync(exe)).digest('hex');
-writeFileSync(join(outDir, 'FlightPanelBot.exe.sha256'), `${sha}  FlightPanelBot.exe\n`);
+writeFileSync(join(outDir, `${EXE_NAME}.sha256`), `${sha}  ${EXE_NAME}\n`);
 rmSync(work, { recursive: true, force: true });
 
 console.log(`\nBuilt ${exe}`);

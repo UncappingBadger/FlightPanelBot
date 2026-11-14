@@ -172,7 +172,7 @@ async function clearFromSheet(ctx: BotContext, panelId: number, sourceKey: strin
 }
 
 /** Save a FsHub pilot ID (and the name FsHub has for it, if that was looked up), and redraw the panels that show it. */
-function rememberPilotId(ctx: BotContext, discordId: string, fshubId: number, name: string | null = null): void {
+export function rememberPilotId(ctx: BotContext, discordId: string, fshubId: number, name: string | null = null): void {
   ctx.store.setPilotId(discordId, fshubId, ctx.now(), name);
   for (const panelId of ctx.store.listPanelIdsHeldBy(discordId)) ctx.panels.schedule(panelId);
 }
@@ -183,9 +183,9 @@ function rememberPilotId(ctx: BotContext, discordId: string, fshubId: number, na
  * - `missing`: FsHub has no such pilot, so it was most likely mistyped
  * - `unchecked`: FsHub could not be asked (no token saved, offline, busy). The ID is taken as typed, as it always was.
  */
-type PilotCheck = { status: 'found'; name: string } | { status: 'missing' } | { status: 'unchecked' };
+export type PilotCheck = { status: 'found'; name: string } | { status: 'missing' } | { status: 'unchecked' };
 
-async function checkPilotId(ctx: BotContext, id: number): Promise<PilotCheck> {
+export async function checkPilotId(ctx: BotContext, id: number): Promise<PilotCheck> {
   if (!ctx.fshub) return { status: 'unchecked' };
   try {
     const pilot = await ctx.fshub.pilot(id);
@@ -201,7 +201,7 @@ const noSuchPilotText = (id: number) =>
   `FsHub has no pilot with the ID **${id}**, so it may have a typo. The number is in your profile address: fshub.io/pilot/**1234**/overview.`;
 
 /** "**1234** (Name on FsHub)" or just "**1234**". */
-const pilotLabel = (id: number, name: string | null) => (name ? `**${id}** (${plainText(truncate(name, 40))} on FsHub)` : `**${id}**`);
+export const pilotLabel = (id: number, name: string | null) => (name ? `**${id}** (${plainText(truncate(name, 40))} on FsHub)` : `**${id}**`);
 
 /** `fshub <ID or link>` in a DM: the pilot's FsHub pilot ID, shown beside their name on the flights they hold. */
 async function setPilotIdFromDm(ctx: BotContext, user: Person & { send: Message['author']['send'] }, raw: string): Promise<void> {

@@ -15,11 +15,14 @@ import { FsHubError, type FsHubAirline } from '../../fshub/client.js';
 import { MAX_IMPORT_BYTES, parseJobsFile, sampleCsv } from '../../jobs/import.js';
 import { parseSheetUrl, SheetJobSource } from '../../jobs/sheet.js';
 import type { AutoCompleteResult } from '../../services/autoComplete.js';
+import { parsePilotId } from '../../services/pilotId.js';
 import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
 import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '../../services/jobs.js';
 import { airlineLabel, legList, plainText, truncate, ts } from '../../util/format.js';
+import { DEBUG_BUILD, dbg } from '../../util/debugBuild.js';
 import type { BotContext, Command } from '../context.js';
-import { UserError } from '../errors.js';
+import { checkPilotId, pilotLabel, rememberPilotId } from '../dm.js';
+import { isDmClosed, UserError } from '../errors.js';
 import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
 import type { PanelRefreshResult } from '../panel.js';
 import { noPings, reminderTarget } from '../ui.js';
@@ -237,17 +240,23 @@ export function cleanAirlineName(raw: string): string {
 
 /** The most roles that can be given `/setup refresh` in one server. */
 const MAX_REFRESH_ROLES = 10;
+/** The only `/setup` subcommands a member can run by holding one of those roles. */
+const ROLE_SUBCOMMANDS = new Set(['refresh', 'id-add']);
 
 /**
  * Who may run which `/setup` subcommand. Admins (Manage Server) may run all of them. Members with a role an admin chose with
- * `/setup refresh-roles` may run `refresh` and nothing else. Discord lets server owners change who can see a command, so this is
+ * `/setup refresh-roles` may run `refresh` and `id-add` and nothing else. Discord lets server owners change who can see a command, so this is
  * checked here for real. Returns the server's ID.
  */
 function setupAccess(ctx: BotContext, interaction: ChatInputCommandInteraction, sub: string): string {
   const guildId = requireGuild(interaction);
+  const roles = ctx.store.listRefreshRoles(guildId);
+  if (DEBUG_BUILD) {
+    dbg(ctx.log, `/setup ${sub} access check: admin=${isAdmin(interaction)}, roles allowed to refresh in this server=[${roles.join(',')}], member holds one of them=${memberHasAnyRole(interaction, roles)}`);
+  }
   if (isAdmin(interaction)) return guildId;
-  if (sub === 'refresh') {
-    if (memberHasAnyRole(interaction, ctx.store.listRefreshRoles(guildId))) return guildId;
+  if (ROLE_SUBCOMMANDS.has(sub)) {
+    if (memberHasAnyRole(interaction, roles)) return guildId;
     throw new UserError('Only server admins (with the **Manage Server** permission), or members with a role an admin chose with `/setup refresh-roles`, can do that.');
   }
   throw new UserError('Only server admins (with the **Manage Server** permission) can do that.');
@@ -434,7 +443,7 @@ export const setupCommand: Command = {
     .addSubcommand((s) =>
       s
         .setName('refresh-roles')
-        .setDescription('Let members with a role run /setup refresh, and nothing else (leave empty to see the list)')
+        .setDescription('Let members with a role run /setup refresh and id-add, and nothing else (empty: show list)')
         .addRoleOption((o) => o.setName('role').setDescription('The role to add or remove'))
         .addStringOption((o) =>
           o
@@ -442,6 +451,13 @@ export const setupCommand: Command = {
             .setDescription('Add (the default when you give a role), remove it, or clear every role')
             .addChoices({ name: 'Add the role', value: 'add' }, { name: 'Remove the role', value: 'remove' }, { name: 'Clear every role', value: 'clear' }),
         ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('id-add')
+        .setDescription("Set a pilot's FsHub pilot ID in the bot (to fix a wrong one)")
+        .addUserOption((o) => o.setName('user').setDescription('The pilot').setRequired(true))
+        .addStringOption((o) => o.setName('id').setDescription('Their FsHub pilot ID, or a link to their FsHub profile').setRequired(true).setMaxLength(100)),
     )
     .addSubcommand((s) =>
       s
@@ -908,18 +924,66 @@ export const setupCommand: Command = {
         return;
       }
 
+      case 'id-add': {
+        const target = interaction.options.getUser('user', true);
+        if (target.bot) throw new UserError("That's a bot, not a pilot.");
+        const id = parsePilotId(interaction.options.getString('id', true));
+        if (id === null) {
+          throw new UserError("I couldn't read that as a FsHub pilot ID. Give the number from their profile address (fshub.io/pilot/**1234**/overview), or a link to their FsHub profile.");
+        }
+        const check = await checkPilotId(ctx, id);
+        if (check.status === 'missing') {
+          throw new UserError(`FsHub has no pilot with the ID **${id}**, so it may have a typo. The number is in the pilot's profile address (fshub.io/pilot/**1234**/overview). I haven't changed anything.`);
+        }
+        // The airline's own FsHub roster says who a pilot is: an ID it gives to another Discord account would be refused when flights are completed.
+        const owner = ctx.store.rosterOwnerOf(id, target.id);
+        if (owner !== null) {
+          throw new UserError(
+            `The airline's FsHub roster lists pilot **${id}** as <@${owner}>, so flights couldn't be completed for <@${target.id}> with that ID. If the roster is wrong, that pilot has to fix the Discord account linked on their FsHub profile; otherwise check the number. I haven't changed anything.`,
+          );
+        }
+        const before = ctx.store.getPilotLink(target.id);
+        const name = check.status === 'found' ? check.name : null;
+        rememberPilotId(ctx, target.id, id, name);
+        ctx.log.info(`FsHub pilot ID of ${target.id} set to ${id} by ${interaction.user.id} (it was ${before ? before.fshubId : 'not set'})`);
+
+        // Tell the pilot, so a change they did not make is never a surprise.
+        let told = true;
+        try {
+          await target.send({
+            content: `A manager (<@${interaction.user.id}>) set your FsHub pilot ID to ${pilotLabel(id, name)}. It shows next to your name on your flights. If that isn't you, send me \`fshub <your ID>\` with the right one.`,
+            allowedMentions: noPings,
+          });
+        } catch (e) {
+          told = false;
+          if (!isDmClosed(e)) ctx.log.warn(`Could not tell ${target.id} about their new FsHub pilot ID`, e);
+        }
+        await interaction.editReply({
+          content: [
+            `✅ <@${target.id}>'s FsHub pilot ID is now ${pilotLabel(id, name)}. It shows next to their name on the flights they hold.`,
+            before ? `Before: ${pilotLabel(before.fshubId, before.name)}${before.source === 'roster' ? " (from the airline's FsHub roster)" : ''}.` : 'They had no ID saved.',
+            check.status === 'unchecked' ? "I couldn't check it with FsHub (no token saved, or FsHub didn't answer), so it is saved as you gave it." : '',
+            told ? "I've told them in a DM." : "Their DMs are closed, so I couldn't tell them.",
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
       case 'refresh-roles': {
         const mode = interaction.options.getString('mode');
         const picked = interaction.options.getRole('role');
         const roles = () => ctx.store.listRefreshRoles(guildId);
         const names = (ids: string[]) => ids.map((id) => `<@&${id}>`).join(', ');
         const how =
-          'They can run `/setup refresh` and nothing else from `/setup`. For them to see `/setup` at all, Discord has to allow it too: in Server Settings, Integrations, choose this bot, then `/setup`, and add the role there.';
+          'They can run `/setup refresh` and `/setup id-add`, and nothing else from `/setup`. For them to see `/setup` at all, Discord has to allow it too: in Server Settings, Integrations, choose this bot, then `/setup`, and add the role there.';
 
         if (mode === 'clear') {
           if (picked) throw new UserError('`mode:clear` removes every role, so leave the `role` option out.');
           const n = ctx.store.clearRefreshRoles(guildId);
-          await interaction.editReply({ content: n === 0 ? 'No roles were set, so there was nothing to clear.' : `Cleared ${n} role${n === 1 ? '' : 's'}. Only admins can run \`/setup refresh\` now.`, allowedMentions: noPings });
+          await interaction.editReply({ content: n === 0 ? 'No roles were set, so there was nothing to clear.' : `Cleared ${n} role${n === 1 ? '' : 's'}. Only admins can run \`/setup refresh\` or \`/setup id-add\` now.`, allowedMentions: noPings });
           return;
         }
         if (mode === 'remove' && !picked) throw new UserError('Say which role to remove with the `role` option, or use `mode:clear` to remove them all.');
@@ -941,7 +1005,7 @@ export const setupCommand: Command = {
           }
           const added = ctx.store.addRefreshRole(guildId, picked.id, ctx.now());
           await interaction.editReply({
-            content: [added ? `✅ Members with <@&${picked.id}> can now refresh the panels.` : `<@&${picked.id}> was already one of the roles.`, how, `Roles that can refresh: ${names(roles())}.`].join('\n'),
+            content: [added ? `✅ Members with <@&${picked.id}> can now refresh the panels and set pilots' FsHub IDs.` : `<@&${picked.id}> was already one of the roles.`, how, `Roles that can refresh: ${names(roles())}.`].join('\n'),
             allowedMentions: noPings,
           });
           return;
