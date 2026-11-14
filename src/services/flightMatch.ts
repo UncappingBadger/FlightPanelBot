@@ -1,4 +1,5 @@
 import type { FlownFlight, Job, JobView, LegView, Panel, Store } from '../db/store.js';
+import { isCompatible } from './aircraftAliases.js';
 
 /**
  * Matching what a panel lists to what FsHub recorded. A scheduled flight (one leg of a job) is "confirmed"
@@ -93,14 +94,15 @@ function pick(candidates: FlownFlight[], leg: LegView, strict: boolean, named: n
 /**
  * Whether the aircraft flown is the one the schedule asked for: true or false when both are aircraft type codes
  * that can be compared, null when they can't (no requirement, a type given in words, or a code that is only an
- * abbreviation of the other, like a schedule's `A32` for an `A320`).
+ * abbreviation of the other, like a schedule's `A32` for an `A320`). A type FsHub counts as an alias of the one asked for
+ * (an A20N for an A320 job) is the aircraft asked for: true.
  */
 export function sameAircraft(required: string | null, flown: string | null): boolean | null {
   if (!required || !flown) return null;
   const want = required.trim().toUpperCase();
   const got = flown.trim().toUpperCase();
   if (!/^[A-Z0-9]{3,4}$/.test(want) || !/^[A-Z0-9]{3,4}$/.test(got)) return null;
-  if (want === got) return true;
+  if (want === got || isCompatible(want, got)) return true;
   if (got.startsWith(want) || want.startsWith(got)) return null;
   return false;
 }

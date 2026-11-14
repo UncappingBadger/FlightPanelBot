@@ -19,6 +19,7 @@ import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
+import { aliasNote, expandAircraftTypes } from '../services/aircraftAliases.js';
 import { availableFor } from '../services/availability.js';
 import { dayOf, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
@@ -463,11 +464,13 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, p
           : 'Type where you want to fly from, where you want to fly to, a date, an aircraft type, or any of them together.',
     );
   }
-  const found = ctx.jobs.search(panel, from.codes, to.codes, day, types.codes);
+  // A pilot with an A20N can fly an A320 job on FsHub, so the types typed are widened by FsHub's aliases (and the pilot is told).
+  const widened = expandAircraftTypes(types.codes);
+  const found = ctx.jobs.search(panel, from.codes, to.codes, day, widened.codes);
   // Someone who turned on /hideunavailable doesn't see the flights that are already taken (the ones they are part of stay).
   const matches = ctx.store.getHideUnavailable(interaction.user.id) ? availableFor(found, interaction.user.id) : found;
   const quoted = (list: string[]) => list.map((c) => `\`${c}\``).join(', ');
-  const embeds = searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day, types.codes, await ctx.panels.avatarsFor(avatarIdsOf(matches.slice(0, MAX_SEARCH_RESULTS))), found.length - matches.length);
+  const embeds = searchEmbeds(panel, from.codes, to.codes, matches, ctx.now(), day, types.codes, await ctx.panels.avatarsFor(avatarIdsOf(matches.slice(0, MAX_SEARCH_RESULTS))), found.length - matches.length, aliasNote(widened.added));
   await interaction.editReply({
     content: [skipped.length > 0 ? `I skipped ${quoted(skipped)}: not airport codes.` : '', types.ignored.length > 0 ? `I skipped ${quoted(types.ignored)}: not aircraft types.` : ''].filter(Boolean).join('\n'),
     embeds,

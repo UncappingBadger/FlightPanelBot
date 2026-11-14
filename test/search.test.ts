@@ -337,17 +337,22 @@ describe('the search form and its results on a panel', () => {
     });
 
     it('finds the flights in that type, with the type in the heading and the description', async () => {
+      // (FsHub counts the B738 and the B38M as the same aircraft, so a B738 search finds both; the aliases have their own tests below.)
       const reply = (await search({ aircraft: 'b738' })).edits[0];
-      assert.deepEqual(titles(reply.embeds), ['🔎 Flights in B738', `${codeOf('b738')} · B738`]);
-      assert.deepEqual(types(reply), ['B738']);
-      assert.match(reply.embeds[0].toJSON().description, /^1 flight matches, open now or starting within the next 7 days\.\nTo take one/);
+      assert.deepEqual(titles(reply.embeds)[0], '🔎 Flights in B738');
+      assert.deepEqual(types(reply).sort(), ['B38M', 'B738']);
+      assert.match(reply.embeds[0].toJSON().description, /^2 flights match, open now or starting within the next 7 days\.\nTo take one/);
+      assert.match(reply.embeds[0].toJSON().description, /\n✈️ On FsHub B38M counts as the same aircraft as B738, so flights asking for it are included\./, 'the pilot is told why the B38M is there');
+      const one =(await search({ aircraft: 'a333' })).edits[0];
+      assert.deepEqual(types(one).sort(), ['A333', 'Airbus A333'], 'no flights in the A333\'s aliases, so just the A333');
+      assert.deepEqual(one.allowedMentions, { parse: [] });
       assert.deepEqual(reply.allowedMentions, { parse: [] });
     });
 
     it('takes a few characters as the start of a type, so B73 finds every B73x and A32 every A32x', async () => {
       assert.deepEqual(types((await search({ aircraft: 'A32' })).edits[0]).sort(), ['A320', 'A320/A321', 'A321']);
-      assert.deepEqual(types((await search({ aircraft: 'B3' })).edits[0]), ['B38M']);
-      assert.deepEqual(types((await search({ aircraft: 'B7' })).edits[0]), ['B738']);
+      assert.deepEqual(types((await search({ aircraft: 'B3' })).edits[0]).sort(), ['B38M', 'B738'], 'B38M, and the B738 FsHub counts as the same aircraft');
+      assert.deepEqual(types((await search({ aircraft: 'B7' })).edits[0]).sort(), ['B38M', 'B738']);
     });
 
     it('takes several types, in any case and with any separators', async () => {

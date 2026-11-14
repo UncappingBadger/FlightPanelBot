@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import type { FlownFlight, Holder, JobView, LegView, Panel } from '../db/store.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
+import { isAliasUse } from '../services/aircraftAliases.js';
 import { sameAircraft, type Confirmations } from '../services/flightMatch.js';
 import { MAX_SEARCH_RESULTS, type SearchDay } from '../services/search.js';
 import type { Reminder } from '../services/reminders.js';
@@ -113,7 +114,9 @@ export function flightFacts(flight: FlownFlight, required: string | null): strin
   const type = flight.aircraftIcao ? `${flight.aircraftIcao}${name ? ` (${name})` : ''}` : (name ?? 'aircraft not recorded');
   const how = flight.scheduleStatus === 'ON-TIME' ? ' · on time' : flight.scheduleStatus === 'DELAYED' ? ' · delayed' : flight.scheduleStatus === 'LATE' ? ' · late' : '';
   const warn = required && sameAircraft(required, flight.aircraftIcao) === false ? ` · ⚠️ scheduled ${plainText(truncate(required, 12))}` : '';
-  return `${type}, landed ${ts(flight.arrivedAt, 't')}${how}${warn}`;
+  // An alias FsHub accepts for the scheduled type is not a warning, but it is worth saying what it stood in for.
+  const alias = required && flight.aircraftIcao && isAliasUse(required, flight.aircraftIcao) ? ` · counts as ${plainText(truncate(required, 12))}` : '';
+  return `${type}, landed ${ts(flight.arrivedAt, 't')}${how}${warn}${alias}`;
 }
 
 /** The DM telling a pilot that flights of theirs were completed from FsHub without them pressing Complete. */
@@ -275,7 +278,7 @@ export function openCard(view: JobView, now: number, avatars?: Avatars): EmbedBu
  * matched, then those flights as the same cards the panel uses (the first few; a long list asks to be narrowed). Only
  * flights the panel itself lists are ever passed in, so the days an admin chose limit the search too.
  */
-export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = [], avatars?: Avatars, hiddenTaken = 0): EmbedBuilder[] {
+export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = [], avatars?: Avatars, hiddenTaken = 0, aliasNote: string | null = null): EmbedBuilder[] {
   const route = [from.length > 0 ? `from ${from.join(' or ')}` : '', to.length > 0 ? `to ${to.join(' or ')}` : ''].filter(Boolean).join(' ');
   const kind = aircraft.length > 0 ? `in ${aircraft.join(' or ')}` : '';
   const what = [route, day ? `on ${day.label}` : '', kind].filter(Boolean).join(' ');
@@ -301,7 +304,7 @@ export function searchEmbeds(panel: Panel, from: string[], to: string[], matches
           .filter(Boolean)
           .join('\n');
   const hiddenNote = hiddenTaken > 0 ? `\n🙈 ${hiddenTaken === 1 ? '1 matching flight that is already taken is' : `${hiddenTaken} matching flights that are already taken are`} hidden (you turned that on with \`/hideunavailable\`).` : '';
-  const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description + hiddenNote);
+  const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description + hiddenNote + (aliasNote ? `\n${aliasNote}` : ''));
   return [head, ...shown.map((v) => openCard(v, now, avatars))];
 }
 
@@ -320,6 +323,7 @@ export function completedCard(view: JobView, confirmed?: Map<number, FlownFlight
   const lines = [routeHeading(legs)];
   if (single?.aircraftName) lines.push(`*${plainText(truncate(single.aircraftName, 40))}*`);
   if (single && job.aircraft && sameAircraft(job.aircraft, single.aircraftIcao) === false) lines.push(`⚠️ scheduled ${plainText(truncate(job.aircraft, 12))}`);
+  if (single && job.aircraft && single.aircraftIcao && isAliasUse(job.aircraft, single.aircraftIcao)) lines.push(`🔁 counts as ${plainText(truncate(job.aircraft, 12))} (a FsHub alias)`);
   const e = new EmbedBuilder().setColor(COLORS.success).setTitle(title).setDescription(lines.join('\n'));
 
   const fields: APIEmbedField[] = [];

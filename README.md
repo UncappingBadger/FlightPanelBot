@@ -66,7 +66,7 @@ fly **from**, where you want to fly **to**, the **date**, and the **aircraft typ
 using the airport codes shown on the panel (`EGLL`; several are fine, `EGLL EGKK`; two or three letters match every airport
 starting with them, so `EG` finds EGLL, EGKK and the rest). Aircraft types are the short codes on the flight cards (`A320`,
 `B738`); several are fine (`A320 B738`), and a few characters match every type that starts with them, so `B73` finds B737,
-B738 and B739. An aircraft type on its own lists every flight in that type. The bot answers privately with the matching flights as the same cards the panel shows,
+B738 and B739. An aircraft type on its own lists every flight in that type. **FsHub's aircraft aliases count**: FsHub lets a pilot fly an Aeroconomy job in a compatible aircraft (an A20N for an A320 job, a B738 for a B38M job, the A330-200, -300 and -900 for one another), so a search adds the types FsHub lists as aliases of the ones asked for (an A20N search also finds the A320 flights) and the reply says which it added. The bot answers privately with the matching flights as the same cards the panel shows,
 so you can see at a glance which still need a pilot, then you press **Reserve** and reply with the ID. A flight with several
 legs matches when it leaves from the first airport and later arrives at the second (`LFPG` to `EDDF` finds
 `LFPG → EHAM → EDDF`).
@@ -293,7 +293,7 @@ read-only (it never sends anything to FsHub except requests for information, and
 where the last part is FsHub's own number for the flight, linked to its report on fshub.io (a flight with several legs
 shows one link per leg). It is a link only: the bot's flight IDs (`WA-009`) stay as they are, because they are needed
 before a flight is flown and FsHub's number only exists once it has landed. The aircraft is the one FsHub recorded (so it can differ from the scheduled one, and a different type is flagged:
-`⚠️ scheduled B738`), the landing time is shown in each reader's own timezone, and `on time`, `delayed` or `late`
+`⚠️ scheduled B738`; but a type FsHub lists as an alias of the scheduled one, such as an A20N for an A320, is not flagged and shows `counts as A320`), the landing time is shown in each reader's own timezone, and `on time`, `delayed` or `late`
 is FsHub's own word for how the flight went against its schedule (left out when FsHub has none). Under **My
 flights** a pilot is told which of their flights FsHub already shows as flown.
 
@@ -302,7 +302,7 @@ FsHub flight confirms a scheduled flight when it went between the same two airpo
 window (an hour either side). If the pilot holding the flight has a known FsHub ID, only a flight by that pilot
 counts. If not (a pilot named in the schedule sheet, say) it counts only when it is the single candidate: two
 flights that could both be it means nothing is claimed rather than something wrong. One FsHub flight confirms at
-most one scheduled flight. The aircraft is shown, not required: a pilot who flew another type still flew it. If
+most one scheduled flight. The aircraft is shown, not required: a pilot who flew another type still flew it. (The aliases come from FsHub's aircraft page, https://fshub.io/aircraft-list, which needs a FsHub sign-in, so the bot carries a snapshot in `src/services/aircraftAliases.ts`; `scripts/import-aircraft-aliases.mjs` refreshes it from a copy of that page's data, as its header explains.) If
 FsHub has not recorded a flight (the client was not running, the airports differ), nothing is added; its absence
 proves nothing. FsHub's aircraft type is whatever the pilot's client detected, and pilots can ask FsHub to correct
 it.
@@ -592,7 +592,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1261 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1279 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

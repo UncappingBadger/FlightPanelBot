@@ -358,7 +358,8 @@ describe('matching FsHub flights to the panel\'s flights', () => {
       assert.equal(sameAircraft('A320', 'A320'), true);
       assert.equal(sameAircraft(' a320 ', 'A320'), true);
       assert.equal(sameAircraft('B737', 'B738'), false);
-      assert.equal(sameAircraft('A20N', 'A320'), false);
+      assert.equal(sameAircraft('A20N', 'A320'), true, 'FsHub counts the A320 and the A20N as the same aircraft (an alias)');
+      assert.equal(sameAircraft('A320', 'B738'), false);
       assert.equal(sameAircraft('A32', 'A320'), null, 'a schedule\'s abbreviation (a typo in the sheet) is not a mismatch');
       assert.equal(sameAircraft('Boeing 737-800', 'B738'), null, 'a type given in words');
       assert.equal(sameAircraft(null, 'B738'), null);
