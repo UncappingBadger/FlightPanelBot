@@ -131,7 +131,7 @@ describe('who may run /setup refresh', () => {
     });
 
     it('is the only thing such a member can do: every other /setup subcommand is refused, and changes nothing', async () => {
-      const others = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'window', 'writeback', 'market', 'fshub', 'completed', 'refresh-roles', 'release', 'template'];
+      const others = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'window', 'writeback', 'market', 'fshub', 'completed', 'depart-warning', 'refresh-roles', 'release', 'template'];
       const before = JSON.stringify(h.store.getPanel(pid()));
       for (const sub of others) {
         await assert.rejects(

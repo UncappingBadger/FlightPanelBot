@@ -164,7 +164,7 @@ describe('/setup id-add', () => {
 
     it('does not give such a role anything else: every other /setup subcommand is still refused', async () => {
       h.store.addRefreshRole(h.panel.guildId, MANAGER_ROLE, h.clock.now);
-      for (const sub of ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'window', 'writeback', 'market', 'fshub', 'completed', 'refresh-roles', 'release', 'template']) {
+      for (const sub of ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'window', 'writeback', 'market', 'fshub', 'completed', 'depart-warning', 'refresh-roles', 'release', 'template']) {
         await assert.rejects(
           run({ airline: 'Test Air', channel: { id: CHANNEL }, code: 'TST-001', role: { id: OTHER_ROLE }, days: 3 }, { sub, admin: false, roles: [MANAGER_ROLE] }),
           (e: unknown) => e instanceof UserError && /^Only server admins \(with the \*\*Manage Server\*\* permission\) can do that\.$/.test(e.message),

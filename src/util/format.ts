@@ -5,6 +5,15 @@ export function ts(ms: number, style: TimestampStyle = 'f'): string {
   return `<t:${Math.floor(ms / 1000)}:${style}>`;
 }
 
+/** A length of time in words: "45 min", "2 h", "1 h 58 min". */
+export function durationText(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
 }

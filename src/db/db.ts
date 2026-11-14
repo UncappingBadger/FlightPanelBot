@@ -446,6 +446,39 @@ export const MIGRATIONS: string[] = [
     updated_at       INTEGER NOT NULL
   );
   `,
+
+  /* v24: the late-departure warning. A panel's setting (minutes before the latest take-off that a pilot is warned; 0 is off), the
+     flight times learned from the airline's own FsHub flights (kept long after the flights themselves are forgotten), the airports'
+     positions (for a distance when no flight of that route has been seen), and who has been warned about which flight. */
+  `
+  ALTER TABLE panels ADD COLUMN depart_warning_minutes INTEGER NOT NULL DEFAULT 30;
+
+  CREATE TABLE route_times (
+    panel_id      INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    flight_id     INTEGER NOT NULL,
+    dep           TEXT NOT NULL,
+    arr           TEXT NOT NULL,
+    aircraft_icao TEXT,
+    minutes       INTEGER NOT NULL,
+    arrived_at    INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, flight_id)
+  );
+  CREATE INDEX idx_route_times_route ON route_times(panel_id, dep, arr, arrived_at);
+
+  CREATE TABLE airport_coords (
+    code TEXT PRIMARY KEY,
+    lat  REAL NOT NULL,
+    lon  REAL NOT NULL,
+    name TEXT
+  );
+
+  CREATE TABLE departure_warnings (
+    job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    discord_id TEXT NOT NULL,
+    sent_at    INTEGER NOT NULL,
+    PRIMARY KEY (job_id, discord_id)
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

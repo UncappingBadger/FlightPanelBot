@@ -2,7 +2,7 @@ import type { Client } from 'discord.js';
 import { dbg } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
 import type { JobEvent, JobEvents, ReleasedNotice } from '../services/events.js';
-import { legList } from '../util/format.js';
+import { legList, truncate } from '../util/format.js';
 import type { PanelService } from './panel.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
 import { autoCompletedMessage, noPings } from './ui.js';
@@ -33,6 +33,18 @@ export class Notifier {
       await user.send({ content: autoCompletedMessage(done), allowedMentions: noPings });
     } catch (e) {
       this.log.debug(`Could not tell ${discordId} about flights completed from FsHub`, e);
+    }
+  }
+
+  /** Send a person a private message. True if it went out, false if they could not be reached (closed DMs, an unknown user). */
+  async dm(discordId: string, content: string): Promise<boolean> {
+    try {
+      const user = await this.client.users.fetch(discordId);
+      await user.send({ content: truncate(content, 1990), allowedMentions: noPings });
+      return true;
+    } catch (e) {
+      this.log.debug(`Could not send ${discordId} a private message`, e);
+      return false;
     }
   }
 

@@ -197,7 +197,8 @@ describe('the flights the store keeps', () => {
     for (let v = 0; v < 12; v++) old.exec(MIGRATIONS[v] as string);
     old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at, fshub_airline_id) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1, 8123)`).run();
     assert.ok(MIGRATIONS.length >= 13);
-    old.exec(MIGRATIONS[12] as string);
+    // The rest of the upgrade, as a real start-up does it, before the store is used.
+    for (let v = 12; v < MIGRATIONS.length; v++) old.exec(MIGRATIONS[v] as string);
     const store = new Store(old);
     const panel = store.listAllPanels()[0]!;
     assert.deepEqual([panel.fshubConfirm, panel.fshubFlightCursor, panel.fshubFlightsAt, panel.fshubFlightsNote], [true, 0, null, null]);

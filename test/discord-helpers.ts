@@ -532,6 +532,7 @@ export interface DiscordHarness {
   refresher: SourceRefresher;
   aerodaq: FakeAeroDaq;
   market: MarketService;
+  notifier: Notifier;
   /** Present when the test asked for FsHub (`fshub: true`); otherwise ctx.fshub is null, as for a host with no token. */
   fshub: FakeFsHub | null;
 }
@@ -581,7 +582,7 @@ export function makeDiscordHarness(
     fetchFn: opts.fetchFn ?? fetch,
   };
   notifier.subscribe(h.events);
-  return { ctx, client, panels, refresher, aerodaq, market, fshub };
+  return { ctx, client, panels, refresher, aerodaq, market, notifier, fshub };
 }
 
 /** Let fire-and-forget event listeners and debounce timers finish. */

@@ -15,6 +15,7 @@ import { FsHubError, type FsHubAirline } from '../../fshub/client.js';
 import { MAX_IMPORT_BYTES, parseJobsFile, sampleCsv } from '../../jobs/import.js';
 import { parseSheetUrl, SheetJobSource } from '../../jobs/sheet.js';
 import type { AutoCompleteResult } from '../../services/autoComplete.js';
+import { DEPART_WARNING_DEFAULT_MINUTES, DEPART_WARNING_MAX_MINUTES, DEPART_WARNING_MIN_MINUTES } from '../../services/departureWarnings.js';
 import { parsePilotId } from '../../services/pilotId.js';
 import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
 import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '../../services/jobs.js';
@@ -412,6 +413,25 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('depart-warning')
+        .setDescription('Warn pilots before the latest take-off that still makes the flight window (empty: show)')
+        .addIntegerOption((o) =>
+          o
+            .setName('minutes')
+            .setDescription('How long before the latest take-off to warn them')
+            .setMinValue(DEPART_WARNING_MIN_MINUTES)
+            .setMaxValue(DEPART_WARNING_MAX_MINUTES),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Turn the warning on or off')
+            .addChoices({ name: `On: warn them (${DEPART_WARNING_DEFAULT_MINUTES} minutes before, unless you say otherwise)`, value: 'on' }, { name: 'Off: no warnings', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('completed')
         .setDescription('Show completed flights in a channel of their own (leave empty to check)')
         .addChannelOption((o) =>
@@ -768,6 +788,43 @@ export const setupCommand: Command = {
               ? `${later} open flight${later === 1 ? ' starts' : 's start'} later than that and ${later === 1 ? 'is' : 'are'} left off the panel until ${later === 1 ? 'it comes' : 'they come'} within ${span}. Pilots can still reserve ${later === 1 ? 'it' : 'one'} by typing its flight ID.`
               : 'Every open flight is listed.',
             `Change it with \`/setup window days:\` (${PANEL_DAYS_MIN} to ${PANEL_DAYS_MAX}).`,
+          ].join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'depart-warning': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const minutes = interaction.options.getInteger('minutes');
+        const mode = interaction.options.getString('mode');
+        if (minutes !== null && mode === 'off') throw new UserError('Give a number of minutes, or choose off, but not both.');
+        if (minutes !== null && (!Number.isInteger(minutes) || minutes < DEPART_WARNING_MIN_MINUTES || minutes > DEPART_WARNING_MAX_MINUTES)) {
+          throw new UserError(`Choose a number of minutes from ${DEPART_WARNING_MIN_MINUTES} to ${DEPART_WARNING_MAX_MINUTES}.`);
+        }
+        let changed = false;
+        if (mode === 'off') {
+          if (panel.departWarningMinutes !== 0) (ctx.store.updatePanel(panel.id, { departWarningMinutes: 0 }), (changed = true));
+        } else if (minutes !== null) {
+          if (panel.departWarningMinutes !== minutes) (ctx.store.updatePanel(panel.id, { departWarningMinutes: minutes }), (changed = true));
+        } else if (mode === 'on' && panel.departWarningMinutes === 0) {
+          ctx.store.updatePanel(panel.id, { departWarningMinutes: DEPART_WARNING_DEFAULT_MINUTES });
+          changed = true;
+        }
+        const current = ctx.store.getPanel(panel.id) as Panel;
+        const done = changed ? 'Done. ' : '';
+        if (current.departWarningMinutes === 0) {
+          await interaction.editReply({
+            content: `${done}The late-departure warning is **off** for **${panel.airlineName}**. \`/setup depart-warning mode:on\` turns it back on (${DEPART_WARNING_DEFAULT_MINUTES} minutes before, unless you give \`minutes\`).`,
+            allowedMentions: noPings,
+          });
+          return;
+        }
+        await interaction.editReply({
+          content: [
+            `${done}For **${panel.airlineName}**, a pilot who holds a flight, and its backup pilot, gets a private message **${current.departWarningMinutes} minutes** before the latest time they could take off and still land inside the flight's window (the end of the window less how long the flight takes).`,
+            "How long it takes comes from the airline's own FsHub flights of that route when I have seen some, and otherwise it is estimated from the distance between the airports; the message says which. I can't see a flight that is already in the air, so it tells anyone already flying to ignore it. Each person is warned once per flight.",
+            `Change the time with \`/setup depart-warning minutes:\` (${DEPART_WARNING_MIN_MINUTES} to ${DEPART_WARNING_MAX_MINUTES}), or switch it off with \`mode:off\`.`,
           ].join('\n'),
           allowedMentions: noPings,
         });

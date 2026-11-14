@@ -42,6 +42,11 @@ export const helpCommand: Command = {
               value: 'Press **My flights** under the panel to see what you hold and give flights back, or DM me `flights` to see them all. Say `cancel` in the DM at any point to stop.',
             },
             {
+              name: 'A heads-up before it is too late',
+              value:
+                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. I can't see a flight that is already in the air, so ignore it if you are flying.",
+            },
+            {
               name: 'When you have flown it',
               value:
                 "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights are listed in a panel of their own below the open ones, and on a FsHub panel they also show the aircraft FsHub recorded. On a FsHub panel I also complete the flights FsHub shows you flew once an hour, and DM you, so you don't have to press anything.",
@@ -54,7 +59,7 @@ export const helpCommand: Command = {
             {
               name: 'Server admins',
               value:
-                '`/setup panel-add` name the airline and choose the channel for its panel, optionally with a role that may reserve\n`/setup panel-role` change that role\n`/setup sheet` read flights from your airline\'s Google Sheet schedule (every hour) · `/setup import` load flights from a CSV or JSON file instead (`/setup template` gives an example)\n`/setup window` choose how many days ahead the panel lists flights (1 to 7) · `/setup reminders` choose who is pinged when a flight has no pilot 24 hours before it starts · `/setup writeback` check or switch off writing names and completions to the sheet',
+                '`/setup panel-add` name the airline and choose the channel for its panel, optionally with a role that may reserve\n`/setup panel-role` change that role\n`/setup sheet` read flights from your airline\'s Google Sheet schedule (every hour) · `/setup import` load flights from a CSV or JSON file instead (`/setup template` gives an example)\n`/setup window` choose how many days ahead the panel lists flights (1 to 7) · `/setup reminders` choose who is pinged when a flight has no pilot 24 hours before it starts · `/setup writeback` check or switch off writing names and completions to the sheet\n`/setup depart-warning` warn a pilot and the backup by DM shortly before the latest take-off that still makes the flight window (30 minutes by default, or off)',
             },
             {
               name: 'Server admins, continued',

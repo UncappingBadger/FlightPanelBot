@@ -60,6 +60,8 @@ export interface Panel {
   completedChannelId: string | null;
   /** The messages the completed flights are drawn in, in that channel (empty while they are shown on the panel). */
   completedMessageIds: string[];
+  /** How many minutes before the latest take-off that still makes a flight's window a pilot is warned; 0 means the warning is off. */
+  departWarningMinutes: number;
   createdAt: number;
 }
 
@@ -87,6 +89,24 @@ export interface FlownFlight {
   aircraftName: string | null;
   /** FsHub's own word for it: `ON-TIME`, `DELAYED` or `LATE`; null when it said nothing. */
   scheduleStatus: string | null;
+}
+
+/** A flight shorter or longer than this is not a believable record of how long a route takes (a test flight, a flight left running). */
+export const ROUTE_TIME_MIN_MINUTES = 10;
+export const ROUTE_TIME_MAX_MINUTES = 20 * 60;
+
+/** How long one FsHub flight of a route took, and in what. */
+export interface RouteTime {
+  minutes: number;
+  aircraftIcao: string | null;
+  arrivedAt: number;
+}
+
+/** Where an airport is. */
+export interface AirportCoord {
+  lat: number;
+  lon: number;
+  name: string | null;
 }
 
 /** A pilot's saved FsHub ID, and how the bot came to have it. */
@@ -268,6 +288,7 @@ const toPanel = (r: Row): Panel => ({
   showDays: r.show_days === undefined || r.show_days === null ? 7 : Math.min(7, Math.max(1, Math.round(n(r.show_days)))),
   completedChannelId: sn(r.completed_channel_id),
   completedMessageIds: parseJsonArray<string>(r.completed_message_ids, []).map(String),
+  departWarningMinutes: r.depart_warning_minutes === undefined || r.depart_warning_minutes === null ? 30 : Math.min(180, Math.max(0, Math.round(n(r.depart_warning_minutes)))),
   createdAt: n(r.created_at),
 });
 
@@ -463,10 +484,18 @@ export class Store {
       fshubAutoComplete: boolean;
       fshubAutoCompleteAt: number | null;
       showDays: number;
+      departWarningMinutes: number;
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.departWarningMinutes !== undefined) {
+      if (!Number.isInteger(patch.departWarningMinutes) || patch.departWarningMinutes < 0 || patch.departWarningMinutes > 180) {
+        throw new Error(`The departure warning is 0 (off) to 180 minutes, not ${patch.departWarningMinutes}`);
+      }
+      sets.push('depart_warning_minutes = ?');
+      params.push(patch.departWarningMinutes);
+    }
     if (patch.showDays !== undefined) {
       if (!Number.isInteger(patch.showDays) || patch.showDays < 1 || patch.showDays > 7) throw new Error(`A panel shows 1 to 7 days, not ${patch.showDays}`);
       sets.push('show_days = ?');
@@ -881,9 +910,72 @@ export class Store {
           f.scheduleStatus,
         );
         if (!existed) added++;
+        this.learnRouteTime(panelId, f);
       }
     });
     return added;
+  }
+
+  /**
+   * Keep how long this flight took, to know how long the route takes, when it is a believable time. These outlive the flights
+   * themselves (which are forgotten after a week), because a route's usual time is worth keeping.
+   */
+  private learnRouteTime(panelId: number, f: FlownFlight): void {
+    if (f.departedAt === null) return;
+    const minutes = Math.round((f.arrivedAt - f.departedAt) / 60_000);
+    if (minutes < ROUTE_TIME_MIN_MINUTES || minutes > ROUTE_TIME_MAX_MINUTES) return;
+    this.run(
+      'INSERT OR REPLACE INTO route_times(panel_id, flight_id, dep, arr, aircraft_icao, minutes, arrived_at) VALUES (?,?,?,?,?,?,?)',
+      panelId,
+      f.flightId,
+      f.dep.toUpperCase(),
+      f.arr.toUpperCase(),
+      f.aircraftIcao ? f.aircraftIcao.toUpperCase() : null,
+      minutes,
+      f.arrivedAt,
+    );
+  }
+
+  /** The flight times kept for a route (most recent first, up to `limit`), each with the aircraft it was flown in. */
+  listRouteTimes(panelId: number, dep: string, arr: string, limit = 25): RouteTime[] {
+    return this.all(
+      'SELECT minutes, aircraft_icao, arrived_at FROM route_times WHERE panel_id = ? AND dep = ? AND arr = ? ORDER BY arrived_at DESC, flight_id DESC LIMIT ?',
+      panelId,
+      dep.toUpperCase(),
+      arr.toUpperCase(),
+      limit,
+    ).map((r) => ({ minutes: n(r.minutes), aircraftIcao: sn(r.aircraft_icao), arrivedAt: n(r.arrived_at) }));
+  }
+
+  /** Forget flight times older than `before`. */
+  pruneRouteTimes(before: number): number {
+    return this.run('DELETE FROM route_times WHERE arrived_at < ?', before).changes;
+  }
+
+  /* ------------------------------------------------------------------ airports' positions and who has been warned */
+
+  getAirportCoords(codes: string[]): Map<string, AirportCoord> {
+    const out = new Map<string, AirportCoord>();
+    for (const code of new Set(codes.map((c) => c.toUpperCase()))) {
+      const r = this.get('SELECT code, lat, lon, name FROM airport_coords WHERE code = ?', code);
+      if (r) out.set(code, { lat: n(r.lat), lon: n(r.lon), name: sn(r.name) });
+    }
+    return out;
+  }
+
+  saveAirportCoords(rows: Array<{ code: string; lat: number; lon: number; name: string | null }>): void {
+    this.tx(() => {
+      for (const a of rows) this.run('INSERT OR REPLACE INTO airport_coords(code, lat, lon, name) VALUES (?,?,?,?)', a.code.toUpperCase(), a.lat, a.lon, a.name);
+    });
+  }
+
+  /** Whether this person has already been warned about this flight. */
+  wasWarned(jobId: number, discordId: string): boolean {
+    return this.get('SELECT 1 AS x FROM departure_warnings WHERE job_id = ? AND discord_id = ?', jobId, discordId) !== undefined;
+  }
+
+  markWarned(jobId: number, discordId: string, now: number): void {
+    this.run('INSERT OR IGNORE INTO departure_warnings(job_id, discord_id, sent_at) VALUES (?,?,?)', jobId, discordId, now);
   }
 
   /** The airline's FsHub flights from `dep` to `arr` that landed between `from` and `to` (epoch ms), earliest first. */

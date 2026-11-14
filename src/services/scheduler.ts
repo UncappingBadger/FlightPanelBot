@@ -19,6 +19,8 @@ export interface SchedulerOptions {
   fshub?: { run(): Promise<unknown> };
   /** Completes the flights FsHub shows flown, once an hour. Runs after the FsHub reads, in the same lane. */
   autoComplete?: { run(): Promise<unknown> };
+  /** Warns pilots (and their backups) shortly before the latest take-off that still makes a flight's window. Runs in the same lane, after the FsHub reads. */
+  departures?: { run(): Promise<unknown> };
 }
 
 /**
@@ -35,6 +37,7 @@ export class Scheduler {
   private readonly cleanup: SchedulerOptions['cleanup'];
   private readonly fshub: SchedulerOptions['fshub'];
   private readonly autoComplete: SchedulerOptions['autoComplete'];
+  private readonly departures: SchedulerOptions['departures'];
   private readonly panels: SchedulerOptions['panels'];
   private laneRunning = false;
   private lane: Promise<void> = Promise.resolve();
@@ -51,6 +54,7 @@ export class Scheduler {
     this.cleanup = opts.cleanup;
     this.fshub = opts.fshub;
     this.autoComplete = opts.autoComplete;
+    this.departures = opts.departures;
     this.panels = opts.panels;
   }
 
@@ -66,18 +70,21 @@ export class Scheduler {
   }
 
   /**
-   * The FsHub work (rosters, flights, the hourly completion): it talks to a service that can be slow, and a hung request
+   * The FsHub work (rosters, flights, the hourly completion) and the departure warnings: they talk to a service that can be slow, and a hung request
    * takes up to a dozen seconds to give up, a first read of an airline's flights tens of requests. It has a lane of its
    * own so that never holds up the reminders, the midnight tidy-up or the market boards in the main pass, and an
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete)) return this.lane;
+    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.departures)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
       try {
         await this.fshub?.run().catch((e) => this.log.error('FsHub roster and flight sync failed', e));
         await this.autoComplete?.run().catch((e) => this.log.error('FsHub auto-complete failed', e));
+        // After the FsHub reads, so a leg FsHub has just shown flown is not warned about; and here, not in the main pass, because the
+        // first look at an airport can mean a large download.
+        await this.departures?.run().catch((e) => this.log.error('Departure warnings failed', e));
       } finally {
         this.laneRunning = false;
       }

@@ -16,8 +16,11 @@ import { SheetsApi } from './google/sheetsApi.js';
 import { DemoJobSource } from './jobs/demo.js';
 import { sourceSelector } from './jobs/sheet.js';
 import { FsHubClient } from './fshub/client.js';
+import { AirportDirectory } from './services/airports.js';
 import { AutoCompleter } from './services/autoComplete.js';
+import { DepartureWarnings } from './services/departureWarnings.js';
 import { JobEvents } from './services/events.js';
+import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { JobService } from './services/jobs.js';
 import { SourceRefresher } from './services/refresh.js';
@@ -103,12 +106,18 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
     : null;
   panels.fshubEnabled = fshub !== null;
+  // A pilot is warned shortly before the latest take-off that still makes a flight's window. How long the flight takes comes from the
+  // airline's own FsHub flights of the route when there are some, and from the distance between the airports (their positions read
+  // from the public OurAirports list) otherwise.
+  const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
+  const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log });
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
     reminders,
     markets: market,
     panels,
     cleanup: { run: () => panels.cleanReminders() },
+    departures,
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),
   });
