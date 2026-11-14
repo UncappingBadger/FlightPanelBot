@@ -46,7 +46,7 @@ export function isNewer(remote: [number, number, number], local: [number, number
 }
 
 export interface UpdateCheckerOptions {
-  /** This build's version, e.g. `0.1.6`. Anything that isn't a version (a dev run says `dev`) switches the check off. */
+  /** This build's version, e.g. `0.1.7`. Anything that isn't a version (a dev run says `dev`) switches the check off. */
   version: string;
   /** Where to remember which release the host has been told about. */
   statePath: string;

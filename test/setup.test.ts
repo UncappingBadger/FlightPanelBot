@@ -49,7 +49,7 @@ describe('/setup (admins only)', () => {
 
   describe('permissions', () => {
     it('refuses every subcommand to people without Manage Server, and changes nothing', async () => {
-      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'fshub', 'completed', 'refresh', 'release', 'template'];
+      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'fshub', 'completed', 'refresh-roles', 'refresh', 'release', 'template'];
       for (const sub of subs) {
         await assert.rejects(
           run(sub, { admin: false, options: { airline: 'Test Air', channel: { id: CHANNEL }, code: 'TST-001', file: attachment() } }),
@@ -65,7 +65,7 @@ describe('/setup (admins only)', () => {
       const json = setup.data.toJSON();
       assert.equal(json.default_member_permissions, '32'); // ManageGuild
       assert.deepEqual(json.contexts, [0]);
-      assert.deepEqual(commands.map((c) => c.data.name).sort(), ['fuel', 'help', 'setup'], 'no user-facing command picks an airline');
+      assert.deepEqual(commands.map((c) => c.data.name).sort(), ['fuel', 'help', 'hideunavailable', 'setup'], 'no user-facing command picks an airline');
     });
 
     it('no longer has anything to do with FsHub: no verify step, and the airline is just typed', () => {

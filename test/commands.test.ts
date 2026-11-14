@@ -13,8 +13,8 @@ import { fakeDm, fakeInteraction, FakeUser, makeDiscordHarness, settle, type Dis
 describe('command definitions', () => {
   const defs = commands.map((c) => c.data.toJSON());
 
-  it('only exposes admin setup, help and the fuel lookup: pilots use the panel buttons for everything else', () => {
-    assert.deepEqual(defs.map((d) => d.name).sort(), ['fuel', 'help', 'setup']);
+  it('only exposes admin setup, help, the fuel lookup and /hideunavailable: pilots use the panel buttons for everything else', () => {
+    assert.deepEqual(defs.map((d) => d.name).sort(), ['fuel', 'help', 'hideunavailable', 'setup']);
   });
 
   it('obeys the Discord limits that the API would otherwise reject at registration', () => {

@@ -7,6 +7,7 @@ import {
   PermissionsBitField,
   SlashCommandBuilder,
   type AutocompleteInteraction,
+  type ChatInputCommandInteraction,
 } from 'discord.js';
 import type { Panel, ReminderMode } from '../../db/store.js';
 import { matchAirline, parseAirlineRef } from '../../fshub/airlineRef.js';
@@ -19,7 +20,7 @@ import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '.
 import { airlineLabel, legList, plainText, truncate, ts } from '../../util/format.js';
 import type { BotContext, Command } from '../context.js';
 import { UserError } from '../errors.js';
-import { requireAdmin } from '../guard.js';
+import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
 import type { PanelRefreshResult } from '../panel.js';
 import { noPings, reminderTarget } from '../ui.js';
 
@@ -234,6 +235,24 @@ export function cleanAirlineName(raw: string): string {
   return name;
 }
 
+/** The most roles that can be given `/setup refresh` in one server. */
+const MAX_REFRESH_ROLES = 10;
+
+/**
+ * Who may run which `/setup` subcommand. Admins (Manage Server) may run all of them. Members with a role an admin chose with
+ * `/setup refresh-roles` may run `refresh` and nothing else. Discord lets server owners change who can see a command, so this is
+ * checked here for real. Returns the server's ID.
+ */
+function setupAccess(ctx: BotContext, interaction: ChatInputCommandInteraction, sub: string): string {
+  const guildId = requireGuild(interaction);
+  if (isAdmin(interaction)) return guildId;
+  if (sub === 'refresh') {
+    if (memberHasAnyRole(interaction, ctx.store.listRefreshRoles(guildId))) return guildId;
+    throw new UserError('Only server admins (with the **Manage Server** permission), or members with a role an admin chose with `/setup refresh-roles`, can do that.');
+  }
+  throw new UserError('Only server admins (with the **Manage Server** permission) can do that.');
+}
+
 /** Which panel an admin means: by name, abbreviation or flight prefix, or the only one if there is just one. */
 function pickPanel(ctx: BotContext, guildId: string, input: string | null): Panel {
   const panels = ctx.store.listPanels(guildId);
@@ -414,6 +433,18 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('refresh-roles')
+        .setDescription('Let members with a role run /setup refresh, and nothing else (leave empty to see the list)')
+        .addRoleOption((o) => o.setName('role').setDescription('The role to add or remove'))
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Add (the default when you give a role), remove it, or clear every role')
+            .addChoices({ name: 'Add the role', value: 'add' }, { name: 'Remove the role', value: 'remove' }, { name: 'Clear every role', value: 'clear' }),
+        ),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('release')
         .setDescription("Free someone's reservation on a flight (they are told)")
         .addStringOption((o) => o.setName('code').setDescription('Flight ID, e.g. DMO-004').setRequired(true).setMaxLength(20))
@@ -423,8 +454,8 @@ export const setupCommand: Command = {
     .addSubcommand((s) => s.setName('template').setDescription('Get an example flights file to fill in')),
 
   async execute(ctx, interaction) {
-    const guildId = requireAdmin(interaction);
     const sub = interaction.options.getSubcommand();
+    const guildId = setupAccess(ctx, interaction, sub);
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const airlineOpt = () => interaction.options.getString('airline');
 
@@ -874,6 +905,56 @@ export const setupCommand: Command = {
         const result = await ctx.panels.refresh(panel.id, { force: true });
         const problem = panelProblem(result);
         await interaction.editReply({ content: problem ? `${problem}${note}` : `Redrew the **${panel.airlineName}** panel (${result}).${note}` });
+        return;
+      }
+
+      case 'refresh-roles': {
+        const mode = interaction.options.getString('mode');
+        const picked = interaction.options.getRole('role');
+        const roles = () => ctx.store.listRefreshRoles(guildId);
+        const names = (ids: string[]) => ids.map((id) => `<@&${id}>`).join(', ');
+        const how =
+          'They can run `/setup refresh` and nothing else from `/setup`. For them to see `/setup` at all, Discord has to allow it too: in Server Settings, Integrations, choose this bot, then `/setup`, and add the role there.';
+
+        if (mode === 'clear') {
+          if (picked) throw new UserError('`mode:clear` removes every role, so leave the `role` option out.');
+          const n = ctx.store.clearRefreshRoles(guildId);
+          await interaction.editReply({ content: n === 0 ? 'No roles were set, so there was nothing to clear.' : `Cleared ${n} role${n === 1 ? '' : 's'}. Only admins can run \`/setup refresh\` now.`, allowedMentions: noPings });
+          return;
+        }
+        if (mode === 'remove' && !picked) throw new UserError('Say which role to remove with the `role` option, or use `mode:clear` to remove them all.');
+
+        if (picked && mode === 'remove') {
+          const removed = ctx.store.removeRefreshRole(guildId, picked.id);
+          const left = roles();
+          await interaction.editReply({
+            content: [removed ? `Removed <@&${picked.id}>.` : `<@&${picked.id}> wasn't one of the roles.`, left.length > 0 ? `Roles that can refresh now: ${names(left)}.` : 'No roles are set now, so only admins can run `/setup refresh`.'].join(' '),
+            allowedMentions: noPings,
+          });
+          return;
+        }
+
+        if (picked) {
+          if (picked.id === guildId) throw new UserError("That's @everyone, which would let every member refresh the panels. Pick a particular role.");
+          if (!roles().includes(picked.id) && roles().length >= MAX_REFRESH_ROLES) {
+            throw new UserError(`${MAX_REFRESH_ROLES} roles is the most. Remove one first with \`/setup refresh-roles role:@role mode:remove\`.`);
+          }
+          const added = ctx.store.addRefreshRole(guildId, picked.id, ctx.now());
+          await interaction.editReply({
+            content: [added ? `✅ Members with <@&${picked.id}> can now refresh the panels.` : `<@&${picked.id}> was already one of the roles.`, how, `Roles that can refresh: ${names(roles())}.`].join('\n'),
+            allowedMentions: noPings,
+          });
+          return;
+        }
+
+        const current = roles();
+        await interaction.editReply({
+          content:
+            current.length === 0
+              ? 'No roles are set, so only admins (with **Manage Server**) can run `/setup refresh`. Add one with `/setup refresh-roles role:@role`.'
+              : [`Roles that can run \`/setup refresh\`: ${names(current)}.`, how].join('\n'),
+          allowedMentions: noPings,
+        });
         return;
       }
 

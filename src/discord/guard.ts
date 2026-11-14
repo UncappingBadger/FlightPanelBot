@@ -23,6 +23,15 @@ export function memberHasRole(interaction: Interaction, roleId: string): boolean
   return cache ? cache.has(roleId) : false;
 }
 
+/** Does the person have at least one of these roles? (No shortcut for admins: ask `isAdmin` for that.) */
+export function memberHasAnyRole(interaction: Interaction, roleIds: string[]): boolean {
+  if (roleIds.length === 0) return false;
+  const roles = (interaction.member as { roles?: unknown } | null)?.roles;
+  if (Array.isArray(roles)) return roleIds.some((id) => roles.includes(id));
+  const cache = (roles as { cache?: { has(id: string): boolean } } | undefined)?.cache;
+  return cache ? roleIds.some((id) => cache.has(id)) : false;
+}
+
 /**
  * Admin-only gate. Discord lets server owners change who can see a command, so the permission is
  * checked here for real rather than trusting the command's default visibility.

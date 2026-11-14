@@ -275,7 +275,7 @@ export function openCard(view: JobView, now: number, avatars?: Avatars): EmbedBu
  * matched, then those flights as the same cards the panel uses (the first few; a long list asks to be narrowed). Only
  * flights the panel itself lists are ever passed in, so the days an admin chose limit the search too.
  */
-export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = [], avatars?: Avatars): EmbedBuilder[] {
+export function searchEmbeds(panel: Panel, from: string[], to: string[], matches: JobView[], now: number, day?: SearchDay | null, aircraft: string[] = [], avatars?: Avatars, hiddenTaken = 0): EmbedBuilder[] {
   const route = [from.length > 0 ? `from ${from.join(' or ')}` : '', to.length > 0 ? `to ${to.join(' or ')}` : ''].filter(Boolean).join(' ');
   const kind = aircraft.length > 0 ? `in ${aircraft.join(' or ')}` : '';
   const what = [route, day ? `on ${day.label}` : '', kind].filter(Boolean).join(' ');
@@ -300,7 +300,8 @@ export function searchEmbeds(panel: Panel, from: string[], to: string[], matches
         ]
           .filter(Boolean)
           .join('\n');
-  const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description);
+  const hiddenNote = hiddenTaken > 0 ? `\n🙈 ${hiddenTaken === 1 ? '1 matching flight that is already taken is' : `${hiddenTaken} matching flights that are already taken are`} hidden (you turned that on with \`/hideunavailable\`).` : '';
+  const head = new EmbedBuilder().setColor(COLORS.panel).setTitle(`🔎 Flights ${what}`).setDescription(description + hiddenNote);
   return [head, ...shown.map((v) => openCard(v, now, avatars))];
 }
 
@@ -497,7 +498,17 @@ function listCards(pieces: string[], joiner: string, color: number): Array<{ car
  * has in a DM, one after another. It is laid out like the panel (the flights that can be flown, then the ones completed in the
  * last day) and has the panel's limits. When the completed flights are in a channel of their own, the list leaves them out.
  */
-export function renderListParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0): PanelParts {
+export function renderListParts(
+  panel: Panel,
+  views: JobView[],
+  now: number,
+  completed: JobView[] = [],
+  confirmations?: Confirmations,
+  autoCompletes = false,
+  later = 0,
+  /** For someone who hid the flights that are no longer available to them: how many were left out. The completed flights are left out too. */
+  hiding?: { taken: number },
+): PanelParts {
   const label = airlineLabel({ name: panel.airlineName, abbr: panel.airlineAbbr });
   const days = `${panel.showDays} day${panel.showDays === 1 ? '' : 's'}`;
   const intro = [
@@ -505,14 +516,15 @@ export function renderListParts(panel: Panel, views: JobView[], now: number, com
     `To reserve a flight, search, stand by, see your flights or complete one, use the buttons under the panel in <#${panel.channelId}>.`,
     `Updated ${ts(now, 'R')}.`,
     ...(panel.requiredRoleId ? [`Reserving is open to members with <@&${panel.requiredRoleId}>.`] : []),
-    ...(panel.completedChannelId ? [`Completed flights are in <#${panel.completedChannelId}>.`] : []),
+    ...(panel.completedChannelId && !hiding ? [`Completed flights are in <#${panel.completedChannelId}>.`] : []),
+    ...(hiding ? [`🙈 You are hiding flights that are already taken, and completed ones (\`/hideunavailable\`): ${hiding.taken} hidden right now. Run it again to see everything.`] : []),
   ].join('\n');
 
   const cards = listCards(views.map((v) => listBlock(v, now)), '\n\n', COLORS.panel);
   const openHead = new EmbedBuilder()
     .setColor(COLORS.panel)
     .setTitle(`📃 ${label} · open flights`)
-    .setDescription(views.length === 0 ? `${intro}\n\nNo flights are listed right now.` : intro);
+    .setDescription(views.length === 0 ? `${intro}\n\n${hiding ? 'No flights you could still take are listed right now.' : 'No flights are listed right now.'}` : intro);
   const open = layout(
     openHead,
     cards.map((c) => c.card),
@@ -525,7 +537,7 @@ export function renderListParts(panel: Panel, views: JobView[], now: number, com
     },
     MAX_OPEN_MESSAGES,
   );
-  if (panel.completedChannelId) {
+  if (panel.completedChannelId || hiding) {
     lastCard(open).setFooter({ text: FOOTER });
     return { open, completed: [] };
   }

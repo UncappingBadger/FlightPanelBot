@@ -57,7 +57,7 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    **keeps it up to date there**: whenever the panel changes, your list changes with it, in the same messages (quietly,
    with no notification). The list is for reading: its only button is **Stop updates**, which takes it away, and it
    points you back to the panel's buttons for reserving, searching and the rest. It is for you alone: the panel in the
-   channel does not change for anyone else. Press **List view** again to get a fresh copy at the bottom of the DM. At most 200 people can have a list of one panel at once, and one is dropped if the person leaves the
+   channel does not change for anyone else. Press **List view** again to get a fresh copy at the bottom of the DM. **`/hideunavailable`** (anyone can use it) hides, for you only, the flights that are no longer available to you from your list view and your searches: the ones already taken by others (every leg held in Discord or named in the schedule) and the completed ones. Flights you hold or stand by for stay. It switches on and off (`mode:on`, `mode:off`, or just run it again), and a list you already have is redrawn to match. The panel in the channel is one message everybody shares, so Discord cannot show it differently to one person. At most 200 people can have a list of one panel at once, and one is dropped if the person leaves the
    server, can no longer see the panel's channel (checked every half hour) or closes their DMs to the bot. If the
    admin has put completed flights in a channel of their own, the list leaves them out and says where they are.
 
@@ -193,7 +193,7 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.6`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.7`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
@@ -259,6 +259,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
+| `/setup refresh-roles [role] [mode]` | Let members with a role run **`/setup refresh`, and nothing else from `/setup`** (every other subcommand stays admin-only, and so does this one). `role` adds it (`mode:add` is the default); `mode:remove` with a `role` takes it off; `mode:clear` takes every role off; with no options it lists them. Up to 10 roles per server, and not @everyone. **Discord also has to let those members see `/setup`**: in Server Settings, Integrations, choose the bot, then `/setup`, and add the role there (a bot cannot do that part itself). |
 | `/setup panel-remove airline` | Delete a panel with its flights and reservations. |
 
 ### Upgrading from a version that used FsHub
@@ -590,7 +591,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1203 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1236 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

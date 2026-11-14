@@ -1041,6 +1041,48 @@ export class Store {
     this.run('DELETE FROM panel_followers WHERE panel_id = ? AND discord_id = ?', panelId, discordId);
   }
 
+  /* ------------------------------------------------------------------ a person's own settings */
+
+  getHideUnavailable(discordId: string): boolean {
+    return n(this.get('SELECT hide_unavailable FROM user_prefs WHERE discord_id = ?', discordId)?.hide_unavailable ?? 0) !== 0;
+  }
+
+  setHideUnavailable(discordId: string, on: boolean, now: number): void {
+    this.run(
+      `INSERT INTO user_prefs(discord_id, hide_unavailable, updated_at) VALUES (?,?,?)
+       ON CONFLICT(discord_id) DO UPDATE SET hide_unavailable = excluded.hide_unavailable, updated_at = excluded.updated_at`,
+      discordId,
+      on ? 1 : 0,
+      now,
+    );
+  }
+
+  /** The panels this person has a list view of. */
+  listFollowedPanelIds(discordId: string): number[] {
+    return this.all('SELECT panel_id FROM panel_followers WHERE discord_id = ? ORDER BY panel_id', discordId).map((r) => n(r.panel_id));
+  }
+
+  /* ------------------------------------------------------------------ roles that may run /setup refresh */
+
+  listRefreshRoles(guildId: string): string[] {
+    return this.all('SELECT role_id FROM refresh_roles WHERE guild_id = ? ORDER BY created_at, role_id', guildId).map((r) => s(r.role_id));
+  }
+
+  /** False if the role was already one. */
+  addRefreshRole(guildId: string, roleId: string, now: number): boolean {
+    return this.run('INSERT OR IGNORE INTO refresh_roles(guild_id, role_id, created_at) VALUES (?,?,?)', guildId, roleId, now).changes > 0;
+  }
+
+  /** False if the role was not one. */
+  removeRefreshRole(guildId: string, roleId: string): boolean {
+    return this.run('DELETE FROM refresh_roles WHERE guild_id = ? AND role_id = ?', guildId, roleId).changes > 0;
+  }
+
+  /** How many were removed. */
+  clearRefreshRoles(guildId: string): number {
+    return this.run('DELETE FROM refresh_roles WHERE guild_id = ?', guildId).changes;
+  }
+
   /* ------------------------------------------------------------------ the AeroDAQ market board */
 
   getMarketBoard(guildId: string): MarketBoard | null {

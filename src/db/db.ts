@@ -426,6 +426,26 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_panel_followers_user ON panel_followers(discord_id);
   `,
+
+  /* v22: roles an admin lets run `/setup refresh` (and nothing else from /setup). Per server. */
+  `
+  CREATE TABLE refresh_roles (
+    guild_id   TEXT NOT NULL,
+    role_id    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+  );
+  `,
+
+  /* v23: a person's own settings. 'hide_unavailable': hide the flights that are no longer available to them (taken by others,
+     and completed ones) from their list view and their searches. It is theirs alone; nothing shared changes. */
+  `
+  CREATE TABLE user_prefs (
+    discord_id       TEXT PRIMARY KEY,
+    hide_unavailable INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

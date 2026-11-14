@@ -30,7 +30,7 @@ export const helpCommand: Command = {
             {
               name: 'A list instead of cards',
               value:
-                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. Use the panel's buttons to reserve and the rest; **Stop updates** under the list ends it.",
+                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. Use the panel's buttons to reserve and the rest; **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes what you see.",
             },
             {
               name: 'What your flights made',
@@ -59,7 +59,7 @@ export const helpCommand: Command = {
             {
               name: 'Server admins, continued',
               value:
-                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup fshub` match pilots to their FsHub IDs, confirm completed flights, and complete flown flights every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
+                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup refresh-roles` let members with a role run `/setup refresh`, and nothing else from `/setup`\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup fshub` match pilots to their FsHub IDs, confirm completed flights, and complete flown flights every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
             },
           )
           .setFooter({ text: FOOTER }),

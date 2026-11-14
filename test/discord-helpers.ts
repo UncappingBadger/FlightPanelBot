@@ -380,6 +380,8 @@ export interface FakeInteractionOptions {
   guildId?: string | null;
   channelId?: string;
   admin?: boolean;
+  /** The member's role IDs. */
+  roles?: string[];
   focused?: { name: string; value: string };
   guild?: unknown;
 }
@@ -398,6 +400,7 @@ export function fakeInteraction(o: FakeInteractionOptions = {}) {
     guildId: o.guildId === undefined ? GUILD : o.guildId,
     channelId: o.channelId ?? '700000000000000001',
     guild: o.guild ?? {},
+    member: { roles: o.roles ?? [] },
     memberPermissions: { has: () => !!o.admin },
     deferred: false,
     replied: false,

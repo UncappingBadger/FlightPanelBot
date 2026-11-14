@@ -5,6 +5,7 @@ import { confirmationsFor } from '../services/flightMatch.js';
 import { COMPLETED_SHOW_MS, panelHorizonMs, type JobService } from '../services/jobs.js';
 import type { Reminder } from '../services/reminders.js';
 import { discordErrorCode, isDmClosed, isMissingAccess, isUnknownMessage } from './errors.js';
+import { availableFor } from '../services/availability.js';
 import { avatarIdsOf, defaultAvatar, listRows, noPings, panelRows, renderListParts, renderPanelParts, renderReminder, stampFiles, usesStamp, type Avatar } from './ui.js';
 
 /** What one message of a panel (or of a pilot's list) says and carries. */
@@ -462,9 +463,21 @@ export class PanelService {
   /* ------------------------------------------------------------------ lists kept in people's DMs */
 
   /** The panel as the plain list a pilot keeps in their DMs, as the messages it is made of. */
-  private listPayloads(panel: Panel, l: ReturnType<PanelService['listing']>): Payload[] {
+  private listPayloads(panel: Panel, l: ReturnType<PanelService['listing']>, hideFor: string | null = null): Payload[] {
     const autoCompletes = this.fshubEnabled && panel.fshubAirlineId !== null && panel.fshubConfirm && panel.fshubAutoComplete;
-    const parts = renderListParts(panel, l.shown, l.now, l.completed, confirmationsFor(this.store, panel, l.completed, l.now), autoCompletes, l.later);
+    // Someone who hid the flights that are no longer available to them (`/hideunavailable`) gets a list without the taken and completed ones.
+    const shown = hideFor === null ? l.shown : availableFor(l.shown, hideFor);
+    const hiding = hideFor === null ? undefined : { taken: l.shown.length - shown.length };
+    const parts = renderListParts(
+      panel,
+      shown,
+      l.now,
+      hiding ? [] : l.completed,
+      hiding ? undefined : confirmationsFor(this.store, panel, l.completed, l.now),
+      autoCompletes,
+      l.later,
+      hiding,
+    );
     return [
       ...parts.open.map((embeds) => ({ embeds, components: listRows(panel.id), allowedMentions: noPings })),
       ...parts.completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings })),
@@ -525,8 +538,13 @@ export class PanelService {
     if (!panel || !this.client) return;
     const followers = this.store.listFollowers(panelId);
     if (followers.length === 0) return;
-    const payloads = this.listPayloads(panel, this.listing(panel));
-    for (const f of followers) await this.syncFollower(panel, f, payloads);
+    const listing = this.listing(panel);
+    let common: Payload[] | null = null;
+    for (const f of followers) {
+      // Everyone shares one list, except people who hid the flights that are no longer available to them: each has their own.
+      const payloads = this.store.getHideUnavailable(f.discordId) ? this.listPayloads(panel, listing, f.discordId) : (common ??= this.listPayloads(panel, listing));
+      await this.syncFollower(panel, f, payloads);
+    }
   }
 
   private async syncFollower(panel: Panel, f: PanelFollower, payloads: Payload[]): Promise<void> {
@@ -664,7 +682,7 @@ export class PanelService {
       if (!panel) return { ok: false, reason: 'gone' };
       const existing = this.store.getFollower(panelId, user.id);
       if (!existing && this.store.countFollowers(panelId) >= MAX_FOLLOWERS) return { ok: false, reason: 'full' };
-      const payloads = this.listPayloads(panel, this.listing(panel));
+      const payloads = this.listPayloads(panel, this.listing(panel), this.store.getHideUnavailable(user.id) ? user.id : null);
       let dm: DMChannel;
       try {
         dm = await user.createDM();
