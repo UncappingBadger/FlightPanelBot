@@ -21,6 +21,8 @@ export interface SchedulerOptions {
   autoComplete?: { run(): Promise<unknown> };
   /** Follows pilots' flights live and completes a flight soon after it lands. Runs in the same lane, after the FsHub reads and before the warnings. */
   live?: { run(): Promise<unknown> };
+  /** Sends the once-a-day note, when one is set up. Runs in the same lane, last. */
+  daily?: { run(): Promise<unknown> };
   /** Warns pilots (and their backups) shortly before the latest take-off that still makes a flight's window. Runs in the same lane, after the FsHub reads. */
   departures?: { run(): Promise<unknown> };
 }
@@ -41,6 +43,7 @@ export class Scheduler {
   private readonly autoComplete: SchedulerOptions['autoComplete'];
   private readonly departures: SchedulerOptions['departures'];
   private readonly live: SchedulerOptions['live'];
+  private readonly daily: SchedulerOptions['daily'];
   private readonly panels: SchedulerOptions['panels'];
   private laneRunning = false;
   private lane: Promise<void> = Promise.resolve();
@@ -59,6 +62,7 @@ export class Scheduler {
     this.autoComplete = opts.autoComplete;
     this.departures = opts.departures;
     this.live = opts.live;
+    this.daily = opts.daily;
     this.panels = opts.panels;
   }
 
@@ -80,7 +84,7 @@ export class Scheduler {
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.departures)) return this.lane;
+    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.departures && !this.daily)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
       try {
@@ -91,6 +95,7 @@ export class Scheduler {
         // After the FsHub reads, so a leg FsHub has just shown flown is not warned about; and here, not in the main pass, because the
         // first look at an airport can mean a large download.
         await this.departures?.run().catch((e) => this.log.error('Departure warnings failed', e));
+        await this.daily?.run().catch((e) => this.log.error('The daily note failed', e));
       } finally {
         this.laneRunning = false;
       }

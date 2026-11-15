@@ -13,6 +13,10 @@ const EnvSchema = z.object({
   GOOGLE_SERVICE_ACCOUNT_FILE: z.string().min(1).optional(),
   /** Optional: a FsHub personal access token, so the bot can check pilot IDs and read an airline's roster. */
   FSHUB_TOKEN: z.string().min(1).optional(),
+  /** Optional: one Discord user the bot sends a short note to once a day (see services/dailyNote.ts). Nothing is sent without it. */
+  DAILY_NOTE_USER_ID: z.string().regex(/^\d{15,21}$/, 'DAILY_NOTE_USER_ID must be a Discord user ID (15 to 21 digits)').optional(),
+  DAILY_NOTE_FROM_HOUR: z.coerce.number().int().min(0).max(23).optional(),
+  DAILY_NOTE_TO_HOUR: z.coerce.number().int().min(1).max(24).optional(),
 });
 
 export interface Config {
@@ -26,6 +30,13 @@ export interface Config {
   googleServiceAccountFile: string | undefined;
   /** A FsHub personal access token, or undefined when the bot is not connected to FsHub. */
   fshubToken: string | undefined;
+  /** The one person who gets a note a day, and the hours (UTC) it may arrive in. Undefined: no notes. */
+  dailyNote?: { userId: string; fromHour: number; toHour: number } | undefined;
+}
+
+/** The hours (UTC) a daily note may arrive in: the given ones if they make a window, otherwise mid-afternoon to late evening in the UK and the US morning to afternoon. */
+export function dailyHours(from: number | undefined, to: number | undefined): { fromHour: number; toHour: number } {
+  return from !== undefined && to !== undefined && from < to ? { fromHour: from, toHour: to } : { fromHour: 14, toHour: 23 };
 }
 
 /** Treat blank values in .env (e.g. `DISCORD_GUILD_ID=`) as "not set". */
@@ -50,5 +61,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     logLevel: e.LOG_LEVEL,
     googleServiceAccountFile: e.GOOGLE_SERVICE_ACCOUNT_FILE,
     fshubToken: e.FSHUB_TOKEN ? normalizeFsHubToken(e.FSHUB_TOKEN) || undefined : undefined,
+    dailyNote: e.DAILY_NOTE_USER_ID ? { userId: e.DAILY_NOTE_USER_ID, ...dailyHours(e.DAILY_NOTE_FROM_HOUR, e.DAILY_NOTE_TO_HOUR) } : undefined,
   };
 }

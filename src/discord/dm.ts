@@ -868,6 +868,12 @@ async function say(user: { send(o: { content: string; components?: Row[]; allowe
  */
 export async function handleDmMessage(ctx: BotContext, message: Message): Promise<void> {
   if (message.author.bot || message.guildId) return;
+  // The one person who gets a daily note can turn it off and on by replying to it.
+  const noteReply = ctx.dailyNote?.handleReply(message.author.id, message.content);
+  if (noteReply) {
+    await say(message.author, noteReply).catch(() => undefined);
+    return;
+  }
   try {
     await handleDm(ctx, message);
   } catch (e) {

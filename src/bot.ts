@@ -19,6 +19,7 @@ import { FsHubClient } from './fshub/client.js';
 import { LiveFeed } from './fshub/liveFeed.js';
 import { AirportDirectory } from './services/airports.js';
 import { AutoCompleter } from './services/autoComplete.js';
+import { DailyNote } from './services/dailyNote.js';
 import { DepartureWarnings } from './services/departureWarnings.js';
 import { JobEvents } from './services/events.js';
 import { FlightTimes } from './services/flightTime.js';
@@ -121,6 +122,27 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     logger: log,
   });
   const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log, live });
+  // A short note once a day to one person, when a host has named them (nothing is sent otherwise).
+  let airlineSeen: { at: number; name: string | null } | null = null;
+  const airlineOf = async (userId: string): Promise<string | null> => {
+    if (airlineSeen && Date.now() - airlineSeen.at < 6 * 3_600_000) return airlineSeen.name;
+    let name: string | null = null;
+    for (const panel of store.listAllPanels()) {
+      try {
+        const guild = await client.guilds.fetch(panel.guildId);
+        await guild.members.fetch(userId);
+        name = panel.airlineName;
+        break;
+      } catch {
+        /* not in this server */
+      }
+    }
+    airlineSeen = { at: Date.now(), name };
+    return name;
+  };
+  const dailyNote = config.dailyNote
+    ? new DailyNote({ store, target: config.dailyNote, send: async (userId, content) => (await notifier?.dm(userId, content)) === true, airlineName: () => airlineOf(config.dailyNote!.userId), logger: log })
+    : null;
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
     reminders,
@@ -129,11 +151,12 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     cleanup: { run: () => panels.cleanReminders() },
     live,
     departures,
+    ...(dailyNote ? { daily: dailyNote } : {}),
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, writeback, fshub, fshubSync, autoComplete, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, writeback, fshub, fshubSync, autoComplete, dailyNote, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

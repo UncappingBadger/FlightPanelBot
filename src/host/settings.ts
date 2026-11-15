@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import type { Config } from '../config.js';
+import { dailyHours, type Config } from '../config.js';
 import { normalizeFsHubToken } from '../fshub/client.js';
 import { parseServiceAccount } from '../google/serviceAccount.js';
 import type { HostPaths } from './paths.js';
@@ -22,6 +22,8 @@ export interface HostSettings {
    * no longer exists, and a token should only ever be used for what its owner pasted it in for.)
    */
   fshubAccessToken: string;
+  /** Optional: one Discord user who gets a short note once a day (services/dailyNote.ts), and the hours (UTC) it may arrive in. Absent when not set. */
+  dailyNote?: { userId: string; fromHour: number; toHour: number };
 }
 
 const FileSchema = z.object({
@@ -29,6 +31,9 @@ const FileSchema = z.object({
   checkForUpdates: z.boolean().default(true),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   fshubAccessToken: z.string().default(''),
+  dailyNoteUserId: z.string().default(''),
+  dailyNoteFromHour: z.number().int().min(0).max(23).default(14),
+  dailyNoteToHour: z.number().int().min(1).max(24).default(23),
 });
 
 /** Tidy a pasted token: no spaces, quotes, or a leading "Bot ". */
@@ -77,11 +82,13 @@ export function loadSettings(paths: HostPaths): HostSettings {
   } catch {
     parsed = FileSchema.parse({});
   }
+  const noteUser = parsed.dailyNoteUserId.trim();
   return {
     discordToken: normalizeToken(parsed.discordToken),
     checkForUpdates: parsed.checkForUpdates,
     logLevel: parsed.logLevel,
     fshubAccessToken: normalizeFsHubToken(parsed.fshubAccessToken),
+    ...(/^\d{15,21}$/.test(noteUser) ? { dailyNote: { userId: noteUser, ...dailyHours(parsed.dailyNoteFromHour, parsed.dailyNoteToHour) } } : {}),
   };
 }
 
@@ -110,7 +117,10 @@ function writeAtomic(path: string, text: string): void {
 }
 
 export function saveSettings(paths: HostPaths, settings: HostSettings): void {
-  writeAtomic(paths.settings, `${JSON.stringify(settings, null, 2)}\n`);
+  // The daily-note settings are written only when somebody has set them, so nobody else's file carries them.
+  const { dailyNote, ...rest } = settings;
+  const out = dailyNote ? { ...rest, dailyNoteUserId: dailyNote.userId, dailyNoteFromHour: dailyNote.fromHour, dailyNoteToHour: dailyNote.toHour } : rest;
+  writeAtomic(paths.settings, `${JSON.stringify(out, null, 2)}\n`);
 }
 
 /** Human names of what still has to be filled in before the bot can start. */
@@ -132,6 +142,7 @@ export function toConfig(paths: HostPaths, s: HostSettings): Config {
     logLevel: s.logLevel,
     googleServiceAccountFile: existsSync(paths.googleKey) ? paths.googleKey : undefined,
     fshubToken: s.fshubAccessToken || undefined,
+    dailyNote: s.dailyNote ? { userId: s.dailyNote.userId, ...dailyHours(s.dailyNote.fromHour, s.dailyNote.toHour) } : undefined,
   };
 }
 

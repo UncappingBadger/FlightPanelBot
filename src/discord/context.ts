@@ -11,6 +11,7 @@ import type { Config } from '../config.js';
 import type { Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
+import type { DailyNote } from '../services/dailyNote.js';
 import type { FsHubSync } from '../services/fshubSync.js';
 import type { JobService } from '../services/jobs.js';
 import type { SourceRefresher } from '../services/refresh.js';
@@ -38,6 +39,8 @@ export interface BotContext {
   fshubSync: FsHubSync | null;
   /** Completes flights FsHub shows flown, once an hour; null together with `fshub`. */
   autoComplete: AutoCompleter | null;
+  /** The once-a-day note to one configured person; absent or null when none is set up. */
+  dailyNote?: DailyNote | null;
   log: Logger;
   now: () => number;
   /** For downloading admin-uploaded files; replaceable in tests. */
