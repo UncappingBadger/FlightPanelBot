@@ -452,6 +452,12 @@ export const setupCommand: Command = {
             .setDescription('The look of the panel')
             .addChoices({ name: 'Cards: a card for each flight (the default)', value: 'cards' }, { name: 'Grid: a button for each flight, press one for its card', value: 'grid' }),
         )
+        .addStringOption((o) =>
+          o
+            .setName('dates')
+            .setDescription('The order of day and month in the dates on the grid buttons')
+            .addChoices({ name: 'Day first: 16/11/26 (UK and Europe, the default)', value: 'dmy' }, { name: 'Month first: 11/16/26 (US)', value: 'mdy' }),
+        )
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     )
     .addSubcommand((s) =>
@@ -890,11 +896,17 @@ export const setupCommand: Command = {
       case 'layout': {
         const panel = pickPanel(ctx, guildId, airlineOpt());
         const mode = interaction.options.getString('mode');
+        const dates = interaction.options.getString('dates');
         if (mode !== null && mode !== 'cards' && mode !== 'grid') throw new UserError('Choose cards or grid.');
+        if (dates !== null && dates !== 'dmy' && dates !== 'mdy') throw new UserError('Choose day first or month first.');
         let changed = false;
         if (mode !== null && mode !== panel.layout) {
           ctx.store.updatePanel(panel.id, { layout: mode });
           ctx.panels.clearFolds(panel.id);
+          changed = true;
+        }
+        if (dates !== null && dates !== panel.gridDates) {
+          ctx.store.updatePanel(panel.id, { gridDates: dates });
           changed = true;
         }
         const current = ctx.store.getPanel(panel.id) as Panel;
@@ -905,7 +917,8 @@ export const setupCommand: Command = {
           content:
             current.layout === 'grid'
               ? [
-                  `${done}The ${name} panel is drawn as a **grid of buttons**: each flight is one button with a coloured dot, its ID, the aircraft, the route, when it opens (in UTC) and, once taken, who has it.`,
+                  `${done}The ${name} panel is drawn as a **grid of buttons**: each flight is one button with a coloured dot, the aircraft, the route, when it opens and, once taken, who has it. The flight's ID is in the card that opens when you press it.`,
+                  `Dates are ${current.gridDates === 'mdy' ? 'month first (11/16/26), as in the US' : 'day first (16/11/26), as in the UK and Europe'}, with the time in UTC (a button says the same to everyone, so it cannot follow each reader's own settings; the card has the full date in the reader's own timezone). \`/setup layout dates:${current.gridDates === 'mdy' ? 'dmy' : 'mdy'}\` changes the order.`,
                   `🟡 open · 🔵 taken · 🟢 completed (in the last 24 hours${current.completedChannelId ? `, which are in <#${current.completedChannelId}> as cards instead` : ''}) · ⚪ not open yet. Pressing a flight shows its card to that person only, and it goes away by itself after a minute or so.`,
                   `Each message has a **Collapse** button that folds it to one line (and **Expand** to open it again); **Collapse all** and **Expand all** are on the first message. Anyone can fold or unfold, it is the same message for everyone, and folded messages unfold by themselves after 10 minutes with no button pressed on the panel.`,
                   `\`/setup layout mode:cards\` goes back to a card for each flight.`,

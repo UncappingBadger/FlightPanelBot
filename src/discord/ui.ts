@@ -239,7 +239,7 @@ const box = (name: string, value: string): APIEmbedField => ({ name, value: valu
 const SCHEDULE_WORD: Record<string, string> = { 'ON-TIME': 'on time', DELAYED: 'delayed', LATE: 'late' };
 
 /** A flight that can be reserved (or already has been), as a card. */
-export function openCard(view: JobView, now: number, avatars?: Avatars): EmbedBuilder {
+export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { showOpened?: boolean } = {}): EmbedBuilder {
   const { job, legs } = view;
   const taken = isTaken(view);
   const title = [job.code, legs.length > 1 ? `${legs.length} legs` : '', job.aircraft ? plainText(truncate(job.aircraft, 20)) : ''].filter(Boolean).join(' · ');
@@ -264,6 +264,8 @@ export function openCard(view: JobView, now: number, avatars?: Avatars): EmbedBu
 
   const fields: APIEmbedField[] = [];
   if (job.availableFrom !== null && job.availableFrom > now) fields.push(box('OPENS', ts(job.availableFrom, 'F')));
+  // The private details of a grid panel say when the flight opened too (the cards of the default layout never did).
+  else if (opts.showOpened && job.availableFrom !== null) fields.push(box('OPENED', `${ts(job.availableFrom, 'F')}\n${ts(job.availableFrom, 'R')}`));
   if (job.deadline !== null) fields.push(box('COMPLETE BY', `${ts(job.deadline, 'F')}\n${ts(job.deadline, 'R')}`));
   if (job.pay) fields.push(box('PAY', plainText(truncate(job.pay, 40))));
   const who = legs.length === 1 ? holderText(legs[0] as LegView) : legs.map((l) => `\`${l.legNo}\` ${legText(l)} — ${holderText(l)}`).join('\n');

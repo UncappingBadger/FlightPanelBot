@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import type { JobView } from '../src/db/store.js';
+import { DatabaseSync } from 'node:sqlite';
+import { MIGRATIONS } from '../src/db/db.js';
+import { Store } from '../src/db/store.js';
 import { componentHandlers, commands } from '../src/discord/commands/index.js';
 import { DETAILS_SHOWN_MS } from '../src/discord/gridHandlers.js';
 import {
@@ -13,7 +16,7 @@ import {
   MAX_GRID_MESSAGES,
   renderGridPanel,
   summaryLine,
-  utcLabel,
+  shortDateTime,
   type GridFlight,
 } from '../src/discord/gridUi.js';
 import { UserError } from '../src/discord/errors.js';
@@ -32,10 +35,12 @@ const panelHandler = componentHandlers.find((h) => h.prefix === 'panel')!;
 /* ------------------------------------------------------------------ what a button says */
 
 describe('a moment on a button', () => {
-  it('is the weekday, the day, the month and the time, in UTC, ending in Z', () => {
-    assert.equal(utcLabel(Date.UTC(2026, 10, 13, 6, 0)), 'Fri 13 Nov 06:00Z');
-    assert.equal(utcLabel(Date.UTC(2026, 0, 1, 23, 5)), 'Thu 1 Jan 23:05Z');
-    assert.equal(utcLabel(Date.UTC(2026, 11, 31, 0, 0)), 'Thu 31 Dec 00:00Z');
+  it('is a short date and the time, in UTC, ending in Z, with the day first or the month first', () => {
+    assert.equal(shortDateTime(Date.UTC(2026, 10, 16, 6, 0), 'dmy'), '16/11/26 06:00Z');
+    assert.equal(shortDateTime(Date.UTC(2026, 10, 16, 6, 0), 'mdy'), '11/16/26 06:00Z');
+    assert.equal(shortDateTime(Date.UTC(2026, 0, 1, 23, 5), 'dmy'), '01/01/26 23:05Z');
+    assert.equal(shortDateTime(Date.UTC(2027, 11, 31, 0, 0), 'mdy'), '12/31/27 00:00Z');
+    assert.equal(shortDateTime(Date.UTC(2100, 2, 5, 12, 30), 'dmy'), '05/03/00 12:30Z', 'two digits of the year');
   });
 });
 
@@ -64,60 +69,51 @@ describe('what a flight is, by its dot', () => {
     assert.deepEqual(DOT, { open: '🟡', taken: '🔵', done: '🟢', soon: '⚪' });
   });
 
-  it('says the ID, the aircraft, the route and when it opens, and who has it once it is taken', () => {
+  it('says the aircraft, the route and when it opens, and who has it once it is taken, and not the flight\'s ID', () => {
     h.jobs.sync(pid(), [sj('a', 'EGLL-EGKK', { aircraft: 'A320', availableFrom: Date.UTC(2026, 10, 13, 6, 0) })]);
-    assert.equal(buttonLabel(view('a'), 'open'), 'TST-001 · A320 · EGLL✈EGKK · from Fri 13 Nov 06:00Z');
+    assert.equal(buttonLabel(view('a'), 'open'), 'A320 · EGLL✈EGKK · 13/11/26 06:00Z');
+    assert.equal(buttonLabel(view('a'), 'open', 'mdy'), 'A320 · EGLL✈EGKK · 11/13/26 06:00Z');
     h.jobs.reserve(view('a').job.id, [1], USER_A);
-    assert.equal(buttonLabel(view('a'), 'taken'), 'TST-001 · A320 · EGLL✈EGKK · from Fri 13 Nov 06:00Z · alice');
-    assert.equal(buttonLabel(view('a'), 'done'), 'TST-001 · A320 · EGLL✈EGKK · from Fri 13 Nov 06:00Z · alice');
-    assert.equal(buttonLabel(view('a'), 'soon'), 'TST-001 · A320 · EGLL✈EGKK · from Fri 13 Nov 06:00Z', 'a flight not open yet shows nobody');
+    assert.equal(buttonLabel(view('a'), 'taken'), 'A320 · EGLL✈EGKK · 13/11/26 06:00Z · alice');
+    assert.equal(buttonLabel(view('a'), 'done'), 'A320 · EGLL✈EGKK · 13/11/26 06:00Z · alice');
+    assert.equal(buttonLabel(view('a'), 'soon'), 'A320 · EGLL✈EGKK · 13/11/26 06:00Z', 'a flight not open yet shows nobody');
+    assert.ok(!buttonLabel(view('a'), 'taken').includes(view('a').job.code), 'the ID is in the card, not on the button');
   });
 
   it('leaves out what it does not have: no start time, no aircraft', () => {
     h.jobs.sync(pid(), [sj('a', 'EGLL-EGKK', { aircraft: null, availableFrom: null })]);
-    assert.equal(buttonLabel(view('a'), 'open'), 'TST-001 · EGLL✈EGKK');
+    assert.equal(buttonLabel(view('a'), 'open'), 'EGLL✈EGKK');
   });
 
   it('shows a longer flight as a chain, and a pilot named only in the sheet', () => {
     const j = sj('m', 'EGLL-EGKK-EGCC', { aircraft: 'B738', availableFrom: null });
     j.legs[0]!.heldBy = 'Sam Taylor';
     h.jobs.sync(pid(), [j]);
-    assert.equal(buttonLabel(view('m'), 'taken'), 'TST-001 · B738 · EGLL✈EGKK✈EGCC · Sam Taylor');
+    assert.equal(buttonLabel(view('m'), 'taken'), 'B738 · EGLL✈EGKK✈EGCC · Sam Taylor');
   });
 
-  it('never goes over 80 characters: the pilot goes first, then the aircraft, then the middle of a long chain', () => {
-    const j = sj('long', 'EGLL-EGKK-EGCC-EGPH-EGBB-EGNX-EGSS-EGGD-EGHI-EGTE', { aircraft: 'Boeing 737-800W', availableFrom: Date.UTC(2026, 10, 13, 6, 0) });
-    j.legs[0]!.heldBy = 'A Very Long Pilot Name Indeed';
-    h.jobs.sync(pid(), [j, sj('mid', 'EGLL-EGKK-EGCC-EGPH-EGBB-EGNX-EGSS', { aircraft: 'Boeing 737-800W', availableFrom: Date.UTC(2026, 10, 13, 6, 0) })]);
-    const long = buttonLabel(view('long'), 'taken');
-    assert.ok(long.length <= LABEL_MAX, long);
-    assert.match(long, /EGLL✈…✈EGTE \(9 legs\)/);
-    const mid = buttonLabel(view('mid'), 'open');
-    assert.ok(mid.length <= LABEL_MAX, mid);
-    assert.doesNotMatch(mid, /Boeing/, 'the aircraft was dropped to make it fit');
-    h.jobs.reserve(view('mid').job.id, [1], { discordId: USER_A.discordId, username: 'x'.repeat(60) });
-    h.jobs.reserve(view('mid').job.id, [2, 3, 4], { discordId: USER_A.discordId, username: 'x'.repeat(60) });
-    const taken = buttonLabel(view('mid'), 'taken');
-    assert.ok(taken.length <= LABEL_MAX, taken);
-  });
+  const AIRPORTS = ['EGLL', 'EGKK', 'EGCC', 'EGPH', 'EGBB', 'EGNX', 'EGSS', 'EGGD', 'EGHI', 'EGTE', 'EGAA', 'EGFF', 'EGJJ', 'EGNT'];
+  const chain = (n: number, join: string) => AIRPORTS.slice(0, n).join(join);
 
-  it('drops only as much as it must: the pilot alone, then the aircraft too', () => {
-    const five = 'EGLL-EGKK-EGCC-EGPH-EGBB';
-    const seven = 'EGLL-EGKK-EGCC-EGPH-EGBB-EGNX-EGSS';
+  it('drops only as much as it must, and in order: the pilot, then the aircraft, then the middle of the chain', () => {
     const opens = Date.UTC(2026, 10, 13, 6, 0);
-    h.jobs.sync(pid(), [sj('five', five, { aircraft: 'A320', availableFrom: opens }), sj('seven', seven, { aircraft: 'Boeing 737-800W', availableFrom: opens })]);
-    const named = { discordId: USER_A.discordId, username: 'Pilot Name Here' };
-    h.jobs.reserve(view('five').job.id, [1], named);
-    h.jobs.reserve(view('seven').job.id, [1], named);
-    // 66 characters without the pilot, 83 with: only the pilot goes, the aircraft stays.
-    assert.equal(buttonLabel(view('five'), 'taken'), 'TST-001 · A320 · EGLL✈EGKK✈EGCC✈EGPH✈EGBB · from Fri 13 Nov 06:00Z');
-    // 84 without the pilot, because of the long aircraft name: the aircraft goes too, and the whole chain stays.
-    assert.equal(buttonLabel(view('seven'), 'open'), 'TST-002 · EGLL✈EGKK✈EGCC✈EGPH✈EGBB✈EGNX✈EGSS · from Fri 13 Nov 06:00Z');
+    h.jobs.sync(pid(), [
+      sj('nine', chain(9, '-'), { aircraft: 'A320', availableFrom: opens }),
+      sj('eleven', chain(11, '-'), { aircraft: 'Boeing 737-800W', availableFrom: opens }),
+      sj('fourteen', chain(14, '-'), { aircraft: 'A320', availableFrom: opens }),
+    ]);
+    h.jobs.reserve(view('nine').job.id, [1], { discordId: USER_A.discordId, username: 'Pilot Name Here' });
+    // 69 characters without the pilot, 86 with: only the pilot goes, the aircraft stays.
+    assert.equal(buttonLabel(view('nine'), 'taken'), `A320 · ${chain(9, '✈')} · 13/11/26 06:00Z`);
+    // 87 characters with the long aircraft name: the aircraft goes too, and the whole chain stays.
+    assert.equal(buttonLabel(view('eleven'), 'open'), `${chain(11, '✈')} · 13/11/26 06:00Z`);
+    // 87 even without it: the middle of the chain goes.
+    assert.equal(buttonLabel(view('fourteen'), 'open'), 'EGLL✈…✈EGNT (13 legs) · 13/11/26 06:00Z');
+    for (const k of ['nine', 'eleven', 'fourteen']) assert.ok(buttonLabel(view(k), 'taken').length <= LABEL_MAX);
   });
 
-  it('is never more than 80 characters, whatever the flight is called', () => {
-    h.jobs.sync(pid(), [sj('a', 'EGLL-EGKK', { aircraft: 'A320', availableFrom: Date.UTC(2026, 10, 13, 6, 0) })]);
-    h.store.setJobCode(view('a').job.id, 'AN-EXTREMELY-LONG-FLIGHT-NUMBER-THAT-AN-AIRLINE-ENTERED-IN-ITS-SHEET-BY-MISTAKE-1234567890');
+  it('is never more than 80 characters, however long the airports are called', () => {
+    h.jobs.sync(pid(), [sj('a', `${'X'.repeat(70)}-EGKK`, { aircraft: 'A320', availableFrom: Date.UTC(2026, 10, 13, 6, 0) })]);
     const label = buttonLabel(view('a'), 'open');
     assert.equal(label.length, LABEL_MAX);
     assert.ok(label.endsWith('…'));
@@ -135,9 +131,10 @@ describe('what a flight is, by its dot', () => {
     h.jobs.sync(pid(), [sj('a', 'EGLL-EGKK', { availableFrom: T0 - HOUR }), sj('b', 'EGLL-EGCC', { availableFrom: T0 - HOUR }), sj('c', 'EGLL-EGPH', { availableFrom: T0 + HOUR })]);
     h.jobs.reserve(view('b').job.id, [1], USER_A);
     const part: GridFlight[] = [view('a'), view('b'), view('c')].map((v) => ({ view: v, state: flightState(v, T0, false) }));
-    assert.equal(summaryLine(part), `**TST-001 – TST-003** · 3 flights · ${DOT.open} 1 open · ${DOT.taken} 1 taken · ${DOT.soon} 1 not open yet`);
-    assert.equal(summaryLine([part[0]!]), `**TST-001** · 1 flight · ${DOT.open} 1 open`);
-    assert.equal(summaryLine([{ view: part[0]!.view, state: 'done' }]), `**TST-001** · 1 flight · ${DOT.done} 1 completed`);
+    assert.equal(summaryLine(part), `**Flights 1–3** · ${DOT.open} 1 open · ${DOT.taken} 1 taken · ${DOT.soon} 1 not open yet`);
+    assert.equal(summaryLine(part, 15), `**Flights 16–18** · ${DOT.open} 1 open · ${DOT.taken} 1 taken · ${DOT.soon} 1 not open yet`, 'numbered by where it comes in the panel');
+    assert.equal(summaryLine([part[0]!]), `**Flight 1** · ${DOT.open} 1 open`);
+    assert.equal(summaryLine([{ view: part[0]!.view, state: 'done' }], 3), `**Flight 4** · ${DOT.done} 1 completed`);
   });
 
   it('has a key that says what each dot means, without the green one when completed flights have a channel of their own', () => {
@@ -199,7 +196,8 @@ describe('the grid panel\'s messages', () => {
     const buttons = rowsOf(messages[0]!).flat().filter((c) => String(c.custom_id).startsWith('panel:flight:'));
     assert.deepEqual(buttons.map((b) => b.custom_id), flights.map((f) => `panel:flight:${pid()}:${f.view.job.id}`));
     assert.ok(buttons.every((b) => b.style === 2 && b.emoji.name === DOT.open));
-    assert.equal(buttons[0].label, 'TST-001 · A320 · EGLL✈EGKK · from Wed 11 Nov 11:00Z');
+    assert.equal(buttons[0].label, 'A320 · EGLL✈EGKK · 11/11/26 11:00Z');
+    assert.ok(buttons.every((b) => !/TST-/.test(b.label)), 'no flight ID on a button');
   });
 
   it('shows the header on the first message only, with the key above when it was updated', () => {
@@ -209,10 +207,10 @@ describe('the grid panel\'s messages', () => {
     const key = lines.findIndex((l) => l.startsWith('**Key:**'));
     const updated = lines.findIndex((l) => l.startsWith('Updated'));
     assert.ok(key > 0 && updated > key, 'the key is above the update time');
-    assert.match(lines[0]!, /Press a flight to see its details\.$/);
+    assert.match(lines[0]!, /Press a flight to see its details and ID; the date on a button is when it opens \(UTC\)\.$/);
     assert.equal(messages[0]!.embeds.length, 1);
     assert.equal(messages[1]!.embeds[0]!.toJSON().title, undefined, 'the second message has no header');
-    assert.match(messages[1]!.embeds[0]!.toJSON().description!, /^\*\*TST-016 – TST-020\*\* · 5 flights/);
+    assert.match(messages[1]!.embeds[0]!.toJSON().description!, /^\*\*Flights 16–20\*\* · /);
   });
 
   it('says there are no flights, with the panel\'s buttons still there', () => {
@@ -226,7 +224,7 @@ describe('the grid panel\'s messages', () => {
     const { messages } = render(flightsOf(20), [0, 1]);
     const first = messages[0]!;
     assert.equal(first.embeds.length, 2, 'the header, then the summary');
-    assert.match(first.embeds[1]!.toJSON().description!, /^\*\*TST-001 – TST-015\*\* · 15 flights/);
+    assert.match(first.embeds[1]!.toJSON().description!, /^\*\*Flights 1–15\*\* · /);
     assert.deepEqual(customIds(first).filter((id) => id.startsWith('panel:flight:')), []);
     assert.equal(rowsOf(first)[0]![0].custom_id, `panel:reserve:${pid()}`, 'Reserve stays');
     assert.deepEqual(rowsOf(first)[1]!.map((c) => c.label), ['List view', 'Expand', 'Collapse all', 'Expand all']);
@@ -333,6 +331,15 @@ describe('a grid panel in Discord', () => {
     assert.match(messageText(channel().live[0]!), /\*\*Key:\*\* 🟡 open · 🔵 taken · 🟢 completed in the last 24 hours · ⚪ not open yet/);
   });
 
+  it('writes the dates day first by default and month first when the server chose that, redrawing at once', async () => {
+    h.jobs.sync(pid(), [sj('x', 'EGLL-EGKK', { availableFrom: Date.UTC(2026, 10, 16, 6, 0), deadline: T0 + 48 * HOUR, aircraft: 'A320' })]);
+    await grid();
+    assert.deepEqual(flightLabels(channel().live[0]!), ['A320 · EGLL✈EGKK · 16/11/26 06:00Z']);
+    h.store.updatePanel(pid(), { gridDates: 'mdy' });
+    await d.panels.refresh(pid());
+    assert.deepEqual(flightLabels(channel().live[0]!), ['A320 · EGLL✈EGKK · 11/16/26 06:00Z']);
+  });
+
   it('shows who has a flight on its button, and a blue dot', async () => {
     sync(2);
     h.jobs.reserve(jobId('k0'), [1], USER_A);
@@ -350,7 +357,7 @@ describe('a grid panel in Discord', () => {
     await grid();
     const greens = rowsOf(channel().live[0]!).flat().filter((c) => c.emoji?.name === DOT.done);
     assert.equal(greens.length, 1);
-    assert.match(greens[0].label, /TST-001 .* · alice$/);
+    assert.match(greens[0].label, / · alice$/);
 
     h.store.updatePanel(pid(), { completedChannelId: '800000000000000002' });
     await d.panels.refresh(pid(), { force: true });
@@ -372,7 +379,7 @@ describe('a grid panel in Discord', () => {
       assert.equal(c.updates.length + (c.defers.length > 0 ? 0 : 0), 0, 'the message is redrawn, not answered');
       const second = channel().live[1]!;
       assert.deepEqual(labels(second), ['Expand']);
-      assert.match(messageText(second), /TST-016 – TST-020/);
+      assert.match(messageText(second), /Flights 16–20/);
       assert.equal(flightLabels(channel().live[0]!).length, 15, 'the first message was not touched');
       await press(`panel:fold:${pid()}:1`);
       assert.equal(flightLabels(channel().live[1]!).length, 5);
@@ -482,6 +489,34 @@ describe('a grid panel in Discord', () => {
       const fields = Object.fromEntries(embed.fields.map((f: any) => [f.name, f.value]));
       assert.match(fields['COMPLETE BY'], /<t:\d+:F>/, 'the full date and time, in each reader\'s own timezone');
       assert.equal(fields['PILOT'], '*open*');
+    });
+
+    it('has everything the card has, with the flight\'s ID in its title, and when the flight opened', async () => {
+      const embed = (await press(`panel:flight:${pid()}:${jobId('k0')}`)).edits.at(-1).embeds[0].toJSON();
+      assert.equal(embed.title, 'TST-001 · A320', 'the ID lives here now');
+      const fields = Object.fromEntries(embed.fields.map((f: any) => [f.name, f.value]));
+      assert.deepEqual(Object.keys(fields), ['OPENED', 'COMPLETE BY', 'PILOT']);
+      assert.match(fields['OPENED'], /^<t:\d+:F>\n<t:\d+:R>$/);
+      assert.equal(fields['OPENED'].match(/<t:(\d+):F>/)![1], String(Math.floor((T0 - HOUR) / 1000)));
+    });
+
+    it('says when a flight that has not opened yet will open, and does not call it opened', async () => {
+      h.jobs.sync(pid(), [sj('k0', 'EGLL-EGKK', { availableFrom: T0 + 5 * HOUR, deadline: T0 + 40 * HOUR, aircraft: 'A320' })]);
+      await d.panels.refresh(pid());
+      const fields = Object.fromEntries((await press(`panel:flight:${pid()}:${jobId('k0')}`)).edits.at(-1).embeds[0].toJSON().fields.map((f: any) => [f.name, f.value]));
+      assert.ok('OPENS' in fields && !('OPENED' in fields));
+    });
+
+    it('does not add that box to a flight with no start time, nor to the default layout\'s cards', async () => {
+      h.jobs.sync(pid(), [sj('k0', 'EGLL-EGKK', { availableFrom: null, deadline: T0 + 40 * HOUR, aircraft: 'A320' })]);
+      await d.panels.refresh(pid());
+      const fields = (await press(`panel:flight:${pid()}:${jobId('k0')}`)).edits.at(-1).embeds[0].toJSON().fields.map((f: any) => f.name);
+      assert.ok(!fields.includes('OPENED') && !fields.includes('OPENS'));
+      h.store.updatePanel(pid(), { layout: 'cards' });
+      h.jobs.sync(pid(), [sj('k0', 'EGLL-EGKK', { availableFrom: T0 - HOUR, deadline: T0 + 40 * HOUR, aircraft: 'A320' })]);
+      await d.panels.refresh(pid(), { force: true });
+      const cards = channel().live.map((m) => messageText(m)).join('\n');
+      assert.doesNotMatch(cards, /OPENED/, 'the default cards are as they were');
     });
 
     it('shows a taken flight with its pilot\'s picture and its backup', async () => {
@@ -628,6 +663,47 @@ describe('/setup layout', () => {
     assert.match(await run({ options: { mode: 'grid' } }), /which are in <#800000000000000002> as cards instead/);
     await assert.rejects(run({ admin: false, options: { mode: 'cards' } }), (e: unknown) => e instanceof UserError && /Manage Server/.test(e.message));
     assert.equal(h.store.getPanel(pid())!.layout, 'grid');
+  });
+
+  it('has a date order too: day first (the default) or month first', async () => {
+    const sub = (setup.data.toJSON().options ?? []).find((o) => o.name === 'layout') as unknown as { options: Array<{ name: string; choices?: Array<{ value: string }> }> };
+    assert.deepEqual(sub.options.find((o) => o.name === 'dates')!.choices!.map((c) => c.value), ['dmy', 'mdy']);
+    assert.equal(h.store.getPanel(pid())!.gridDates, 'dmy');
+    await run({ options: { mode: 'grid' } });
+    assert.match(await run(), /Dates are day first \(16\/11\/26\), as in the UK and Europe.*dates:mdy/s);
+    const reply = await run({ options: { dates: 'mdy' } });
+    assert.match(reply, /^Done\. /);
+    assert.match(reply, /Dates are month first \(11\/16\/26\), as in the US.*cannot follow each reader's own settings.*dates:dmy/s);
+    assert.equal(h.store.getPanel(pid())!.gridDates, 'mdy');
+    assert.doesNotMatch(await run({ options: { dates: 'mdy' } }), /^Done/);
+  });
+
+  it('redraws the panel when only the date order changes, and leaves a card panel alone', async () => {
+    h.jobs.sync(pid(), [sj('x', 'EGLL-EGKK', { availableFrom: Date.UTC(2026, 10, 16, 6, 0), deadline: T0 + 48 * HOUR, aircraft: 'A320' })]);
+    await run({ options: { mode: 'grid' } });
+    const label = () => (channel().live[0]!.payload.components as any[]).flatMap((r) => r.toJSON().components).find((c: any) => String(c.custom_id).startsWith('panel:flight:')).label;
+    assert.equal(label(), 'A320 · EGLL✈EGKK · 16/11/26 06:00Z');
+    await run({ options: { dates: 'mdy' } });
+    assert.equal(label(), 'A320 · EGLL✈EGKK · 11/16/26 06:00Z');
+    await run({ options: { mode: 'cards', dates: 'dmy' } });
+    assert.ok(channel().live[0]!.payload.embeds.length >= 2, 'a header and the flight card: cards again');
+    assert.equal((channel().live[0]!.payload.components as any[]).flatMap((r) => r.toJSON().components).some((c: any) => String(c.custom_id).startsWith('panel:flight:')), false);
+  });
+
+  it('refuses a date order it does not know, at the store too', async () => {
+    await assert.rejects(run({ options: { dates: 'ymd' } }), (e: unknown) => e instanceof UserError && /day first or month first/.test(e.message));
+    assert.throws(() => h.store.updatePanel(pid(), { gridDates: 'ymd' as never }), /day first or month first/);
+  });
+
+  it('upgrades a database from before the date order: panels start day first', () => {
+    const old = new DatabaseSync(':memory:');
+    old.exec('PRAGMA foreign_keys = ON');
+    for (let v = 0; v < 26; v++) old.exec(MIGRATIONS[v] as string);
+    old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
+    assert.ok(MIGRATIONS.length >= 27);
+    for (let v = 26; v < MIGRATIONS.length; v++) old.exec(MIGRATIONS[v] as string);
+    const panel = new Store(old).listAllPanels()[0]!;
+    assert.deepEqual([panel.layout, panel.gridDates, panel.liveTracking], ['cards', 'dmy', true]);
   });
 
   it('refuses a layout it does not know, at the store too', async () => {

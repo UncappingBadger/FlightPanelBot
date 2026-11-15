@@ -66,6 +66,8 @@ export interface Panel {
   liveTracking: boolean;
   /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
   layout: 'cards' | 'grid';
+  /** The order of day and month in the short dates on a grid panel's buttons: day first (16/11/26) or month first (11/16/26). */
+  gridDates: 'dmy' | 'mdy';
   createdAt: number;
 }
 
@@ -295,6 +297,7 @@ const toPanel = (r: Row): Panel => ({
   departWarningMinutes: r.depart_warning_minutes === undefined || r.depart_warning_minutes === null ? 30 : Math.min(180, Math.max(0, Math.round(n(r.depart_warning_minutes)))),
   liveTracking: r.live_tracking === undefined || r.live_tracking === null ? true : n(r.live_tracking) !== 0,
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
+  gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
   createdAt: n(r.created_at),
 });
 
@@ -493,10 +496,16 @@ export class Store {
       departWarningMinutes: number;
       liveTracking: boolean;
       layout: 'cards' | 'grid';
+      gridDates: 'dmy' | 'mdy';
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.gridDates !== undefined) {
+      if (patch.gridDates !== 'dmy' && patch.gridDates !== 'mdy') throw new Error(`Dates are day first or month first, not ${String(patch.gridDates)}`);
+      sets.push('grid_dates = ?');
+      params.push(patch.gridDates);
+    }
     if (patch.layout !== undefined) {
       if (patch.layout !== 'cards' && patch.layout !== 'grid') throw new Error(`A panel is drawn as cards or a grid, not ${String(patch.layout)}`);
       sets.push('layout = ?');

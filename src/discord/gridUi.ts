@@ -31,17 +31,23 @@ export function flightState(view: JobView, now: number, completed: boolean): Fli
   return 'open';
 }
 
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** Day first (16/11/26, as in the UK and Europe) or month first (11/16/26, as in the US). */
+export type DateOrder = 'dmy' | 'mdy';
+
 const two = (n: number) => String(n).padStart(2, '0');
 
 /**
- * A moment as "Fri 13 Nov 06:00Z". A button's label is plain text, which cannot use Discord's local-time stamps, so it is in UTC
- * (the zone the airline's landing windows are in), and says so with the Z.
+ * A moment as a short date and a time: "16/11/26 06:00Z" or "11/16/26 06:00Z". A button's label is the same text for everyone who
+ * reads it (plain text cannot use Discord's local-time stamps), so the order of day and month is the server's choice, and the time
+ * is UTC (the zone the airline's landing windows are in), said with the Z. The private details card has the full date, in each
+ * reader's own timezone.
  */
-export function utcLabel(ms: number): string {
+export function shortDateTime(ms: number, order: DateOrder): string {
   const d = new Date(ms);
-  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}Z`;
+  const day = two(d.getUTCDate());
+  const month = two(d.getUTCMonth() + 1);
+  const year = two(d.getUTCFullYear() % 100);
+  return `${order === 'mdy' ? `${month}/${day}` : `${day}/${month}`}/${year} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}Z`;
 }
 
 /** The route in as few characters as will do: airports joined by a plane, a chain when the legs connect. */
@@ -54,17 +60,18 @@ function compactRoute(legs: Array<{ dep: string; arr: string }>): string {
 const clean = (s: string): string => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
 
 /**
- * What the button says: ID, aircraft, route, when the flight opens, and for a flight that is taken or flown, who has it. The pilot
- * and then the aircraft are dropped, and the route shortened, if it would not fit in 80 characters.
+ * What the button says: aircraft, route, when the flight opens, and for a flight that is taken or flown, who has it. The flight's
+ * ID is not on it (it is in the card that opens when the button is pressed). The pilot and then the aircraft are dropped, and the
+ * route shortened, if it would not fit in 80 characters.
  */
-export function buttonLabel(view: JobView, state: FlightState): string {
+export function buttonLabel(view: JobView, state: FlightState, order: DateOrder = 'dmy'): string {
   const { job, legs } = view;
   const aircraft = job.aircraft ? truncate(clean(job.aircraft), 12) : '';
-  const opens = job.availableFrom !== null ? `from ${utcLabel(job.availableFrom)}` : '';
+  const opens = job.availableFrom !== null ? shortDateTime(job.availableFrom, order) : '';
   const holder = state === 'open' || state === 'soon' ? null : (view.legs.find((l) => l.holder)?.holder?.username ?? view.legs.find((l) => l.sheetHolder)?.sheetHolder ?? null);
   const pilot = holder ? truncate(clean(holder), 14) : '';
   let route = compactRoute(legs);
-  const build = (parts: { aircraft: boolean; pilot: boolean }) => [job.code, parts.aircraft ? aircraft : '', route, opens, parts.pilot ? pilot : ''].filter(Boolean).join(' · ');
+  const build = (parts: { aircraft: boolean; pilot: boolean }) => [parts.aircraft ? aircraft : '', route, opens, parts.pilot ? pilot : ''].filter(Boolean).join(' · ');
 
   let label = build({ aircraft: true, pilot: true });
   if (label.length > LABEL_MAX) label = build({ aircraft: true, pilot: false });
@@ -93,21 +100,21 @@ export interface GridMessage {
 
 const FOLD_EMOJI = { collapse: '🔼', expand: '🔽' } as const;
 
-/** "TST-014 – TST-027 · 8 flights · 🟡 3 open · 🔵 3 taken", for a message that is folded and as the heading of one that is not. */
-export function summaryLine(part: GridFlight[]): string {
+/** "Flights 16–20 · 🟡 3 open · 🔵 2 taken", for a message that is folded and as the heading of one that is not. `first` is how many flights come before it. */
+export function summaryLine(part: GridFlight[], first = 0): string {
   const counts = new Map<FlightState, number>();
   for (const f of part) counts.set(f.state, (counts.get(f.state) ?? 0) + 1);
-  const range = part.length === 1 ? `**${part[0]!.view.job.code}**` : `**${part[0]!.view.job.code} – ${part[part.length - 1]!.view.job.code}**`;
+  const range = part.length === 1 ? `**Flight ${first + 1}**` : `**Flights ${first + 1}–${first + part.length}**`;
   const kinds = (['open', 'taken', 'soon', 'done'] as const).filter((s) => (counts.get(s) ?? 0) > 0).map((s) => `${DOT[s]} ${counts.get(s)} ${STATE_WORD[s]}`);
-  return [range, `${part.length} flight${part.length === 1 ? '' : 's'}`, ...kinds].join(' · ');
+  return [range, ...kinds].join(' · ');
 }
 
-const summaryEmbed = (part: GridFlight[]) => new EmbedBuilder().setColor(COLORS.note).setDescription(summaryLine(part));
+const summaryEmbed = (part: GridFlight[], first: number) => new EmbedBuilder().setColor(COLORS.note).setDescription(summaryLine(part, first));
 
 /** The row of flight buttons: up to five. */
-function flightRow(panelId: number, flights: GridFlight[]): ActionRowBuilder<MessageActionRowComponentBuilder> {
+function flightRow(panelId: number, flights: GridFlight[], order: DateOrder): ActionRowBuilder<MessageActionRowComponentBuilder> {
   return new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-    ...flights.map((f) => new ButtonBuilder().setCustomId(`panel:flight:${panelId}:${f.view.job.id}`).setLabel(buttonLabel(f.view, f.state)).setEmoji(DOT[f.state]).setStyle(ButtonStyle.Secondary)),
+    ...flights.map((f) => new ButtonBuilder().setCustomId(`panel:flight:${panelId}:${f.view.job.id}`).setLabel(buttonLabel(f.view, f.state, order)).setEmoji(DOT[f.state]).setStyle(ButtonStyle.Secondary)),
   );
 }
 
@@ -125,14 +132,14 @@ export function renderGridPanel(
   panel: Panel,
   flights: GridFlight[],
   now: number,
-  opts: { autoCompletes: boolean; later: number; folded: ReadonlySet<number> },
+  opts: { autoCompletes: boolean; later: number; folded: ReadonlySet<number>; dates?: DateOrder },
 ): { messages: GridMessage[]; parts: number } {
   const label = airlineLabel({ name: panel.airlineName, abbr: panel.airlineAbbr });
   const hasCompleted = panel.completedChannelId === null;
 
   const intro = panelIntro(panel, flights.map((f) => f.view), now, opts.autoCompletes);
   const updated = intro.findIndex((l) => l.startsWith('Updated'));
-  intro[0] = `${intro[0] ?? ''} Press a flight to see its details.`;
+  intro[0] = `${intro[0] ?? ''} Press a flight to see its details and ID; the date on a button is when it opens (UTC).`;
   intro.splice(updated < 0 ? intro.length : updated, 0, keyLine(hasCompleted));
   if (panel.completedChannelId) intro.push(`Completed flights are in <#${panel.completedChannelId}>.`);
   const header = new EmbedBuilder()
@@ -159,7 +166,7 @@ export function renderGridPanel(
     const folded = part.length > 0 && opts.folded.has(i);
     const embeds: EmbedBuilder[] = [];
     if (first) embeds.push(header);
-    if (part.length > 0 && (!first || folded)) embeds.push(summaryEmbed(part));
+    if (part.length > 0 && (!first || folded)) embeds.push(summaryEmbed(part, i * FLIGHTS_PER_MESSAGE));
 
     const rows: Array<ActionRowBuilder<MessageActionRowComponentBuilder>> = [];
     if (first || !folded) rows.push(panelButtons(panel.id));
@@ -181,7 +188,7 @@ export function renderGridPanel(
       );
     }
     if (extras.length > 0) rows.push(new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(...extras));
-    if (!folded) for (let r = 0; r < part.length; r += 5) rows.push(flightRow(panel.id, part.slice(r, r + 5)));
+    if (!folded) for (let r = 0; r < part.length; r += 5) rows.push(flightRow(panel.id, part.slice(r, r + 5), opts.dates ?? 'dmy'));
 
     if (i === total - 1) embeds.push(...notes);
     messages.push({ embeds, components: rows });

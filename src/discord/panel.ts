@@ -309,7 +309,7 @@ export class PanelService {
           ...(panel.completedChannelId === null ? listing.completed.map((view) => ({ view, state: 'done' as const })) : []),
         ];
         const autoCompletes = this.fshubEnabled && panel.fshubAirlineId !== null && panel.fshubConfirm && panel.fshubAutoComplete;
-        const grid = renderGridPanel(panel, flights, listing.now, { autoCompletes, later: listing.later, folded: this.foldsOf(panel.id) });
+        const grid = renderGridPanel(panel, flights, listing.now, { autoCompletes, later: listing.later, folded: this.foldsOf(panel.id), dates: panel.gridDates });
         this.gridParts.set(panel.id, grid.parts);
         open = grid.messages.map((m) => ({ embeds: m.embeds, components: m.components, allowedMentions: noPings }));
         done = panel.completedChannelId === null ? [] : this.render(panel, listing, new Map()).completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings }));

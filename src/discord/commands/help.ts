@@ -35,7 +35,7 @@ export const helpCommand: Command = {
             {
               name: 'If your server uses the button grid',
               value:
-                'Each flight is a button: 🟡 open, 🔵 taken, 🟢 completed, ⚪ not open yet, with its ID, aircraft, route, when it opens (UTC) and who has it. Press one to see its card (only you see it). **Collapse** and **Expand** fold a message for everyone; it unfolds after 10 minutes without a button press.',
+                'Each flight is a button: 🟡 open, 🔵 taken, 🟢 completed, ⚪ not open yet, with its aircraft, route, the date it opens (UTC) and who has it. Press one to see its card and ID (only you see it). **Collapse** and **Expand** fold a message for everyone; it unfolds after 10 minutes without a button press.',
             },
             {
               name: 'What your flights made',

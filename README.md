@@ -259,7 +259,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
 | `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
-| `/setup layout [mode] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
+| `/setup layout [mode] [dates] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
 | `/setup refresh-roles [role] [mode]` | Let members with a role run **`/setup refresh` and `/setup id-add`, and nothing else from `/setup`** (every other subcommand stays admin-only, and so does this one). `role` adds it (`mode:add` is the default); `mode:remove` with a `role` takes it off; `mode:clear` takes every role off; with no options it lists them. Up to 10 roles per server, and not @everyone. **Discord also has to let those members see `/setup`**: in Server Settings, Integrations, choose the bot, then `/setup`, and add the role there (a bot cannot do that part itself). |
@@ -589,19 +589,22 @@ By default the panel is a **card** for each flight. A server can choose a more c
 `/setup layout mode:grid` (`mode:cards` goes back; the cards stay the default and are not changed). The panel is redrawn at once.
 
 - **A button for each flight**, grey, with a coloured dot: 🟡 open (needs a pilot now), 🔵 taken, 🟢 completed in the last 24 hours,
-  ⚪ not open yet. The label is the dot, the flight ID, the aircraft, the route, **when the flight opens** and, once it is taken, who
-  has it: `🔵 TST-015 · B738 · EGKK✈EGCC · from Thu 12 Nov 12:00Z · alice`. A label can only be plain text, which cannot use Discord's
-  local-time stamps, so the time is in **UTC** (the `Z`), the zone landing windows are in. A label is at most 80 characters: if it
-  would be longer the pilot is dropped, then the aircraft, then the middle of a long chain of airports.
+  ⚪ not open yet. The label is the dot, the aircraft, the route, **when the flight opens** as a short date and time and, once it is
+  taken, who has it: `🔵 B738 · EGKK✈EGCC · 12/11/26 12:00Z · alice`. The **flight's ID is not on the button**: it is in the card that
+  opens when you press it. The date is **day first (16/11/26, as in the UK and Europe) by default, or month first (11/16/26, as in the
+  US)**, chosen with `/setup layout dates:mdy` (or `dmy`). A label is the same text for everyone who reads it, and cannot use Discord's
+  local-time stamps, so the order is the server's choice and the time is in **UTC** (the `Z`), the zone landing windows are in; the
+  card has the full date in each reader's own timezone. A label is at most 80 characters: if it would be longer the pilot is dropped,
+  then the aircraft, then the middle of a long chain of airports.
 - **A key above "Updated"** in the header says what the dots mean.
-- **Pressing a flight** shows its card (the same card the panel uses in its default layout: the OPEN stamp or the pilot's picture, the
-  full dates and times in the reader's own timezone, the backup) **to that person only**, as a private reply that closes by itself
+- **Pressing a flight** shows its card (everything the panel's card in its default layout shows: the flight's ID, the OPEN stamp or the
+  pilot's picture, the full dates and times in the reader's own timezone, the backup; plus when the flight **opened**) **to that person only**, as a private reply that closes by itself
   after 90 seconds, or when they press another flight. For a completed flight it is the completed card (who flew it, when it
   landed, FsHub's link). Discord puts a private reply at the bottom of the channel, so the buttons carry what matters at a glance.
 - **15 flights to a message** (Discord allows 5 buttons in a row and 5 rows in a message, and two rows are the panel's own
   buttons), up to ten messages. The panel's buttons (Reserve, Search, Backup pilot, My flights, Complete) are under every message.
 - **Collapse and Expand.** Every message has a **Collapse** button that folds it to one line, such as
-  `TST-020 – TST-027 · 8 flights · 🟡 3 open · 🔵 3 taken · ⚪ 2 not open yet`, with an **Expand** button to open it again; the first
+  `Flights 16–20 · 🟡 3 open · 🔵 2 taken` (numbered by where they come in the panel, not by ID), with an **Expand** button to open it again; the first
   message has **Collapse all** and **Expand all**. **Anyone can fold or unfold**: it is the same message for everyone. A folded
   message **unfolds by itself when nobody has pressed any button on the panel for 10 minutes**. The first message keeps its header
   and buttons when folded. Folds are kept in memory only, so a restart unfolds everything.
@@ -694,7 +697,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1459 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1466 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

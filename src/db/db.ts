@@ -490,6 +490,11 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN layout TEXT NOT NULL DEFAULT 'cards';
   `,
+
+  /* v27: the order of the day and the month in the short dates on a grid panel's buttons: 'dmy' (16/11/26, UK and Europe) or 'mdy' (11/16/26, US). */
+  `
+  ALTER TABLE panels ADD COLUMN grid_dates TEXT NOT NULL DEFAULT 'dmy';
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

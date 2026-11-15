@@ -58,7 +58,7 @@ export async function handleGridAction(ctx: BotContext, interaction: ComponentIn
   const embeds =
     view.job.completedAt !== null
       ? [completedCard(view, confirmationsFor(ctx.store, panel, [view], now).get(view.job.id))]
-      : [openCard(view, now, await ctx.panels.avatarsFor(avatarIdsOf([view])))];
+      : [openCard(view, now, await ctx.panels.avatarsFor(avatarIdsOf([view])), { showOpened: true })];
   const key = `${interaction.user.id}:${panelId}`;
   closeDetails(key);
   await interaction.editReply({ embeds, files: stampFiles(embeds), allowedMentions: noPings });
