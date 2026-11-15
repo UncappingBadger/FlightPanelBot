@@ -7,6 +7,7 @@ import { COMPLETED_SHOW_MS, panelHorizonMs, type JobService } from '../services/
 import type { Reminder } from '../services/reminders.js';
 import { discordErrorCode, isDmClosed, isMissingAccess, isUnknownMessage } from './errors.js';
 import { availableFor } from '../services/availability.js';
+import { flightState, renderGridPanel, type GridFlight } from './gridUi.js';
 import { avatarIdsOf, defaultAvatar, listRows, noPings, panelRows, renderListParts, renderPanelParts, renderReminder, stampFiles, usesStamp, type Avatar } from './ui.js';
 
 /** What one message of a panel (or of a pilot's list) says and carries. */
@@ -26,6 +27,10 @@ const contentOf = (p: Payload): string => JSON.stringify([p.embeds.map((e) => e.
 const forSend = (p: Payload) => ({ ...p, files: stampFiles(p.embeds) });
 /** What to edit a panel message to: the same, with the stamp's picture put on again when a card wears it, or taken off when none does any more. */
 const forEdit = (p: Payload) => (usesStamp(p.embeds) ? { ...p, files: stampFiles(p.embeds) } : { ...p, attachments: [] });
+
+/** Folded messages of a grid panel unfold by themselves when nobody has pressed any button on the panel for this long. */
+export const FOLD_IDLE_MS = 10 * 60_000;
+const NO_FOLDS: ReadonlySet<number> = new Set();
 
 /** At most this many people may have a panel's list in their DMs at once: every redraw edits each of them. */
 export const MAX_FOLLOWERS = 200;
@@ -95,6 +100,10 @@ export class PanelService {
   private lastPayloadNote = '(nothing yet)';
   /** The pictures of the people on the panel's cards, and when each was last asked for. */
   private readonly avatarCache = new Map<string, { at: number; avatar: Avatar }>();
+  /** For a grid panel: which of its messages (by position) are folded to one line, and when a button on the panel was last pressed. Not kept across a restart. */
+  private readonly folds = new Map<number, { parts: Set<number>; touchedAt: number }>();
+  /** How many messages of flights each grid panel was last drawn with, so "collapse all" knows. */
+  private readonly gridParts = new Map<number, number>();
 
   constructor(
     private readonly store: Store,
@@ -108,6 +117,40 @@ export class PanelService {
 
   attach(client: Client): void {
     this.client = client;
+  }
+
+  /** Which messages of a grid panel are folded now. */
+  foldsOf(panelId: number): ReadonlySet<number> {
+    return this.folds.get(panelId)?.parts ?? NO_FOLDS;
+  }
+
+  /** A button on the panel was pressed: folded messages stay folded for another ten minutes. */
+  touch(panelId: number): void {
+    const f = this.folds.get(panelId);
+    if (f) f.touchedAt = this.now();
+  }
+
+  /** Fold or unfold one message of a grid panel. Redraw to show it. */
+  setFold(panelId: number, part: number, folded: boolean): void {
+    const f = this.folds.get(panelId) ?? { parts: new Set<number>(), touchedAt: this.now() };
+    if (folded) f.parts.add(part);
+    else f.parts.delete(part);
+    f.touchedAt = this.now();
+    if (f.parts.size === 0) this.folds.delete(panelId);
+    else this.folds.set(panelId, f);
+  }
+
+  /** Fold every message of a grid panel, or unfold them all. Redraw to show it. */
+  setAllFolds(panelId: number, folded: boolean): void {
+    const count = this.gridParts.get(panelId) ?? 0;
+    if (!folded || count === 0) this.folds.delete(panelId);
+    else this.folds.set(panelId, { parts: new Set(Array.from({ length: count }, (_, i) => i)), touchedAt: this.now() });
+  }
+
+  /** Forget a panel's folds (it went back to cards, or was removed). */
+  clearFolds(panelId: number): void {
+    this.folds.delete(panelId);
+    this.gridParts.delete(panelId);
   }
 
   /** Request a redraw; a burst of changes inside the debounce window becomes one edit. */
@@ -222,6 +265,12 @@ export class PanelService {
    */
   run(): void {
     const now = this.now();
+    // Folded messages unfold once nobody has pressed any button on their panel for a while.
+    for (const [panelId, f] of this.folds) {
+      if (now - f.touchedAt < FOLD_IDLE_MS) continue;
+      this.folds.delete(panelId);
+      this.schedule(panelId);
+    }
     for (const [panelId, at] of this.changeAt) {
       if (now < at) continue;
       this.changeAt.delete(panelId); // the redraw records the next one; a failed redraw is not retried every minute
@@ -251,11 +300,26 @@ export class PanelService {
       }
 
       const listing = this.listing(panel);
-      const parts = this.render(panel, listing, await this.avatarsFor(avatarIdsOf(listing.shown)));
-      // Each message holds several cards (embeds). The flights that can be reserved carry the buttons on every message, so a
-      // long list never makes people scroll to the end to reserve. The completed flights, below them, are only for reading.
-      const open: Payload[] = parts.open.map((embeds) => ({ embeds, components: panelRows(panel.id), allowedMentions: noPings }));
-      const done: Payload[] = parts.completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings }));
+      let open: Payload[];
+      let done: Payload[];
+      if (panel.layout === 'grid') {
+        // A button for each flight (the completed ones too, unless they have a channel of their own, where they are cards as ever).
+        const flights: GridFlight[] = [
+          ...listing.shown.map((view) => ({ view, state: flightState(view, listing.now, false) })),
+          ...(panel.completedChannelId === null ? listing.completed.map((view) => ({ view, state: 'done' as const })) : []),
+        ];
+        const autoCompletes = this.fshubEnabled && panel.fshubAirlineId !== null && panel.fshubConfirm && panel.fshubAutoComplete;
+        const grid = renderGridPanel(panel, flights, listing.now, { autoCompletes, later: listing.later, folded: this.foldsOf(panel.id) });
+        this.gridParts.set(panel.id, grid.parts);
+        open = grid.messages.map((m) => ({ embeds: m.embeds, components: m.components, allowedMentions: noPings }));
+        done = panel.completedChannelId === null ? [] : this.render(panel, listing, new Map()).completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings }));
+      } else {
+        const parts = this.render(panel, listing, await this.avatarsFor(avatarIdsOf(listing.shown)));
+        // Each message holds several cards (embeds). The flights that can be reserved carry the buttons on every message, so a
+        // long list never makes people scroll to the end to reserve. The completed flights, below them, are only for reading.
+        open = parts.open.map((embeds) => ({ embeds, components: panelRows(panel.id), allowedMentions: noPings }));
+        done = parts.completed.map((embeds) => ({ embeds, components: [], allowedMentions: noPings }));
+      }
       if (DEBUG_BUILD && !permsLogged.has(panel.id) && 'guild' in channel && 'permissionsFor' in channel) {
         permsLogged.add(panel.id);
         const me = channel.guild?.members?.me;

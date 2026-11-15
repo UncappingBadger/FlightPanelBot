@@ -228,7 +228,7 @@ export function avatarIdsOf(views: JobView[]): string[] {
 }
 
 /** Whether every leg of a flight has a pilot, in Discord or named in the airline's schedule. */
-const isTaken = (view: JobView): boolean => view.legs.length > 0 && view.legs.every((l) => l.holder !== null || l.sheetHolder !== null);
+export const isTaken = (view: JobView): boolean => view.legs.length > 0 && view.legs.every((l) => l.holder !== null || l.sheetHolder !== null);
 
 /** The route in large type, with a plane between the airports. */
 const routeHeading = (legs: Array<{ dep: string; arr: string }>): string => `## ${routeText(legs).replace(/ → /g, ' ✈ ')}`;
@@ -433,7 +433,7 @@ const lastCard = (messages: EmbedBuilder[][]): EmbedBuilder => {
 };
 
 /** How to use the panel, as the lines that open it (and a pilot's list of it). */
-function panelIntro(panel: Panel, views: JobView[], now: number, autoCompletes: boolean): string[] {
+export function panelIntro(panel: Panel, views: JobView[], now: number, autoCompletes: boolean): string[] {
   // The example ID is a real one from the panel when there is one (it may be a flight number from the schedule).
   const example = views[0]?.job.code ?? `${panel.prefix}-001`;
   return [

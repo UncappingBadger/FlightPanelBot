@@ -49,7 +49,7 @@ describe('/setup (admins only)', () => {
 
   describe('permissions', () => {
     it('refuses every subcommand to people without Manage Server, and changes nothing', async () => {
-      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'fshub', 'completed', 'depart-warning', 'refresh-roles', 'id-add', 'refresh', 'release', 'template'];
+      const subs = ['panel-add', 'panel-role', 'panel-remove', 'panels', 'import', 'sheet', 'reminders', 'fshub', 'completed', 'depart-warning', 'live-tracking', 'layout', 'refresh-roles', 'id-add', 'refresh', 'release', 'template'];
       for (const sub of subs) {
         await assert.rejects(
           run(sub, { admin: false, options: { airline: 'Test Air', channel: { id: CHANNEL }, code: 'TST-001', file: attachment() } }),

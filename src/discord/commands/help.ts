@@ -33,6 +33,11 @@ export const helpCommand: Command = {
                 "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. Use the panel's buttons to reserve and the rest; **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes what you see.",
             },
             {
+              name: 'If your server uses the button grid',
+              value:
+                'Each flight is a button: 🟡 open, 🔵 taken, 🟢 completed, ⚪ not open yet, with its ID, aircraft, route, when it opens (UTC) and who has it. Press one to see its card (only you see it). **Collapse** and **Expand** fold a message for everyone; it unfolds after 10 minutes without a button press.',
+            },
+            {
               name: 'What your flights made',
               value:
                 "DM me `my contributions` to see what the flights you completed in the last 7 days made for the airline, worked out from your airline's Google Sheet (the Profit Made column). A flight a manager hasn't entered the profit for yet is named by ID, and the total is what I can see so far.",
@@ -44,12 +49,12 @@ export const helpCommand: Command = {
             {
               name: 'A heads-up before it is too late',
               value:
-                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. I can't see a flight that is already in the air, so ignore it if you are flying.",
+                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. If FsHub's live feed shows you already flying it, I don't send it; otherwise ignore it if you are flying.",
             },
             {
               name: 'When you have flown it',
               value:
-                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights are listed in a panel of their own below the open ones, and on a FsHub panel they also show the aircraft FsHub recorded. On a FsHub panel I also complete the flights FsHub shows you flew once an hour, and DM you, so you don't have to press anything.",
+                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights are listed in a panel of their own below the open ones, and on a FsHub panel they also show the aircraft FsHub recorded. On a FsHub panel I also complete the flights FsHub shows you flew, within minutes of landing and again once an hour, and DM you, so you don't have to press anything.",
             },
             {
               name: 'Fuel prices',
@@ -64,7 +69,7 @@ export const helpCommand: Command = {
             {
               name: 'Server admins, continued',
               value:
-                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup refresh-roles` let members with a role run `/setup refresh` and `/setup id-add`, and nothing else from `/setup`\n`/setup id-add` set a pilot FsHub ID by hand, to fix a wrong one\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup fshub` match pilots to their FsHub IDs, confirm completed flights, and complete flown flights every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
+                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup refresh-roles` let members with a role run `/setup refresh` and `/setup id-add`, and nothing else from `/setup`\n`/setup id-add` set a pilot FsHub ID by hand, to fix a wrong one\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup fshub` match pilots to their FsHub IDs, confirm completed flights, and complete flown flights every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup live-tracking` follow pilots\' flights live (no warning for a pilot already flying, complete on landing) · `/setup layout` draw the panel as cards (default) or a grid of buttons\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
             },
           )
           .setFooter({ text: FOOTER }),

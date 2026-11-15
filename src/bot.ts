@@ -16,6 +16,7 @@ import { SheetsApi } from './google/sheetsApi.js';
 import { DemoJobSource } from './jobs/demo.js';
 import { sourceSelector } from './jobs/sheet.js';
 import { FsHubClient } from './fshub/client.js';
+import { LiveFeed } from './fshub/liveFeed.js';
 import { AirportDirectory } from './services/airports.js';
 import { AutoCompleter } from './services/autoComplete.js';
 import { DepartureWarnings } from './services/departureWarnings.js';
@@ -23,6 +24,7 @@ import { JobEvents } from './services/events.js';
 import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { JobService } from './services/jobs.js';
+import { LiveTracker } from './services/liveTracker.js';
 import { SourceRefresher } from './services/refresh.js';
 import { ReminderService } from './services/reminders.js';
 import { Scheduler } from './services/scheduler.js';
@@ -110,13 +112,22 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // airline's own FsHub flights of the route when there are some, and from the distance between the airports (their positions read
   // from the public OurAirports list) otherwise.
   const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
-  const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log });
+  // FsHub's public live feed (no token): who is flying now, so a warning skips a pilot already in the air, and a flight is looked for in
+  // FsHub's own record the minute its pilot lands (it is only completed when FsHub shows it flown).
+  const live = new LiveTracker({
+    store,
+    feed: new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }),
+    complete: autoComplete ? (panel, scope) => autoComplete.runPanel(panel, scope) : null,
+    logger: log,
+  });
+  const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log, live });
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
     reminders,
     markets: market,
     panels,
     cleanup: { run: () => panels.cleanReminders() },
+    live,
     departures,
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),

@@ -1,0 +1,193 @@
+import type { Panel, Store } from '../db/store.js';
+import type { LiveFeed, LivePilot } from '../fshub/liveFeed.js';
+import { silentLogger, type Logger } from '../util/log.js';
+import { trustedFshubId, type AutoCompleteResult, type AutoCompleteScope } from './autoComplete.js';
+
+/** Where a pilot is, as far as FsHub's live feed says. */
+export type LiveState = 'offline' | 'ground' | 'airborne';
+
+export interface LiveStatus {
+  state: LiveState;
+  phase: string | null;
+  /** The flight plan's airports, when the pilot filed one. */
+  dep: string | null;
+  arr: string | null;
+  flightId: string | null;
+  checkedAt: number;
+}
+
+/** A status older than this is not trusted (the feed could not be read, or the tracker has not run). */
+export const LIVE_STALE_MS = 3 * 60_000;
+/** The feed is asked at most this often. */
+const POLL_MS = 45_000;
+/** After a pilot lands, FsHub's record of the flight is looked for this often... */
+const RETRY_MS = 60_000;
+/** ...for this long, after which the hourly check is left to find it. */
+const PENDING_MAX_MS = 12 * 60_000;
+/** A landing check reads FsHub's flights unless they were read this recently. */
+const FRESH_FLIGHTS_MS = 45_000;
+
+interface Pending {
+  panelId: number;
+  discordId: string;
+  since: number;
+  lastTry: number | null;
+}
+
+export interface LiveTrackerDeps {
+  store: Store;
+  feed: Pick<LiveFeed, 'onlinePilotIds' | 'pilot'>;
+  /** Completes the flights FsHub shows these pilots flew; null when the bot has no FsHub token (it can still tell who is flying). */
+  complete: ((panel: Panel, scope: AutoCompleteScope) => Promise<AutoCompleteResult>) | null;
+  logger?: Logger;
+  now?: () => number;
+}
+
+/**
+ * Follows the pilots who hold flights, using FsHub's public live feed, for two things:
+ *
+ * - `statusOf` says whether a pilot is in the air now, so a late-departure warning is not sent to someone already flying it.
+ * - When a pilot who was in the air is no longer (landed, or the flight ended), the flights they hold are checked against FsHub's own
+ *   record straight away and again every minute for a while, instead of waiting for the hourly check. The feed is only a nudge to
+ *   look: a flight is completed only when FsHub itself shows it flown, by the same strict rules as the Complete button.
+ *
+ * It keeps nothing on disk. After a restart it learns who is flying afresh, and anything it missed is found by the hourly check.
+ */
+export class LiveTracker {
+  private readonly now: () => number;
+  private readonly log: Logger;
+  private readonly status = new Map<number, LiveStatus>();
+  private readonly pending = new Map<string, Pending>();
+  private lastPollAt: number | null = null;
+
+  constructor(private readonly d: LiveTrackerDeps) {
+    this.now = d.now ?? Date.now;
+    this.log = d.logger ?? silentLogger;
+  }
+
+  /** Where this pilot is, or null when it is not known (not followed, or the feed has not been readable lately). */
+  statusOf(discordId: string): LiveStatus | null {
+    const fshubId = trustedFshubId(this.d.store, discordId);
+    if (fshubId === null) return null;
+    const s = this.status.get(fshubId);
+    return s && this.now() - s.checkedAt <= LIVE_STALE_MS ? s : null;
+  }
+
+  /** Landed pilots whose flights are still being looked for in FsHub (for tests). */
+  get waiting(): number {
+    return this.pending.size;
+  }
+
+  /** One pass: ask the feed if it is due, then look again for the flights of pilots who have landed. */
+  async run(): Promise<void> {
+    const now = this.now();
+    if (this.lastPollAt === null || now - this.lastPollAt >= POLL_MS) {
+      this.lastPollAt = now;
+      await this.poll(now);
+    }
+    await this.checkLanded(now);
+  }
+
+  /** Every pilot who holds a leg of a flight not yet completed, on panels that follow flights live: FsHub ID to who and where. */
+  private tracked(now: number): Map<number, Array<{ panel: Panel; discordId: string }>> {
+    const out = new Map<number, Array<{ panel: Panel; discordId: string }>>();
+    for (const panel of this.d.store.listAllPanels()) {
+      if (!panel.liveTracking) continue;
+      const seen = new Set<string>();
+      for (const view of this.d.store.listAllHeldJobViews(panel.id, now - 2 * 86_400_000)) {
+        for (const leg of view.legs) {
+          const who = leg.holder?.discordId;
+          if (!who || seen.has(who)) continue;
+          seen.add(who);
+          const fshubId = trustedFshubId(this.d.store, who);
+          if (fshubId === null) continue;
+          out.set(fshubId, [...(out.get(fshubId) ?? []), { panel, discordId: who }]);
+        }
+      }
+    }
+    return out;
+  }
+
+  private async poll(now: number): Promise<void> {
+    const tracked = this.tracked(now);
+    if (tracked.size === 0) {
+      this.status.clear();
+      return;
+    }
+    let online: Set<number>;
+    try {
+      online = await this.d.feed.onlinePilotIds();
+    } catch (e) {
+      this.log.debug(`Live feed: ${e instanceof Error ? e.message : e}`);
+      return; // what was known goes stale by itself
+    }
+    for (const [fshubId, users] of tracked) {
+      let live: LivePilot | null = null;
+      if (online.has(fshubId)) {
+        try {
+          live = await this.d.feed.pilot(fshubId);
+        } catch (e) {
+          this.log.debug(`Live feed: ${e instanceof Error ? e.message : e}`);
+          continue;
+        }
+      }
+      const next: LiveStatus = {
+        state: live === null ? 'offline' : live.airborne ? 'airborne' : 'ground',
+        phase: live?.flight?.phase ?? null,
+        dep: live?.flight?.dep ?? null,
+        arr: live?.flight?.arr ?? null,
+        flightId: live?.flight?.flightId ?? null,
+        checkedAt: now,
+      };
+      const prev = this.status.get(fshubId);
+      this.status.set(fshubId, next);
+      if (prev?.state === 'airborne' && next.state !== 'airborne') this.landed(users, now);
+    }
+    // Pilots no longer holding anything are forgotten.
+    for (const id of [...this.status.keys()]) if (!tracked.has(id)) this.status.delete(id);
+  }
+
+  private landed(users: Array<{ panel: Panel; discordId: string }>, now: number): void {
+    for (const { panel, discordId } of users) {
+      if (!this.d.complete || !panel.fshubAutoComplete || !panel.fshubConfirm || panel.fshubAirlineId === null) continue;
+      this.pending.set(`${panel.id}:${discordId}`, { panelId: panel.id, discordId, since: now, lastTry: null });
+      this.log.info(`A pilot on ${panel.airlineName} has landed; looking for their flight in FsHub`);
+    }
+  }
+
+  /** For each pilot who has landed: have FsHub's record read and complete what it shows flown, until it does or the time is up. */
+  private async checkLanded(now: number): Promise<void> {
+    if (!this.d.complete) return;
+    const byPanel = new Map<number, Array<[string, Pending]>>();
+    for (const [key, p] of this.pending) {
+      if (now - p.since > PENDING_MAX_MS) {
+        this.pending.delete(key);
+        continue;
+      }
+      if (p.lastTry !== null && now - p.lastTry < RETRY_MS) continue;
+      byPanel.set(p.panelId, [...(byPanel.get(p.panelId) ?? []), [key, p]]);
+    }
+    for (const [panelId, list] of byPanel) {
+      const panel = this.d.store.getPanel(panelId);
+      if (!panel || !panel.liveTracking || !panel.fshubAutoComplete) {
+        for (const [key] of list) this.pending.delete(key);
+        continue;
+      }
+      for (const [, p] of list) p.lastTry = now;
+      let result: AutoCompleteResult;
+      try {
+        result = await this.d.complete(panel, { only: new Set(list.map(([, p]) => p.discordId)), maxAgeMs: FRESH_FLIGHTS_MS });
+      } catch (e) {
+        this.log.warn(`Checking FsHub after a landing failed: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      if (!result.ok) continue; // FsHub could not be read: try again next minute
+      const done = new Set(result.completed.map((c) => c.discordId));
+      for (const [key, p] of list) {
+        if (done.has(p.discordId)) this.pending.delete(key);
+      }
+      // Nothing of theirs that could be completed (they held nothing that qualifies): stop looking.
+      if (result.checked === 0) for (const [key] of list) this.pending.delete(key);
+    }
+  }
+}

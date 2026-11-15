@@ -62,6 +62,10 @@ export interface Panel {
   completedMessageIds: string[];
   /** How many minutes before the latest take-off that still makes a flight's window a pilot is warned; 0 means the warning is off. */
   departWarningMinutes: number;
+  /** Whether pilots' flights are followed live (FsHub's public live feed) to know who is already flying and to complete a flight soon after it lands. */
+  liveTracking: boolean;
+  /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
+  layout: 'cards' | 'grid';
   createdAt: number;
 }
 
@@ -289,6 +293,8 @@ const toPanel = (r: Row): Panel => ({
   completedChannelId: sn(r.completed_channel_id),
   completedMessageIds: parseJsonArray<string>(r.completed_message_ids, []).map(String),
   departWarningMinutes: r.depart_warning_minutes === undefined || r.depart_warning_minutes === null ? 30 : Math.min(180, Math.max(0, Math.round(n(r.depart_warning_minutes)))),
+  liveTracking: r.live_tracking === undefined || r.live_tracking === null ? true : n(r.live_tracking) !== 0,
+  layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   createdAt: n(r.created_at),
 });
 
@@ -485,10 +491,18 @@ export class Store {
       fshubAutoCompleteAt: number | null;
       showDays: number;
       departWarningMinutes: number;
+      liveTracking: boolean;
+      layout: 'cards' | 'grid';
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.layout !== undefined) {
+      if (patch.layout !== 'cards' && patch.layout !== 'grid') throw new Error(`A panel is drawn as cards or a grid, not ${String(patch.layout)}`);
+      sets.push('layout = ?');
+      params.push(patch.layout);
+    }
+    if (patch.liveTracking !== undefined) (sets.push('live_tracking = ?'), params.push(patch.liveTracking ? 1 : 0));
     if (patch.departWarningMinutes !== undefined) {
       if (!Number.isInteger(patch.departWarningMinutes) || patch.departWarningMinutes < 0 || patch.departWarningMinutes > 180) {
         throw new Error(`The departure warning is 0 (off) to 180 minutes, not ${patch.departWarningMinutes}`);

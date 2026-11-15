@@ -4,6 +4,7 @@ import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor } from './flightMatch.js';
 import type { FlightTime, FlightTimes } from './flightTime.js';
 import type { JobService } from './jobs.js';
+import type { LiveStatus, LiveTracker } from './liveTracker.js';
 
 /** How many minutes before the latest take-off a pilot is warned, when the server has not chosen. */
 export const DEPART_WARNING_DEFAULT_MINUTES = 30;
@@ -48,8 +49,9 @@ type Target = { discordId: string; kind: 'pilot' | 'backup'; fromLeg: number; fl
  * flight's window: the window's end less how long the flight takes. How long it takes comes from FsHub flights of the same route
  * where there are some, and from the distance between the airports otherwise (see flightTime.ts), and the warning says which.
  *
- * It cannot see a pilot who is already flying (FsHub shows a flight only once it has landed), so the warning says to ignore it in
- * that case. A flight whose legs FsHub already shows flown is counted from the first leg still to fly. Each person is warned once
+ * Where FsHub's live feed says a pilot is already in the air on this flight (or on one with no flight plan filed), they are not warned.
+ * Without the feed it cannot see a pilot who is flying (FsHub shows a flight only once it has landed), so the warning says to ignore
+ * it in that case. A flight whose legs FsHub already shows flown is counted from the first leg still to fly. Each person is warned once
  * per flight, and not at all once the latest take-off has passed. A flight whose time cannot be worked out (an airport with no
  * known position and no flight of that route seen) is not warned about: the bot does not guess.
  */
@@ -58,16 +60,29 @@ export class DepartureWarnings {
   private readonly log: Logger;
   private readonly failedAt = new Map<string, number>();
   private lastPrune = 0;
+  private readonly live: Pick<LiveTracker, 'statusOf'> | null;
 
   constructor(
     private readonly store: Store,
     private readonly jobs: JobService,
     private readonly times: Pick<FlightTimes, 'forLeg'>,
     private readonly send: SendDm,
-    opts: { now?: () => number; logger?: Logger } = {},
+    opts: { now?: () => number; logger?: Logger; live?: Pick<LiveTracker, 'statusOf'> } = {},
   ) {
     this.now = opts.now ?? Date.now;
     this.log = opts.logger ?? silentLogger;
+    this.live = opts.live ?? null;
+  }
+
+  /**
+   * What the live feed says about the people this warning is about: whether one of them is in the air on this flight now, and
+   * whether every one of them is known not to be. (Someone with no flight plan filed counts as flying this flight if they are in the air.)
+   */
+  private seen(ids: string[], plan: DeparturePlan): { flying: boolean; grounded: boolean } {
+    const statuses = ids.map((id) => this.live?.statusOf(id) ?? null);
+    const flying = statuses.some((s) => s !== null && s.state === 'airborne' && flyingThis(s, plan));
+    const grounded = statuses.length > 0 && statuses.every((s) => s !== null && s.state !== 'airborne');
+    return { flying, grounded };
   }
 
   /** Who may need warning about this flight, and from which leg each of them is flying on. */
@@ -135,7 +150,9 @@ export class DepartureWarnings {
           const plan = plans.get(target.fromLeg);
           if (!plan || now >= plan.latest || now < plan.latest - lead) continue;
 
-          const content = target.kind === 'pilot' ? pilotWarning(panel, plan) : backupWarning(panel, plan, target.flownBy);
+          const seen = this.seen(target.kind === 'pilot' ? [target.discordId] : target.flownBy, plan);
+          if (seen.flying) continue; // already in the air on it: nothing to warn about
+          const content = target.kind === 'pilot' ? pilotWarning(panel, plan, seen.grounded) : backupWarning(panel, plan, target.flownBy, seen.grounded);
           let ok = false;
           try {
             ok = await this.send(target.discordId, content);
@@ -157,6 +174,12 @@ export class DepartureWarnings {
   }
 }
 
+/** Whether a pilot in the air is flying this flight: yes unless they filed a plan for different airports. */
+function flyingThis(status: LiveStatus, plan: DeparturePlan): boolean {
+  if (!status.dep || !status.arr) return true;
+  return plan.legs.some((l) => l.dep.toUpperCase() === status.dep && l.arr.toUpperCase() === status.arr);
+}
+
 /** The flight times, and where each came from. */
 function timeLines(plan: DeparturePlan): string {
   const [only] = plan.legs;
@@ -175,20 +198,24 @@ function headline(panel: Panel, plan: DeparturePlan): string {
 }
 
 /** What the pilot of a flight is told. */
-export function pilotWarning(panel: Panel, plan: DeparturePlan): string {
+export function pilotWarning(panel: Panel, plan: DeparturePlan, notInAir = false): string {
   return [
     `${headline(panel, plan)}: to land inside its window you need to take off by **${ts(plan.latest, 't')}** (${ts(plan.latest, 'R')}).`,
     `It has to be down by ${ts(plan.deadline, 'f')}. ${timeLines(plan)}`,
-    "This is only a heads-up. If you have already taken off, ignore it: I only see a flight once FsHub shows it landed. If you can't fly it any more, give it back from **My flights** on the panel so someone else can.",
+    notInAir
+      ? "This is only a heads-up. FsHub's live feed doesn't show you in the air right now. If you can't fly it any more, give it back from **My flights** on the panel so someone else can."
+      : "This is only a heads-up. If you have already taken off, ignore it: I only see a flight once FsHub shows it landed. If you can't fly it any more, give it back from **My flights** on the panel so someone else can.",
   ].join('\n');
 }
 
 /** What the backup pilot of a flight is told. */
-export function backupWarning(panel: Panel, plan: DeparturePlan, flownBy: string[]): string {
+export function backupWarning(panel: Panel, plan: DeparturePlan, flownBy: string[], notInAir = false): string {
   const who = flownBy.length > 0 ? `, flown by ${flownBy.map(mention).join(' and ')}` : '';
   return [
     `${headline(panel, plan)}${who}: you are down as its backup, and to land inside its window it has to take off by **${ts(plan.latest, 't')}** (${ts(plan.latest, 'R')}).`,
     `It has to be down by ${ts(plan.deadline, 'f')}. ${timeLines(plan)}`,
-    "I can't see whether the pilot has gone (FsHub shows a flight only once it has landed), so this may be the moment to check they are on their way.",
+    notInAir
+      ? "FsHub's live feed doesn't show the pilot in the air yet, so this may be the moment to check they are on their way."
+      : "I can't see whether the pilot has gone (FsHub shows a flight only once it has landed), so this may be the moment to check they are on their way.",
   ].join('\n');
 }

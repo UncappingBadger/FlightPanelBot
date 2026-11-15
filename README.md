@@ -193,7 +193,7 @@ for what its owner pasted it in for. Paste a token again in the FsHub section if
 menu gets **A new version is available: vX** (opens the release page), and the setup page shows a banner. It
 never downloads or installs anything: the host downloads the new `FlightPanelBot.exe` from the release page,
 quits the old one from the tray and runs the new one; settings and data carry over. The check sends only an
-ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.1.9`) and can be switched off on the
+ordinary HTTPS request naming the app and its version (`FlightPanelBot/0.2.0`) and can be switched off on the
 setup page. A new release is published by creating a GitHub release on the project's repository
 (`UncappingBadger/FlightPanelBot`, set in `src/host/updates.ts`) with a tag such as `v0.2.0` and the
 exe attached; the tag must be higher than the version in `package.json`.
@@ -258,6 +258,8 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged when a flight has no pilot 24 hours before it starts. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each announcement at midnight UTC; `off` leaves them in the channel. With no options it shows the current setting. |
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
+| `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
+| `/setup layout [mode] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
 | `/setup refresh-roles [role] [mode]` | Let members with a role run **`/setup refresh` and `/setup id-add`, and nothing else from `/setup`** (every other subcommand stays admin-only, and so does this one). `role` adds it (`mode:add` is the default); `mode:remove` with a `role` takes it off; `mode:clear` takes every role off; with no options it lists them. Up to 10 roles per server, and not @everyone. **Discord also has to let those members see `/setup`**: in Server Settings, Integrations, choose the bot, then `/setup`, and add the role there (a bot cannot do that part itself). |
@@ -533,8 +535,9 @@ time, the deadline, the flight time it used **and where that time came from**:
 
 A few things it does and does not do:
 
-- It **cannot see a flight in the air**: FsHub shows a flight only after it has landed. So the message tells anyone who
-  has already taken off to ignore it.
+- With **live tracking** (below, on by default) it can see who is already in the air: a pilot flying the flight is not warned.
+  Without it, or when the live feed cannot be read, it **cannot see a flight in the air** (FsHub's records show a flight only
+  after it has landed), so the message tells anyone who has already taken off to ignore it.
 - A flight with several legs is counted from the first leg the person holds that FsHub has not shown flown yet, adding
   up the legs still to fly (it does **not** allow for time on the ground between them, and says so).
 - Each person is warned **once per flight**, and **not at all once the latest take-off has passed** (the pilot is flying,
@@ -546,6 +549,65 @@ A few things it does and does not do:
   default) or switches it off (`mode:off`; `mode:on` turns it back on). It is on for every panel, including existing ones.
 
 The check runs once a minute, in the same background lane as the FsHub reads and after them.
+
+### Live tracking: take-offs and landings
+
+The bot follows the pilots who hold flights, using FsHub's **public live feed** (`movements.fshub.io`: no account or token is
+needed, the bot asks it for the list of pilots online and then, for a pilot who holds a flight and is online, for that one
+pilot's current flight). It uses what it learns for two things:
+
+- **The late-departure warning skips a pilot who is already flying.** If the feed shows the holder in the air on that flight (or
+  in the air with no flight plan filed, which is most pilots), no warning is sent. A pilot who filed a plan for different airports
+  is still warned, since they may have this flight left to fly. When the feed shows the pilot is *not* in the air, the warning
+  says so ("FsHub's live feed doesn't show you in the air right now") instead of asking them to ignore it if they have taken off.
+- **A flight is checked the minute its pilot lands.** When a pilot who was in the air is no longer (landed, or dropped out of the
+  feed), the bot reads FsHub's flights straight away and again every minute for twelve minutes, and completes the pilot's flight
+  **only when FsHub itself shows it flown**, by exactly the same strict rules as the hourly check and the **Complete** button (the
+  holder's FsHub ID known and trusted, the right two airports, inside the flight's window). The feed is only a nudge to look: it
+  never completes anything on its own. The pilot gets the usual direct message. After twelve minutes it leaves the flight to the
+  hourly check, which is unchanged. Only that pilot's flights are looked at, and the hourly timer is left alone.
+
+**The Complete button stays** exactly as it is: it is the way to finish a flight when a pilot's FsHub ID does not match, or when
+live tracking is off or has missed a landing.
+
+Good to know:
+
+- Which pilots are followed: those who hold a flight in Discord and whose FsHub ID the bot knows (and trusts: an ID somebody typed
+  that the airline's roster gives to another Discord account is not used). Flights only the sheet names a pilot for are not
+  followed, and are left to the hourly check.
+- Only a pilot's public FsHub ID is ever sent, in the address, to `movements.fshub.io`. The bot asks at most about once every
+  45 seconds, and only if somebody is being followed. Nothing is stored: after a restart the bot learns who is flying afresh.
+- A feed that can't be read for three minutes is not trusted: the warning then falls back to its old wording, and a failed read is
+  never taken as a landing.
+- Completing on landing also needs the panel linked to FsHub with automatic completion on (`/setup fshub`); without them only the
+  warnings use the live feed.
+- `/setup live-tracking [mode] [airline]` shows the setting or switches it (`mode:off`, `mode:on`). It is **on** for every panel.
+
+### The grid layout
+
+By default the panel is a **card** for each flight. A server can choose a more compact **grid of buttons** instead with
+`/setup layout mode:grid` (`mode:cards` goes back; the cards stay the default and are not changed). The panel is redrawn at once.
+
+- **A button for each flight**, grey, with a coloured dot: 🟡 open (needs a pilot now), 🔵 taken, 🟢 completed in the last 24 hours,
+  ⚪ not open yet. The label is the dot, the flight ID, the aircraft, the route, **when the flight opens** and, once it is taken, who
+  has it: `🔵 TST-015 · B738 · EGKK✈EGCC · from Thu 12 Nov 12:00Z · alice`. A label can only be plain text, which cannot use Discord's
+  local-time stamps, so the time is in **UTC** (the `Z`), the zone landing windows are in. A label is at most 80 characters: if it
+  would be longer the pilot is dropped, then the aircraft, then the middle of a long chain of airports.
+- **A key above "Updated"** in the header says what the dots mean.
+- **Pressing a flight** shows its card (the same card the panel uses in its default layout: the OPEN stamp or the pilot's picture, the
+  full dates and times in the reader's own timezone, the backup) **to that person only**, as a private reply that closes by itself
+  after 90 seconds, or when they press another flight. For a completed flight it is the completed card (who flew it, when it
+  landed, FsHub's link). Discord puts a private reply at the bottom of the channel, so the buttons carry what matters at a glance.
+- **15 flights to a message** (Discord allows 5 buttons in a row and 5 rows in a message, and two rows are the panel's own
+  buttons), up to ten messages. The panel's buttons (Reserve, Search, Backup pilot, My flights, Complete) are under every message.
+- **Collapse and Expand.** Every message has a **Collapse** button that folds it to one line, such as
+  `TST-020 – TST-027 · 8 flights · 🟡 3 open · 🔵 3 taken · ⚪ 2 not open yet`, with an **Expand** button to open it again; the first
+  message has **Collapse all** and **Expand all**. **Anyone can fold or unfold**: it is the same message for everyone. A folded
+  message **unfolds by itself when nobody has pressed any button on the panel for 10 minutes**. The first message keeps its header
+  and buttons when folded. Folds are kept in memory only, so a restart unfolds everything.
+- **Completed flights** are green buttons in the grid unless the server has chosen a channel of their own for them with
+  `/setup completed channel:`, in which case they appear there as full cards, exactly as before, and the grid has no green buttons.
+- A pilot's **List view** (in their direct messages) and **Search** results are unchanged.
 
 ### The flights file
 
@@ -621,7 +683,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board);
-`davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
+`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and
@@ -632,7 +694,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1361 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1459 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

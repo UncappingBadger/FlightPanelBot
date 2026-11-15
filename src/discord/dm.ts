@@ -28,6 +28,7 @@ import type { BotContext, ComponentHandler, ComponentInteraction } from './conte
 import { CONTRIBUTIONS_REQUEST, showContributions } from './contributions.js';
 import { isDmClosed, UserError } from './errors.js';
 import { memberHasRole } from './guard.js';
+import { handleGridAction } from './gridHandlers.js';
 import { MAX_FOLLOWERS } from './panel.js';
 import { avatarIdsOf, flightFacts, noPings, jobBlock, searchEmbeds, stampFiles } from './ui.js';
 
@@ -1184,6 +1185,8 @@ export const panelHandler: ComponentHandler = {
     const [, action, rawId, extra] = interaction.customId.split(':');
     const panelId = Number(rawId);
     if (!Number.isInteger(panelId)) throw new UserError('That button is out of date.');
+    ctx.panels.touch(panelId); // a button pressed on a grid panel keeps its folded messages folded a while longer
+    if (action === 'flight' || action === 'fold' || action === 'foldall' || action === 'unfoldall') return handleGridAction(ctx, interaction, action, panelId, extra);
     if (action === 'reserve' && interaction.isButton()) return startReservation(ctx, interaction, panelId);
     if (action === 'mine' && interaction.isButton()) return showMine(ctx, interaction, panelId);
     if (action === 'list' && interaction.isButton()) return startList(ctx, interaction, panelId);

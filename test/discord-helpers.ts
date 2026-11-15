@@ -300,7 +300,7 @@ function memberClient(o: ComponentOptions) {
 
 /** A button press (or, with `values`, a select-menu choice). Records every response. */
 export function fakeComponent(user: FakeUser, customId: string, o: ComponentOptions = {}) {
-  const calls = { defers: [] as any[], edits: [] as any[], updates: [] as any[], replies: [] as any[], modals: [] as any[] };
+  const calls = { defers: [] as any[], edits: [] as any[], updates: [] as any[], replies: [] as any[], modals: [] as any[], deletes: 0 };
   const isMenu = o.values !== undefined;
   const i: any = {
     customId,
@@ -330,6 +330,9 @@ export function fakeComponent(user: FakeUser, customId: string, o: ComponentOpti
     },
     update: async (p: any) => {
       calls.updates.push(p);
+    },
+    deleteReply: async () => {
+      calls.deletes++;
     },
     reply: async (p: any) => {
       i.replied = true;

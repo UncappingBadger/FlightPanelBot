@@ -432,6 +432,30 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('live-tracking')
+        .setDescription('Follow flights live: skip warnings for pilots already flying, complete on landing (empty: show)')
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Turn live tracking on or off')
+            .addChoices({ name: 'On: follow pilots flights live (the default)', value: 'on' }, { name: 'Off: do not use the live feed', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('layout')
+        .setDescription('Choose how the panel looks: a card for each flight (default) or a grid of buttons (empty: show)')
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('The look of the panel')
+            .addChoices({ name: 'Cards: a card for each flight (the default)', value: 'cards' }, { name: 'Grid: a button for each flight, press one for its card', value: 'grid' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('completed')
         .setDescription('Show completed flights in a channel of their own (leave empty to check)')
         .addChannelOption((o) =>
@@ -826,6 +850,67 @@ export const setupCommand: Command = {
             "How long it takes comes from the airline's own FsHub flights of that route when I have seen some, and otherwise it is estimated from the distance between the airports; the message says which. I can't see a flight that is already in the air, so it tells anyone already flying to ignore it. Each person is warned once per flight.",
             `Change the time with \`/setup depart-warning minutes:\` (${DEPART_WARNING_MIN_MINUTES} to ${DEPART_WARNING_MAX_MINUTES}), or switch it off with \`mode:off\`.`,
           ].join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'live-tracking': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const mode = interaction.options.getString('mode');
+        let changed = false;
+        if ((mode === 'on' && !panel.liveTracking) || (mode === 'off' && panel.liveTracking)) {
+          ctx.store.updatePanel(panel.id, { liveTracking: mode === 'on' });
+          changed = true;
+        }
+        const current = ctx.store.getPanel(panel.id) as Panel;
+        const done = changed ? 'Done. ' : '';
+        if (!current.liveTracking) {
+          await interaction.editReply({
+            content: `${done}Live tracking is **off** for **${panel.airlineName}**. A late-departure warning is sent whether or not the pilot is already flying, and flights are completed by the hourly FsHub check (or when a pilot presses **Complete**). \`/setup live-tracking mode:on\` turns it back on.`,
+            allowedMentions: noPings,
+          });
+          return;
+        }
+        const completes = ctx.autoComplete !== null && current.fshubAirlineId !== null && current.fshubConfirm && current.fshubAutoComplete;
+        await interaction.editReply({
+          content: [
+            `${done}For **${panel.airlineName}**, I follow your pilots' flights live, using FsHub's public live feed (no account needed; the only thing it is asked is a pilot's public FsHub ID).`,
+            `• A late-departure warning is not sent to a pilot who is already in the air on that flight.`,
+            completes
+              ? "• The minute a pilot lands, I look for their flight in FsHub's own record (again every minute for a few minutes) and complete it only once FsHub shows it flown, by the same rules as the hourly check. Pilots can still press **Complete**, which stays the way to finish a flight when their FsHub ID does not match."
+              : '• Completing a flight when its pilot lands needs this panel linked to FsHub with automatic completion on (`/setup fshub`); until then only the warnings use the live feed.',
+            'Switch it off with `/setup live-tracking mode:off`.',
+          ].join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'layout': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const mode = interaction.options.getString('mode');
+        if (mode !== null && mode !== 'cards' && mode !== 'grid') throw new UserError('Choose cards or grid.');
+        let changed = false;
+        if (mode !== null && mode !== panel.layout) {
+          ctx.store.updatePanel(panel.id, { layout: mode });
+          ctx.panels.clearFolds(panel.id);
+          changed = true;
+        }
+        const current = ctx.store.getPanel(panel.id) as Panel;
+        if (changed) await ctx.panels.refresh(panel.id, { force: true });
+        const done = changed ? 'Done. ' : '';
+        const name = `**${panel.airlineName}**`;
+        await interaction.editReply({
+          content:
+            current.layout === 'grid'
+              ? [
+                  `${done}The ${name} panel is drawn as a **grid of buttons**: each flight is one button with a coloured dot, its ID, the aircraft, the route, when it opens (in UTC) and, once taken, who has it.`,
+                  `🟡 open · 🔵 taken · 🟢 completed (in the last 24 hours${current.completedChannelId ? `, which are in <#${current.completedChannelId}> as cards instead` : ''}) · ⚪ not open yet. Pressing a flight shows its card to that person only, and it goes away by itself after a minute or so.`,
+                  `Each message has a **Collapse** button that folds it to one line (and **Expand** to open it again); **Collapse all** and **Expand all** are on the first message. Anyone can fold or unfold, it is the same message for everyone, and folded messages unfold by themselves after 10 minutes with no button pressed on the panel.`,
+                  `\`/setup layout mode:cards\` goes back to a card for each flight.`,
+                ].join('\n')
+              : `${done}The ${name} panel is drawn as **cards**, one for each flight (the default). \`/setup layout mode:grid\` draws it as a grid of buttons instead, which takes much less room.`,
           allowedMentions: noPings,
         });
         return;

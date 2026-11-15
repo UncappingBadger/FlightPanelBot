@@ -19,6 +19,8 @@ export interface SchedulerOptions {
   fshub?: { run(): Promise<unknown> };
   /** Completes the flights FsHub shows flown, once an hour. Runs after the FsHub reads, in the same lane. */
   autoComplete?: { run(): Promise<unknown> };
+  /** Follows pilots' flights live and completes a flight soon after it lands. Runs in the same lane, after the FsHub reads and before the warnings. */
+  live?: { run(): Promise<unknown> };
   /** Warns pilots (and their backups) shortly before the latest take-off that still makes a flight's window. Runs in the same lane, after the FsHub reads. */
   departures?: { run(): Promise<unknown> };
 }
@@ -38,6 +40,7 @@ export class Scheduler {
   private readonly fshub: SchedulerOptions['fshub'];
   private readonly autoComplete: SchedulerOptions['autoComplete'];
   private readonly departures: SchedulerOptions['departures'];
+  private readonly live: SchedulerOptions['live'];
   private readonly panels: SchedulerOptions['panels'];
   private laneRunning = false;
   private lane: Promise<void> = Promise.resolve();
@@ -55,6 +58,7 @@ export class Scheduler {
     this.fshub = opts.fshub;
     this.autoComplete = opts.autoComplete;
     this.departures = opts.departures;
+    this.live = opts.live;
     this.panels = opts.panels;
   }
 
@@ -76,12 +80,14 @@ export class Scheduler {
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.departures)) return this.lane;
+    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.departures)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
       try {
         await this.fshub?.run().catch((e) => this.log.error('FsHub roster and flight sync failed', e));
         await this.autoComplete?.run().catch((e) => this.log.error('FsHub auto-complete failed', e));
+        // Who is flying, and a look for the flights of pilots who have just landed (after the reads, so they are current).
+        await this.live?.run().catch((e) => this.log.error('Live tracking failed', e));
         // After the FsHub reads, so a leg FsHub has just shown flown is not warned about; and here, not in the main pass, because the
         // first look at an airport can mean a large download.
         await this.departures?.run().catch((e) => this.log.error('Departure warnings failed', e));

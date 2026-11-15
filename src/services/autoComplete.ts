@@ -13,6 +13,24 @@ const RETRY_MS = 10 * 60_000;
 /** The flights are brought up to date before a check unless they were read this recently. */
 const FRESH_FLIGHTS_MS = 60_000;
 
+/**
+ * The FsHub ID of a pilot that can be acted on, or null: the bot must know it, and it must not be one somebody typed that the
+ * airline's FsHub roster gives to another Discord account.
+ */
+export function trustedFshubId(store: Store, discordId: string): number | null {
+  const link = store.getPilotLink(discordId);
+  if (!link) return null;
+  return link.source === 'typed' && store.rosterOwnerOf(link.fshubId, discordId) !== null ? null : link.fshubId;
+}
+
+/** What a check may be narrowed to. */
+export interface AutoCompleteScope {
+  /** Only these Discord accounts' flights are looked at (a pilot who has just landed), and the hourly timer is left alone. */
+  only?: ReadonlySet<string>;
+  /** The flights are brought up to date first unless they were read this recently (default a minute). */
+  maxAgeMs?: number;
+}
+
 /** A flight the check completed. */
 export interface AutoCompleted {
   panel: Panel;
@@ -74,15 +92,15 @@ export class AutoCompleter {
   }
 
   /** Check one panel now. Never throws: what happened is in the result. */
-  async runPanel(panel: Panel): Promise<AutoCompleteResult> {
+  async runPanel(panel: Panel, scope: AutoCompleteScope = {}): Promise<AutoCompleteResult> {
     const { store } = this.d;
     const now = this.now;
     if (panel.fshubAirlineId === null || !panel.fshubConfirm) return { ok: false, note: 'This panel is not reading FsHub flights.', checked: 0, completed: [] };
 
     // The flights must be current: a landing from a few minutes ago has to be there.
-    const refreshed = await this.d.sync.refreshFlights(panel, FRESH_FLIGHTS_MS);
+    const refreshed = await this.d.sync.refreshFlights(panel, scope.maxAgeMs ?? FRESH_FLIGHTS_MS);
     if (refreshed && !refreshed.ok) {
-      store.updatePanel(panel.id, { fshubAutoCompleteAt: now - (AUTO_COMPLETE_MS - RETRY_MS) });
+      if (!scope.only) store.updatePanel(panel.id, { fshubAutoCompleteAt: now - (AUTO_COMPLETE_MS - RETRY_MS) });
       return { ok: false, note: refreshed.note, checked: 0, completed: [] };
     }
 
@@ -108,7 +126,7 @@ export class AutoCompleter {
       named.push({ view, holder: owner, named: view.legs[0]?.sheetHolder ?? '' });
     }
 
-    const candidates = [...held, ...named];
+    const candidates = [...held, ...named].filter((c) => !scope.only || scope.only.has(c.holder));
     const confirmed = confirmationsFor(store, current, candidates.map((c) => c.view), now, { strict: true, namedPilots });
     const completed: AutoCompleted[] = [];
     for (const { view, holder, named: sheetName } of candidates) {
@@ -138,7 +156,7 @@ export class AutoCompleter {
       completed.push(done);
       this.log.info(`Auto-completed ${view.job.code} for ${current.airlineName} from FsHub`);
     }
-    store.updatePanel(current.id, { fshubAutoCompleteAt: now });
+    if (!scope.only) store.updatePanel(current.id, { fshubAutoCompleteAt: now });
 
     // One message per pilot, however many of their flights were completed.
     const byPilot = new Map<string, AutoCompleted[]>();
@@ -166,9 +184,7 @@ export class AutoCompleter {
 
   /** Whether a pilot's FsHub ID can be acted on: known, and not one the roster says belongs to another Discord account. */
   private trusted(discordId: string): boolean {
-    const link = this.d.store.getPilotLink(discordId);
-    if (!link) return false;
-    return !(link.source === 'typed' && this.d.store.rosterOwnerOf(link.fshubId, discordId) !== null);
+    return trustedFshubId(this.d.store, discordId) !== null;
   }
 }
 

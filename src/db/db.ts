@@ -479,6 +479,17 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (job_id, discord_id)
   );
   `,
+
+  /* v25: whether a panel follows its pilots' flights live (FsHub's public live feed), so a late-departure warning knows who is already
+     flying and a flight is completed (checked against FsHub's own record) soon after it lands. Nothing about it is stored: only the switch. */
+  `
+  ALTER TABLE panels ADD COLUMN live_tracking INTEGER NOT NULL DEFAULT 1;
+  `,
+
+  /* v26: how a panel is drawn: 'cards' (a card for each flight, the original look and still the default) or 'grid' (a button for each flight). */
+  `
+  ALTER TABLE panels ADD COLUMN layout TEXT NOT NULL DEFAULT 'cards';
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {
