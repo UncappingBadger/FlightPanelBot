@@ -56,8 +56,9 @@ export const COMPLETED_SHOW_MS = DAY;
 /**
  * The panel lists the flights that are open now or start within a number of days from now (1 to 7, chosen per panel with
  * `/setup window`; a new panel shows 7). A schedule often runs weeks ahead, and showing all of it buries the flights that can
- * be flown soon; later ones appear once they come within the period. Only the panel is limited: a flight beyond it can still
- * be reserved by its code.
+ * be flown soon; later ones appear once they come within the period. A pilot can only reach what the panel lists: a flight
+ * beyond the period cannot be reserved, stood by for or searched for (typing its ID does not get round that), until it
+ * comes within the period. Only admins can still reach it, by its ID, to release someone from it.
  */
 export const PANEL_DAYS_MIN = 1;
 export const PANEL_DAYS_MAX = 7;
@@ -352,6 +353,22 @@ export class JobService {
     return this.store.getJobView(job.id);
   }
 
+  /** The flights the panel lists: open now or starting within the panel's days. These are the only ones a pilot can reach. */
+  listed(panel: Panel): JobView[] {
+    const now = this.now();
+    return this.open(panel.id).filter((v) => inPanelWindow(v.job, now, panel.showDays));
+  }
+
+  /**
+   * The flight a pilot typed the ID of, if the panel lists it. A flight that starts beyond the panel's days is answered as
+   * if it did not exist (`findByCode`, which does not look at the days, is for admins), so an ID typed from memory, from the
+   * schedule or by guessing the next number reserves nothing the panel does not show.
+   */
+  findListed(panel: Panel, input: string): JobView | null {
+    const view = this.findByCode(panel, input);
+    return view && inPanelWindow(view.job, this.now(), panel.showDays) ? view : null;
+  }
+
   view(jobId: number): JobView | null {
     return this.store.getJobView(jobId);
   }
@@ -400,6 +417,10 @@ export class JobService {
       const view = this.store.getJobView(jobId);
       if (!view || view.job.status !== 'open') throw new JobError('NOT_FOUND', 'That flight is no longer on the panel.');
       if (view.job.deadline !== null && view.job.deadline <= now) throw new JobError('EXPIRED', `${view.job.code} has passed its deadline.`);
+      // Whatever way the flight was reached (a typed ID, a conversation left open while the admin shortened the days), the panel
+      // has to list it: a flight further off than the panel's days is not open for reservation yet.
+      const panel = this.store.getPanel(view.job.panelId);
+      if (panel && !inPanelWindow(view.job, now, panel.showDays)) throw new JobError('NOT_FOUND', `${view.job.code} isn't listed on the panel yet, so it can't be reserved.`);
 
       const wanted = [...new Set(legNos)].sort((a, b) => a - b);
       if (wanted.length === 0) throw new JobError('BAD_INPUT', 'Pick at least one leg.');
@@ -527,6 +548,8 @@ export class JobService {
   backupProblem(view: JobView, discordId: string): string | null {
     const code = view.job.code;
     if (view.job.status !== 'open' || (view.job.deadline !== null && view.job.deadline <= this.now())) return `${code} is no longer open.`;
+    const panel = this.store.getPanel(view.job.panelId);
+    if (panel && !inPanelWindow(view.job, this.now(), panel.showDays)) return `${code} isn't listed on the panel yet.`;
     if (view.legs.some((l) => l.holder?.discordId === discordId)) return `You are flying ${code} yourself, so you can't also be its backup.`;
     if (view.legs.length === 0 || view.legs.some((l) => !l.holder && !l.sheetHolder)) return `${code} still has a leg nobody has, so you can reserve it instead of backing it up.`;
     if (view.backup) return view.backup.discordId === discordId ? `You are already down as backup for ${code}.` : `${code} already has a backup pilot.`;

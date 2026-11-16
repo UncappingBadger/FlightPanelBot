@@ -121,7 +121,7 @@ describe('putting a pilot down as backup', () => {
       sj('far', 'EGCC-EGPH', { availableFrom: T0 + 10 * DAY, deadline: T0 + 11 * DAY }), // beyond the days
     ]);
     const far = h.jobs.open(pid()).find((v) => v.job.sourceKey === 'far')!;
-    h.jobs.reserve(far.job.id, [1], USER_A);
+    h.store.insertReservation(far.job.id, 1, USER_A.discordId, USER_A.username, T0); // taken, though beyond the days
     assert.deepEqual(h.jobs.backupCandidates(h.panel, USER_B.discordId).map((v) => v.job.sourceKey), ['a']);
     assert.deepEqual(h.jobs.backupCandidates(h.panel, USER_A.discordId), [], 'not their own');
     h.store.updatePanel(pid(), { showDays: 7 });
@@ -345,11 +345,17 @@ describe('the Backup pilot button and the DM that asks for the flight', () => {
     assert.equal(backupOf('taken')?.discordId, USER_C.discordId);
   });
 
-  it("takes a flight beyond the panel's days when its ID is typed, as Reserve does", async () => {
+  it("refuses a flight beyond the panel's days when its ID is typed, as Reserve does, and takes it once it is within them", async () => {
     h.jobs.sync(pid(), [sj('taken', 'EGLL-EGKK'), sj('far', 'EGLL-LFMN', { availableFrom: T0 + 10 * DAY, deadline: T0 + 11 * DAY })]);
-    h.jobs.reserve(jobId('far'), [1], USER_C);
+    h.store.insertReservation(jobId('far'), 1, USER_C.discordId, USER_C.username, T0); // held before the days were enforced
     await press(bob, `panel:backup:${pid()}`);
     const far = h.jobs.open(pid()).find((v) => v.job.sourceKey === 'far')!.job.code;
+    await say(bob, far);
+    assert.match(bob.lastText, new RegExp(`^I can't find an open flight with the ID \`${far}\``));
+    assert.equal(backupOf('far'), null);
+    assert.equal(session(bob)?.purpose, 'backup', 'the conversation stays open for another ID');
+    h.clock.advance(4 * DAY); // now 6 days away: inside the 7 days (and the earlier conversation has closed)
+    await press(bob, `panel:backup:${pid()}`);
     await say(bob, far);
     assert.match(bob.lastText, new RegExp(`^🛟 You're down as backup for \\*\\*${far}\\*\\*`));
   });

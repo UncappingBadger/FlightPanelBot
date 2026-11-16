@@ -99,7 +99,7 @@ describe('the panel lists the next 7 days of flights', () => {
       assert.ok(tail.some((t) => /^…and \d+ more flights not shown\.$/.test(t)), 'and the note about those that did not fit');
     });
 
-    it('is only about what the panel shows: a flight beyond the week can still be reserved by its code', async () => {
+    it('cannot be got round: a flight beyond the week cannot be reserved by typing its code', async () => {
       h.jobs.sync(pid(), [starting('now', 0), starting('later', 20)]);
       await d.panels.refresh(pid());
       assert.doesNotMatch(openText(), /^TST-002( · |$)/m);
@@ -107,7 +107,8 @@ describe('the panel lists the next 7 days of flights', () => {
       await componentHandlers.find((x) => x.prefix === 'panel')!.handle(d.ctx, press.i);
       await handleDmMessage(d.ctx, fakeDm(alice, 'TST-002'));
       const later = h.store.listJobs(pid()).find((j) => j.code === 'TST-002')!;
-      assert.equal(h.store.getJobView(later.id)!.legs[0]!.holder?.discordId, alice.id);
+      assert.equal(h.store.getJobView(later.id)!.legs[0]!.holder, null, 'nothing was reserved');
+      assert.match(alice.lastText, /^I can't find an open flight with the ID `TST-002`\./, 'and it is answered like an ID that does not exist');
     });
   });
 

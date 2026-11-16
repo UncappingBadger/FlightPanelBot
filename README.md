@@ -14,7 +14,8 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    open now or start within the **next 7 days** (the server admin can set that to anything from 1 to 7 days per
    panel with `/setup window`): a schedule often runs for weeks, and all of it would bury the flights that can be
    flown soon. A line at the end says how many are further off, and they appear on their own once they come within
-   the period. (Only the panel is limited: a flight further off can still be reserved by typing its ID.) Below the open flights is a separate panel of the flights completed lately (see
+   the period. (The period limits what a pilot can reach, not only what is drawn: a flight further off cannot be
+   reserved, stood by for or searched for, and typing its ID does not get round that.) Below the open flights is a separate panel of the flights completed lately (see
    [below](#how-it-works-for-pilots)), so they never crowd the ones that need a pilot (the server admin can give them
    a channel of their own with `/setup completed`). Each flight is its own **card**
    (an embed with a coloured stripe: amber while a leg still needs a pilot, blue once every leg is taken, green once it
@@ -697,7 +698,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1506 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1531 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

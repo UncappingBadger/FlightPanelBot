@@ -78,7 +78,7 @@ export function outcomeText(res: ReserveResult): string {
 }
 
 /** An ID to give as an example: that of a flight that is really on the panel (it may be a flight number from the schedule), else the automatic form. */
-const exampleId = (ctx: BotContext, panel: Panel): string => ctx.jobs.open(panel.id)[0]?.job.code ?? `${panel.prefix}-001`;
+const exampleId = (ctx: BotContext, panel: Panel): string => ctx.jobs.listed(panel)[0]?.job.code ?? `${panel.prefix}-001`;
 
 const askCodeText = (ctx: BotContext, panel: Panel) =>
   [
@@ -270,7 +270,7 @@ async function startReservation(ctx: BotContext, interaction: ButtonInteraction,
   if (panel.requiredRoleId && !memberHasRole(interaction, panel.requiredRoleId)) {
     throw new UserError(`Reserving flights for **${panel.airlineName}** is limited to members with the <@&${panel.requiredRoleId}> role.`);
   }
-  if (ctx.jobs.open(panel.id).length === 0) throw new UserError('There are no open flights to reserve right now.');
+  if (ctx.jobs.listed(panel).length === 0) throw new UserError('There are no open flights to reserve right now.');
 
   const user = interaction.user;
   // If the airline's sheet will carry this person's name, start from their server nickname (they can change it with `name …`).
@@ -986,7 +986,8 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
-  const view = ctx.jobs.findByCode(panel, text);
+  // Only a flight the panel lists can be asked for by its ID: one that starts beyond the panel's days is answered like an unknown ID.
+  const view = ctx.jobs.findListed(panel, text);
   if (!view) {
     const attempts = session.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) {
