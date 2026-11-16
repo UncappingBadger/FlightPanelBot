@@ -7,6 +7,8 @@ import { HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpe
 import { fakeComponent, fakeDm, FakeUser, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
 
 const DAY = 24 * HOUR;
+/** What a pilot is told about a flight beyond the panel's days. */
+const tooFar = (code: string, days = 7, verb = 'book') => `You can't ${verb} flights more than ${days} day${days === 1 ? '' : 's'} ahead, and **${code}** starts further off than that. It will be open for booking once it comes within ${days} day${days === 1 ? '' : 's'}.`;
 const starting = (key: string, chain: string, inDays: number, over: Parameters<typeof sj>[2] = {}) => sj(key, chain, { availableFrom: T0 + inDays * DAY, deadline: T0 + (inDays + 1) * DAY, ...over });
 
 /**
@@ -69,20 +71,29 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
   });
 
   describe('typing an ID', () => {
-    it('finds a listed flight however it is written, and not a flight beyond the days', () => {
-      for (const typed of ['TST-001', 'tst001', 'TST 001', 'tst1', '1']) assert.equal(h.jobs.findListed(panel(), typed), null, typed);
-      for (const typed of ['TST-002', 'tst002', 'TST 002', 'tst2', '2']) assert.equal(h.jobs.findListed(panel(), typed)?.job.code, NEAR, typed);
-      assert.equal(h.jobs.findListed(panel(), 'TST-003')?.job.code, WEEK);
+    it('is listed however it is written, or is not when it is beyond the days', () => {
+      for (const typed of ['TST-001', 'tst001', 'TST 001', 'tst1', '1']) {
+        const view = h.jobs.findByCode(panel(), typed);
+        assert.equal(view?.job.code, FAR, typed);
+        assert.equal(h.jobs.isListed(panel(), view!), false, typed);
+      }
+      for (const typed of ['TST-002', 'tst002', 'TST 002', 'tst2', '2']) {
+        const view = h.jobs.findByCode(panel(), typed);
+        assert.equal(view?.job.code, NEAR, typed);
+        assert.equal(h.jobs.isListed(panel(), view!), true, typed);
+      }
+      assert.equal(h.jobs.isListed(panel(), h.jobs.findByCode(panel(), 'TST-003')!), true, 'exactly 7 days off is inside');
     });
 
     it('is still found by admins, who release people from flights whatever their days', () => {
       assert.equal(h.jobs.findByCode(panel(), 'TST-001')?.job.code, FAR);
     });
 
-    it('answers an ID beyond the days like one that does not exist, and the conversation goes on', async () => {
+    it('is answered by saying you cannot book that far ahead, with the days the admin set, and the conversation goes on', async () => {
       await press(alice, `panel:reserve:${pid}`);
       await say(alice, FAR);
-      assert.match(alice.lastText, /^I can't find an open flight with the ID `TST-001`\. IDs look like `TST-002` and are listed on the panel\./);
+      assert.equal(alice.lastText, `${tooFar(FAR)}\nSend a different flight ID, or say \`cancel\`.`);
+      assert.doesNotMatch(alice.lastText, /can't find/, 'it does not read as though something is wrong with the ID');
       assert.equal(holderOf(FAR), null);
       assert.equal(session(alice)?.attempts, 1);
       await say(alice, NEAR);
@@ -90,10 +101,16 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
       assert.equal(holderOf(NEAR), USER_A.discordId);
     });
 
-    it('closes the conversation after the usual number of wrong IDs, as for any other ID', async () => {
+    it('still says an ID that does not exist is not found', async () => {
+      await press(alice, `panel:reserve:${pid}`);
+      await say(alice, 'TST-099');
+      assert.match(alice.lastText, /^I can't find an open flight with the ID `TST-099`\. IDs look like `TST-002` and are listed on the panel\./);
+    });
+
+    it('closes the conversation after the usual number of tries, as for any other ID', async () => {
       await press(alice, `panel:reserve:${pid}`);
       for (let i = 0; i < 5; i++) await say(alice, FAR);
-      assert.match(alice.lastText, /a few IDs I couldn't find, so I've closed this/);
+      assert.equal(alice.lastText, `${tooFar(FAR)}\nThat's a few flights I couldn't use, so I've closed this. Press **Reserve** on the panel to start again.`);
       assert.equal(session(alice), null);
       assert.equal(holderOf(FAR), null);
     });
@@ -116,7 +133,10 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
       h.store.updatePanel(pid, { showDays: 1 });
       await press(alice, `panel:reserve:${pid}`);
       await say(alice, WEEK);
-      assert.match(alice.lastText, /^I can't find an open flight with the ID `TST-003`/);
+      assert.equal(alice.lastText, `${tooFar(WEEK, 1)}\nSend a different flight ID, or say \`cancel\`.`, 'and the one day is said in the singular');
+      h.store.updatePanel(pid, { showDays: 3 });
+      await say(alice, WEEK);
+      assert.match(alice.lastText, /^You can't book flights more than 3 days ahead, and \*\*TST-003\*\* starts further off than that\. It will be open for booking once it comes within 3 days\./);
       h.store.updatePanel(pid, { showDays: 7 });
       await say(alice, WEEK);
       assert.match(alice.lastText, /^✅ \*\*TST-003\*\*/);
@@ -143,9 +163,20 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
       assert.match(alice.lastText, /has 3 legs/);
       h.store.updatePanel(pid, { showDays: 2 });
       const calls = await press(alice, 'dm:all');
-      assert.match(calls.updates[0].content, /^TST-004 isn't listed on the panel yet, so it can't be reserved\.\nPress \*\*Reserve\*\* on the panel to try another flight\.$/);
+      assert.equal(calls.updates[0].content, `${tooFar('TST-004', 2)}\nPress **Reserve** on the panel to try another flight.`);
       assert.deepEqual([1, 2, 3].map((leg) => holderOf('TST-004', leg)), [null, null, null]);
       assert.equal(session(alice), null);
+    });
+
+    it('an old All legs button cannot be used on the flight asked for afterwards, which was beyond the days', async () => {
+      await press(alice, `panel:reserve:${pid}`);
+      await say(alice, 'TST-004'); // the multi-leg flight, with its All legs button
+      await press(alice, `panel:reserve:${pid}`); // a new conversation, which leaves that button behind
+      await say(alice, FAR); // a flight beyond the days: the conversation is about no flight
+      assert.equal(session(alice)?.jobId, null);
+      const calls = await press(alice, 'dm:all');
+      assert.match(calls.updates[0].content, /^That conversation has closed\./);
+      assert.deepEqual([FAR, 'TST-004'].map((code) => holderOf(code)), [null, null]);
     });
 
     it('still works while the flight is listed', async () => {
@@ -160,7 +191,7 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
     it('refuses a flight beyond the days, whatever called it, and leaves it free', () => {
       assert.throws(
         () => h.jobs.reserve(idOf(FAR), [1], USER_A),
-        (e: unknown) => e instanceof JobError && e.code === 'NOT_FOUND' && e.message === "TST-001 isn't listed on the panel yet, so it can't be reserved.",
+        (e: unknown) => e instanceof JobError && e.code === 'NOT_FOUND' && e.message === tooFar(FAR),
       );
       assert.equal(holderOf(FAR), null);
     });
@@ -192,8 +223,8 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
 
     it('is refused for a flight beyond the days', () => {
       const view = h.store.getJobView(idOf(FAR))!;
-      assert.equal(h.jobs.backupProblem(view, USER_B.discordId), "TST-001 isn't listed on the panel yet.");
-      assert.throws(() => h.jobs.addBackup(idOf(FAR), USER_B), (e: unknown) => e instanceof JobError && /isn't listed on the panel yet/.test(e.message));
+      assert.equal(h.jobs.backupProblem(view, USER_B.discordId), tooFar(FAR, 7, 'stand by for'));
+      assert.throws(() => h.jobs.addBackup(idOf(FAR), USER_B), (e: unknown) => e instanceof JobError && e.message === tooFar(FAR, 7, 'stand by for'));
       assert.equal(h.store.getJobView(idOf(FAR))!.backup, null);
       assert.deepEqual(h.jobs.backupCandidates(panel(), USER_B.discordId), []);
     });
@@ -204,12 +235,12 @@ describe("a flight beyond the panel's days cannot be reached by a pilot", () => 
       assert.equal(h.jobs.addBackup(idOf(FAR), USER_B).backup?.discordId, USER_B.discordId);
     });
 
-    it('through the Backup pilot conversation: the ID is answered like an unknown one', async () => {
+    it('through the Backup pilot conversation: it says you cannot stand by for flights that far ahead', async () => {
       h.store.insertReservation(idOf(NEAR), 1, USER_A.discordId, USER_A.username, T0); // something bob could stand by for
       await press(bob, `panel:backup:${pid}`);
       assert.match(bob.lastText, /Reply with the ID of the flight/);
       await say(bob, FAR);
-      assert.match(bob.lastText, /^I can't find an open flight with the ID `TST-001`/);
+      assert.equal(bob.lastText, `${tooFar(FAR, 7, 'stand by for')}\nSend a different flight ID, or say \`cancel\`.`);
       assert.equal(h.store.getJobView(idOf(FAR))!.backup, null);
     });
   });

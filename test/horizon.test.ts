@@ -108,7 +108,7 @@ describe('the panel lists the next 7 days of flights', () => {
       await handleDmMessage(d.ctx, fakeDm(alice, 'TST-002'));
       const later = h.store.listJobs(pid()).find((j) => j.code === 'TST-002')!;
       assert.equal(h.store.getJobView(later.id)!.legs[0]!.holder, null, 'nothing was reserved');
-      assert.match(alice.lastText, /^I can't find an open flight with the ID `TST-002`\./, 'and it is answered like an ID that does not exist');
+      assert.match(alice.lastText, /^You can't book flights more than 7 days ahead, and \*\*TST-002\*\* starts further off than that\. It will be open for booking once it comes within 7 days\./, 'and the pilot is told the rule');
     });
   });
 

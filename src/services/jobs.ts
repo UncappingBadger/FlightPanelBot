@@ -66,6 +66,14 @@ export const PANEL_DAYS_MAX = 7;
 export const PANEL_HORIZON_MS = PANEL_DAYS_MAX * DAY;
 /** How far ahead a panel set to show `days` days lists flights. */
 export const panelHorizonMs = (days: number): number => Math.min(PANEL_DAYS_MAX, Math.max(PANEL_DAYS_MIN, Math.round(days))) * DAY;
+/**
+ * What a pilot is told when they ask for a flight that starts further off than the panel's days: the rule, with the admin's number
+ * of days in it, and when the flight will be open. `verb` is what they were trying to do ("book" or "stand by for").
+ */
+export const beyondDaysText = (days: number, code: string, verb: 'book' | 'stand by for'): string => {
+  const d = `${days} day${days === 1 ? '' : 's'}`;
+  return `You can't ${verb} flights more than ${d} ahead, and **${code}** starts further off than that. It will be open for booking once it comes within ${d}.`;
+};
 /** Is this flight one the panel lists: open now, or starting within the panel's days? The search uses the same rule, so it never finds more than the panel shows. */
 export const inPanelWindow = (job: { availableFrom: number | null }, now: number, days: number): boolean => job.availableFrom === null || job.availableFrom <= now + panelHorizonMs(days);
 /**
@@ -360,13 +368,12 @@ export class JobService {
   }
 
   /**
-   * The flight a pilot typed the ID of, if the panel lists it. A flight that starts beyond the panel's days is answered as
-   * if it did not exist (`findByCode`, which does not look at the days, is for admins), so an ID typed from memory, from the
-   * schedule or by guessing the next number reserves nothing the panel does not show.
+   * Does the panel list this flight? A pilot can only reserve or stand by for a flight it lists: one that starts beyond the
+   * panel's days is not open for booking yet, whatever way they got its ID. (`findByCode` does not look at the days; it is also
+   * what admins use to release people from a flight.)
    */
-  findListed(panel: Panel, input: string): JobView | null {
-    const view = this.findByCode(panel, input);
-    return view && inPanelWindow(view.job, this.now(), panel.showDays) ? view : null;
+  isListed(panel: Panel, view: JobView): boolean {
+    return inPanelWindow(view.job, this.now(), panel.showDays);
   }
 
   view(jobId: number): JobView | null {
@@ -420,7 +427,7 @@ export class JobService {
       // Whatever way the flight was reached (a typed ID, a conversation left open while the admin shortened the days), the panel
       // has to list it: a flight further off than the panel's days is not open for reservation yet.
       const panel = this.store.getPanel(view.job.panelId);
-      if (panel && !inPanelWindow(view.job, now, panel.showDays)) throw new JobError('NOT_FOUND', `${view.job.code} isn't listed on the panel yet, so it can't be reserved.`);
+      if (panel && !inPanelWindow(view.job, now, panel.showDays)) throw new JobError('NOT_FOUND', beyondDaysText(panel.showDays, view.job.code, 'book'));
 
       const wanted = [...new Set(legNos)].sort((a, b) => a - b);
       if (wanted.length === 0) throw new JobError('BAD_INPUT', 'Pick at least one leg.');
@@ -549,7 +556,7 @@ export class JobService {
     const code = view.job.code;
     if (view.job.status !== 'open' || (view.job.deadline !== null && view.job.deadline <= this.now())) return `${code} is no longer open.`;
     const panel = this.store.getPanel(view.job.panelId);
-    if (panel && !inPanelWindow(view.job, this.now(), panel.showDays)) return `${code} isn't listed on the panel yet.`;
+    if (panel && !inPanelWindow(view.job, this.now(), panel.showDays)) return beyondDaysText(panel.showDays, code, 'stand by for');
     if (view.legs.some((l) => l.holder?.discordId === discordId)) return `You are flying ${code} yourself, so you can't also be its backup.`;
     if (view.legs.length === 0 || view.legs.some((l) => !l.holder && !l.sheetHolder)) return `${code} still has a leg nobody has, so you can reserve it instead of backing it up.`;
     if (view.backup) return view.backup.discordId === discordId ? `You are already down as backup for ${code}.` : `${code} already has a backup pilot.`;

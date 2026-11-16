@@ -351,7 +351,7 @@ describe('the Backup pilot button and the DM that asks for the flight', () => {
     await press(bob, `panel:backup:${pid()}`);
     const far = h.jobs.open(pid()).find((v) => v.job.sourceKey === 'far')!.job.code;
     await say(bob, far);
-    assert.match(bob.lastText, new RegExp(`^I can't find an open flight with the ID \`${far}\``));
+    assert.match(bob.lastText, new RegExp(`^You can't stand by for flights more than 7 days ahead, and \\*\\*${far}\\*\\* starts further off than that\\.`));
     assert.equal(backupOf('far'), null);
     assert.equal(session(bob)?.purpose, 'backup', 'the conversation stays open for another ID');
     h.clock.advance(4 * DAY); // now 6 days away: inside the 7 days (and the earlier conversation has closed)

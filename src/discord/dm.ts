@@ -16,7 +16,7 @@ import {
 import type { DmSession, FlownFlight, Holder, JobView, Panel, SessionPurpose } from '../db/store.js';
 import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
-import { JobError, type ReserveResult } from '../services/jobs.js';
+import { beyondDaysText, JobError, type ReserveResult } from '../services/jobs.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
 import { aliasNote, expandAircraftTypes } from '../services/aircraftAliases.js';
@@ -986,8 +986,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
-  // Only a flight the panel lists can be asked for by its ID: one that starts beyond the panel's days is answered like an unknown ID.
-  const view = ctx.jobs.findListed(panel, text);
+  const view = ctx.jobs.findByCode(panel, text);
   if (!view) {
     const attempts = session.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) {
@@ -1001,7 +1000,20 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
   }
 
   if (session.purpose === 'backup') {
-    await backUpFlight(ctx, user, session, view);
+    await backUpFlight(ctx, user, session, view); // says the same about a flight beyond the panel's days (see backupProblem)
+    return;
+  }
+  // A flight that starts beyond the panel's days is not open for booking yet: say so, with the number of days, and let them pick another.
+  if (!ctx.jobs.isListed(panel, view)) {
+    const problem = beyondDaysText(panel.showDays, view.job.code, 'book');
+    const attempts = session.attempts + 1;
+    if (attempts >= MAX_ATTEMPTS) {
+      ctx.store.deleteSession(user.id);
+      await say(user, `${problem}\nThat's a few flights I couldn't use, so I've closed this. Press ${startButton(session.purpose)} on the panel to start again.`);
+      return;
+    }
+    ctx.store.upsertSession({ ...session, jobId: null, attempts, expiresAt: now + SESSION_TTL_MS });
+    await say(user, `${problem}\nSend a different flight ID, or say \`cancel\`.`);
     return;
   }
   await proceedWithJob(ctx, user, session, view);
