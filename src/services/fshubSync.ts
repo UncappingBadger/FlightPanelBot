@@ -69,7 +69,13 @@ export class FsHubSync {
     private readonly store: Store,
     private readonly api: Pick<FsHubApi, 'roster' | 'airlineFlights'>,
     private readonly panels: { schedule(panelId: number): void },
-    private readonly opts: { logger?: Logger; now?: () => number; completed?: (panelId: number) => JobView[] } = {},
+    private readonly opts: {
+      logger?: Logger;
+      now?: () => number;
+      completed?: (panelId: number) => JobView[];
+      /** Told of each page of flights as it is read and kept (the same flight may come round again, so it must cope with that). */
+      onFlights?: (panel: Panel, flights: FlownFlight[]) => Promise<unknown> | unknown;
+    } = {},
   ) {}
 
   private get now(): number {
@@ -174,8 +180,15 @@ export class FsHubSync {
             aircraftIcao: f.aircraftIcao,
             aircraftName: f.aircraftName,
             scheduleStatus: f.scheduleStatus,
+            landingRate: f.landingRate ?? null,
           }));
         added += this.store.upsertFshubFlights(panel.id, rows);
+        // Whatever uses the flights just read (a remark about a very hard landing) must never make the read itself look like it failed.
+        try {
+          await this.opts.onFlights?.(panel, rows);
+        } catch (e) {
+          this.log.debug(`Something using the new FsHub flights of panel ${panel.id} failed`, e);
+        }
 
         // A page that is wholly old can never gain a flight, so reading can resume after it; on a recent page, after the old part.
         if (page.lastAt !== null && page.lastAt <= safeBefore) resume = Math.max(resume, page.lastId);

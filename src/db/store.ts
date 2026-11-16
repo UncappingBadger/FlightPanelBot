@@ -95,6 +95,8 @@ export interface FlownFlight {
   aircraftName: string | null;
   /** FsHub's own word for it: `ON-TIME`, `DELAYED` or `LATE`; null when it said nothing. */
   scheduleStatus: string | null;
+  /** The rate FsHub recorded at touchdown, in feet per minute (a descent is negative); null or missing when it gave none. */
+  landingRate?: number | null;
 }
 
 /** A flight shorter or longer than this is not a believable record of how long a route takes (a test flight, a flight left running). */
@@ -218,10 +220,10 @@ export interface JobView {
  * late-departure warning, to a pilot or to a backup). Anything about what they reserved, released or stand by for is not one of
  * these; it always goes out.
  */
-export type NoticeKind = 'completed' | 'takeoff';
-export const NOTICE_KINDS: readonly NoticeKind[] = ['completed', 'takeoff'];
+export type NoticeKind = 'completed' | 'takeoff' | 'landing';
+export const NOTICE_KINDS: readonly NoticeKind[] = ['completed', 'takeoff', 'landing'];
 /** The column of `user_prefs` for each (a fixed list, so no text from outside is ever put in a query). */
-const NOTICE_COLUMN: Record<NoticeKind, string> = { completed: 'notify_completed', takeoff: 'notify_takeoff' };
+const NOTICE_COLUMN: Record<NoticeKind, string> = { completed: 'notify_completed', takeoff: 'notify_takeoff', landing: 'notify_landing' };
 
 export type SessionStep ='await_pilot' | 'await_code' | 'await_mode' | 'await_legs' | 'await_confirm';
 
@@ -330,6 +332,7 @@ const toFlownFlight = (r: Row): FlownFlight => ({
   aircraftIcao: sn(r.aircraft_icao),
   aircraftName: sn(r.aircraft_name),
   scheduleStatus: sn(r.schedule_status),
+  landingRate: nn(r.landing_rate),
 });
 
 const toHolder = (r: Row): Holder => ({
@@ -919,6 +922,41 @@ export class Store {
     return r ? s(r.discord_id) : null;
   }
 
+  /** The Discord accounts that have this FsHub pilot ID saved, and whether each got it from the airline's roster or typed it. */
+  discordAccountsForFshubId(fshubId: number): Array<{ discordId: string; source: 'roster' | 'typed' }> {
+    return this.all('SELECT discord_id, source FROM pilot_ids WHERE fshub_id = ? ORDER BY discord_id', fshubId).map((r) => ({
+      discordId: s(r.discord_id),
+      source: s(r.source) === 'roster' ? ('roster' as const) : ('typed' as const),
+    }));
+  }
+
+  /* ------------------------------------------------------------------ remarks on very hard landings */
+
+  /** Has the bot already dealt with this FsHub flight (told the pilot, or decided not to)? */
+  hasLandingRemark(flightId: number): boolean {
+    return this.get('SELECT 1 AS x FROM landing_remarks WHERE flight_id = ?', flightId) !== undefined;
+  }
+
+  /** Remember a flight as dealt with. `told` is whether a message went out. Dealing with the same flight twice changes nothing. */
+  recordLandingRemark(flightId: number, discordId: string, rate: number, told: boolean, now: number): void {
+    this.run('INSERT OR IGNORE INTO landing_remarks(flight_id, discord_id, rate, told, handled_at) VALUES (?,?,?,?,?)', flightId, discordId, rate, told ? 1 : 0, now);
+  }
+
+  /** When this person was last sent a remark about a landing, or null if never. */
+  lastLandingRemarkAt(discordId: string): number | null {
+    return nn(this.get('SELECT max(handled_at) AS t FROM landing_remarks WHERE discord_id = ? AND told = 1', discordId)?.t);
+  }
+
+  /** Has this person ever been sent a remark? (The words for turning them off only mean something to someone who has.) */
+  wasRemarkedOn(discordId: string): boolean {
+    return this.get('SELECT 1 AS x FROM landing_remarks WHERE discord_id = ? AND told = 1 LIMIT 1', discordId) !== undefined;
+  }
+
+  /** Forget flights that were dealt with without a message going out, before this time. Flights that were told about are kept: they are small, and they are how the bot knows who has been remarked on. */
+  pruneLandingRemarks(before: number): void {
+    this.run('DELETE FROM landing_remarks WHERE told = 0 AND handled_at < ?', before);
+  }
+
   /* ------------------------------------------------------------------ the airline's recent FsHub flights */
 
   /** Keep these FsHub flights for a panel (one already kept is brought up to date). Returns how many were new. */
@@ -928,8 +966,8 @@ export class Store {
       for (const f of flights) {
         const existed = this.get('SELECT 1 AS x FROM fshub_flights WHERE panel_id = ? AND flight_id = ?', panelId, f.flightId) !== undefined;
         this.run(
-          `INSERT OR REPLACE INTO fshub_flights(panel_id, flight_id, pilot_id, pilot_name, dep, arr, departed_at, arrived_at, aircraft_icao, aircraft_name, schedule_status)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT OR REPLACE INTO fshub_flights(panel_id, flight_id, pilot_id, pilot_name, dep, arr, departed_at, arrived_at, aircraft_icao, aircraft_name, schedule_status, landing_rate)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
           panelId,
           f.flightId,
           f.pilotId,
@@ -941,6 +979,7 @@ export class Store {
           f.aircraftIcao,
           f.aircraftName,
           f.scheduleStatus,
+          f.landingRate ?? null,
         );
         if (!existed) added++;
         this.learnRouteTime(panelId, f);
@@ -1218,7 +1257,7 @@ export class Store {
 
   /** Which optional private messages this person wants. */
   getNotices(discordId: string): Record<NoticeKind, boolean> {
-    return { completed: this.wantsNotice(discordId, 'completed'), takeoff: this.wantsNotice(discordId, 'takeoff') };
+    return { completed: this.wantsNotice(discordId, 'completed'), takeoff: this.wantsNotice(discordId, 'takeoff'), landing: this.wantsNotice(discordId, 'landing') };
   }
 
   setNotice(discordId: string, kind: NoticeKind, on: boolean, now: number): void {

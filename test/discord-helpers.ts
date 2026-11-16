@@ -7,6 +7,7 @@ import type { BotContext } from '../src/discord/context.js';
 import type { FlightPage, FsHubAccount, FsHubAirline, FsHubApi, FsHubFlight, FsHubPilot, RosterPilot } from '../src/fshub/client.js';
 import { AutoCompleter } from '../src/services/autoComplete.js';
 import { FsHubSync } from '../src/services/fshubSync.js';
+import { HardLandings } from '../src/services/hardLanding.js';
 import { MarketService } from '../src/discord/market.js';
 import { Notifier } from '../src/discord/notifier.js';
 import { PanelService } from '../src/discord/panel.js';
@@ -578,7 +579,9 @@ export function makeDiscordHarness(
   const market = new MarketService(h.store, aerodaq, silentLogger, now);
   market.attach(client as unknown as Client);
   const fshub = opts.fshub ? (opts.fshub === true ? new FakeFsHub() : opts.fshub) : null;
-  const fshubSync = fshub ? new FsHubSync(h.store, fshub, panels, { logger: silentLogger, now, completed: (panelId) => h.jobs.completed(panelId) }) : null;
+  // As in the real bot, a very hard landing in the flights FsHub shows is remarked on in a DM.
+  const hardLandings = new HardLandings(h.store, (discordId, content) => notifier.dm(discordId, content), { now, logger: silentLogger });
+  const fshubSync = fshub ? new FsHubSync(h.store, fshub, panels, { logger: silentLogger, now, completed: (panelId) => h.jobs.completed(panelId), onFlights: (panel, flights) => hardLandings.check(panel, flights) }) : null;
   const notifier = new Notifier(client as unknown as Client, panels, silentLogger);
   // As in the real bot: the hourly completion, which tells each pilot in a DM (FakeUser records them).
   const autoComplete = fshubSync

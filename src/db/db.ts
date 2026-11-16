@@ -503,6 +503,25 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE user_prefs ADD COLUMN notify_completed INTEGER NOT NULL DEFAULT 1;
   ALTER TABLE user_prefs ADD COLUMN notify_takeoff INTEGER NOT NULL DEFAULT 1;
   `,
+
+  /* v29: a light-hearted message after a very hard landing. 'landing_rate' is the rate FsHub recorded for a flight (feet per minute,
+     negative for a descent; null when FsHub gave none). 'landing_remarks' is every flight the bot has dealt with, so none is
+     remarked on twice: 'told' is 1 when a message went out and 0 when it was held back (too soon after another one, or the person
+     has switched them off). 'notify_landing' is the person's own switch, on until they say otherwise. */
+  `
+  ALTER TABLE fshub_flights ADD COLUMN landing_rate INTEGER;
+
+  CREATE TABLE landing_remarks (
+    flight_id  INTEGER PRIMARY KEY,
+    discord_id TEXT NOT NULL,
+    rate       INTEGER NOT NULL,
+    told       INTEGER NOT NULL,
+    handled_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_landing_remarks_pilot ON landing_remarks(discord_id, handled_at);
+
+  ALTER TABLE user_prefs ADD COLUMN notify_landing INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

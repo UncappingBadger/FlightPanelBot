@@ -17,6 +17,7 @@ import type { DmSession, FlownFlight, Holder, JobView, Panel, SessionPurpose } f
 import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { andList, beyondDaysManyText, beyondDaysText, JobError, MAX_IDS_AT_ONCE, type FoundIds, type ReserveResult } from '../services/jobs.js';
+import { switchRemarks } from '../services/hardLanding.js';
 import { looksLikeMetar } from '../services/metar.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
@@ -910,10 +911,14 @@ async function say(user: { send(o: { content: string; components?: Row[]; allowe
  */
 export async function handleDmMessage(ctx: BotContext, message: Message): Promise<void> {
   if (message.author.bot || message.guildId) return;
+  // The same words that turn the scheduler's daily note off and on also turn the remarks about hard landings off and on, but only for someone
+  // the scheduler has spoken to (the person who gets the daily note, or anyone sent a remark). For everyone else they are just another message.
+  const knowsKevin = ctx.dailyNote?.isTarget(message.author.id) === true || ctx.store.wasRemarkedOn(message.author.id);
+  const remarkReply = knowsKevin ? switchRemarks(ctx.store, message.author.id, message.content, ctx.now()) : null;
   // The one person who gets a daily note can turn it off and on by replying to it.
   const noteReply = ctx.dailyNote?.handleReply(message.author.id, message.content);
-  if (noteReply) {
-    await say(message.author, noteReply).catch(() => undefined);
+  if (noteReply ?? remarkReply) {
+    await say(message.author, (noteReply ?? remarkReply) as string).catch(() => undefined);
     return;
   }
   try {

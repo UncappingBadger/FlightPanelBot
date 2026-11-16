@@ -71,11 +71,13 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    server, can no longer see the panel's channel (checked every half hour) or closes their DMs to the bot. If the
    admin has put completed flights in a channel of their own, the list leaves them out and says where they are.
 8. **Notifications** (DM the bot **`notifications`**) lets each person choose which of the bot's *optional* private
-   messages they get. There are two, both on until you switch them off: **Flights completed for you** (the DM saying the bot
-   marked a flight completed from FsHub; the flight is still completed, you are just not told) and **Take-off warnings** (the
-   late-departure heads-up, both to a pilot and to a backup). The reply shows each as on or off with a button to switch it,
-   or you can type `notifications completed off`, `notifications takeoff on`, `notifications off` (both) or `notifications on`.
-   It is yours alone, covers every airline you fly for, and each of those two messages ends with a line pointing to it.
+   messages they get. There are three, all on until you switch them off: **Flights completed for you** (the DM saying the bot
+   marked a flight completed from FsHub; the flight is still completed, you are just not told), **Take-off warnings** (the
+   late-departure heads-up, both to a pilot and to a backup) and **Hard-landing remarks** (a light-hearted message when FsHub
+   shows you landed very hard; see *Remarks about very hard landings* below). The reply shows each as on or off with a button
+   to switch it, or you can type `notifications completed off`, `notifications takeoff on`, `notifications landing off`,
+   `notifications off` (all three) or `notifications on`. It is yours alone and covers every airline you fly for, and each of
+   these messages carries a line saying how to switch it off.
    **What the bot tells you about your reservations always stays on**: a flight of yours released or removed, a backup spot
    that ended, a manager changing your FsHub pilot ID, and every answer to something you did yourself (reserving, the buttons,
    your commands). A warning switched off is not counted as sent, so switching it back on before the latest take-off still
@@ -639,6 +641,28 @@ Good to know:
   warnings use the live feed.
 - `/setup live-tracking [mode] [airline]` shows the setting or switches it (`mode:off`, `mode:on`). It is **on** for every panel.
 
+### Remarks about very hard landings
+
+The airline's FsHub flights the bot reads (see *FsHub (optional)*) carry the **landing rate** FsHub recorded: the vertical speed at
+touchdown, in feet per minute, a descent being negative (the `landing_rate` field of a FsHub flight). When a pilot the bot can name
+lands at **600 feet a minute or more**, the bot sends them one short, light-hearted private message about it, in stronger words
+from 800 and from 1,000. Nothing is ever said in a channel, and a normal or merely firm landing never gets a message.
+
+- **Where 600 comes from.** 10 feet a second (600 a minute) is the descent velocity airliners are certified to take at their design
+  landing weight (14 CFR 25.473 and EASA CS-25.473), and what Boeing itself calls a hard landing. 800 is a little above the 720 the
+  landing gear is tested to survive, and 1,000 is where real airliners have been damaged. They are lines for a joke, not a verdict: a
+  simulator's reading is noisier than an aeroplane's instruments, and FsHub does not say how it measures.
+- **Who counts as the pilot.** A FsHub flight is matched to a Discord account by the pilot's FsHub ID: the one your airline's FsHub
+  roster gives to a Discord account, or, with no roster entry, one a single person typed. An ID two people typed is nobody's, and
+  nothing is sent.
+- **Only once, and not too often.** A landing is only remarked on if it happened in the last three hours (so reading a week of
+  flights for the first time sends nothing), each flight once, and a pilot gets at most one message in six hours. A message that
+  can't be delivered (closed DMs) is not tried again. A reading beyond 2,500 feet a minute is taken as a bad one and ignored.
+- **Pilots can switch it off**: `notifications landing off` (or the button), and it stays off until they switch it back on. A
+  landing that happened while it was off is never remarked on later.
+- **Nothing to set up.** It works wherever the bot reads the airline's FsHub flights, and stops if you switch that off with
+  `/setup fshub confirm:off`.
+
 ### The grid layout
 
 By default the panel is a **card** for each flight. A server can choose a more compact **grid of buttons** instead with
@@ -734,7 +758,7 @@ that person goes by in airline sheets, and per reservation the name it wrote. It
 key only as a file path in `.env`; the key file itself stays wherever you put it. It also keeps, per Discord user,
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
 (shown beside their name on flights they hold), per Discord user their own settings (whether `/hideunavailable` is on, and
-which of the two optional private messages they have switched off with `notifications`), and per server the channel and message of an AeroDAQ market
+which of the three optional private messages they have switched off with `notifications`, and which very hard landings they have been sent a remark about), and per server the channel and message of an AeroDAQ market
 board if one is switched on. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
@@ -755,7 +779,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1838 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1913 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

@@ -29,15 +29,15 @@ describe('reading a change to the notifications', () => {
 
   it('switches both off or on when it says only that', () => {
     for (const word of ['off', 'OFF', 'Off please', 'disable', 'disabled', 'stop', 'mute', 'silence', 'pause', 'no']) {
-      assert.deepEqual(parseNoticeChange(word), set(['completed', 'takeoff'], false), word);
+      assert.deepEqual(parseNoticeChange(word), set(['completed', 'takeoff', 'landing'], false), word);
     }
     for (const word of ['on', 'ON', 'enable', 'enabled', 'resume', 'unmute', 'yes']) {
-      assert.deepEqual(parseNoticeChange(word), set(['completed', 'takeoff'], true), word);
+      assert.deepEqual(parseNoticeChange(word), set(['completed', 'takeoff', 'landing'], true), word);
     }
   });
 
   it('switches only the kind named', () => {
-    for (const text of ['completed off', 'completions off', 'off completed', 'done off', 'fshub off', 'landing off', 'landed off']) {
+    for (const text of ['completed off', 'completions off', 'off completed', 'done off', 'fshub off']) {
       assert.deepEqual(parseNoticeChange(text), set(['completed'], false), text);
     }
     for (const text of ['takeoff off', 'take-off off', 'take off off', 'off take-off', 'departure off', 'warnings off', 'late off', 'heads-up off']) {
@@ -87,31 +87,31 @@ describe('the notification settings in the store', () => {
   afterEach(() => h.close());
 
   it('has both kinds on for everyone who has said nothing', () => {
-    assert.deepEqual(NOTICE_KINDS, ['completed', 'takeoff']);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: true });
+    assert.deepEqual(NOTICE_KINDS, ['completed', 'takeoff', 'landing']);
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: true, landing: true });
     assert.equal(h.store.wantsNotice(USER_A.discordId, 'completed'), true);
     assert.equal(h.store.wantsNotice(USER_A.discordId, 'takeoff'), true);
   });
 
   it('remembers each kind on its own, for each person on their own', () => {
     h.store.setNotice(USER_A.discordId, 'completed', false, T0);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: false, takeoff: true });
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: false, takeoff: true, landing: true });
     h.store.setNotice(USER_A.discordId, 'takeoff', false, T0);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: false, takeoff: false });
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: false, takeoff: false, landing: true });
     h.store.setNotice(USER_A.discordId, 'completed', true, T0);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false });
-    assert.deepEqual(h.store.getNotices(USER_B.discordId), { completed: true, takeoff: true }, 'somebody else is not touched');
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false, landing: true });
+    assert.deepEqual(h.store.getNotices(USER_B.discordId), { completed: true, takeoff: true, landing: true }, 'somebody else is not touched');
   });
 
   it('shares a row with the hide-unavailable setting without either undoing the other', () => {
     h.store.setHideUnavailable(USER_A.discordId, true, T0);
     h.store.setNotice(USER_A.discordId, 'takeoff', false, T0 + 1);
     assert.equal(h.store.getHideUnavailable(USER_A.discordId), true);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false });
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false, landing: true });
     h.store.setHideUnavailable(USER_A.discordId, false, T0 + 2);
-    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false }, 'switching the other setting does not bring the warnings back');
+    assert.deepEqual(h.store.getNotices(USER_A.discordId), { completed: true, takeoff: false, landing: true }, 'switching the other setting does not bring the warnings back');
     h.store.setHideUnavailable(USER_B.discordId, true, T0);
-    assert.deepEqual(h.store.getNotices(USER_B.discordId), { completed: true, takeoff: true }, 'a person who only chose that has everything on');
+    assert.deepEqual(h.store.getNotices(USER_B.discordId), { completed: true, takeoff: true, landing: true }, 'a person who only chose that has everything on');
   });
 
   it('can be changed again and again', () => {
@@ -127,10 +127,10 @@ describe('the notification settings in the store', () => {
     assert.ok(MIGRATIONS.length >= 28);
     for (let v = 27; v < MIGRATIONS.length; v++) old.exec(MIGRATIONS[v] as string);
     const store = new Store(old);
-    assert.deepEqual(store.getNotices('77'), { completed: true, takeoff: true });
+    assert.deepEqual(store.getNotices('77'), { completed: true, takeoff: true, landing: true });
     assert.equal(store.getHideUnavailable('77'), true);
     store.setNotice('77', 'takeoff', false, 9);
-    assert.deepEqual(store.getNotices('77'), { completed: true, takeoff: false });
+    assert.deepEqual(store.getNotices('77'), { completed: true, takeoff: false, landing: true });
     assert.equal(store.getHideUnavailable('77'), true);
   });
 
@@ -139,8 +139,8 @@ describe('the notification settings in the store', () => {
     for (const m of MIGRATIONS) db.exec(m);
     db.prepare(`INSERT INTO user_prefs(discord_id, notify_completed, notify_takeoff, updated_at) VALUES ('1', 0, 1, 5), ('2', 1, 0, 5)`).run();
     const store = new Store(db);
-    assert.deepEqual(store.getNotices('1'), { completed: false, takeoff: true });
-    assert.deepEqual(store.getNotices('2'), { completed: true, takeoff: false });
+    assert.deepEqual(store.getNotices('1'), { completed: false, takeoff: true, landing: true });
+    assert.deepEqual(store.getNotices('2'), { completed: true, takeoff: false, landing: true });
     store.setNotice('3', 'completed', false, 9);
     const row = db.prepare(`SELECT notify_completed AS c, notify_takeoff AS t FROM user_prefs WHERE discord_id = '3'`).get() as { c: number; t: number };
     assert.deepEqual([row.c, row.t], [0, 1]);
@@ -178,18 +178,21 @@ describe('the notifications settings, in a DM', () => {
   });
 
   describe('looking', () => {
-    it('shows both kinds, whether each is on, what always stays on, and a button for each', async () => {
+    it('shows each kind, whether it is on, what always stays on, and a button for each', async () => {
       await say(alice, 'notifications');
       assert.equal(alice.dms.length, 1);
       const text = alice.lastText;
       assert.match(text, /^🔔 \*\*Your notifications\*\*\n/);
       assert.match(text, /• \*\*Flights completed for you\*\*: ✅ on\. When FsHub shows you flew a flight, I mark it completed and tell you\./);
       assert.match(text, /• \*\*Take-off warnings\*\*: ✅ on\. A heads-up shortly before the latest time you could take off/);
+      assert.match(text, /• \*\*Hard-landing remarks\*\*: ✅ on\. When FsHub shows you landed very hard, a light-hearted message about it\./);
+      assert.match(text, /I send three kinds of message that you can switch off:/);
       assert.match(text, /What I tell you about your reservations always stays on: a flight of yours being released or removed, a backup spot ending, and a manager changing your FsHub pilot ID\./);
-      assert.match(text, /`notifications completed off`, `notifications takeoff on`, `notifications off` \(both\) or `notifications on`/);
+      assert.match(text, /`notifications completed off`, `notifications takeoff on`, `notifications off` \(all three\) or `notifications on`/);
       assert.deepEqual(buttons(alice.last), [
         ['notices:completed:off', 'Flights completed for you: on', 3],
         ['notices:takeoff:off', 'Take-off warnings: on', 3],
+        ['notices:landing:off', 'Hard-landing remarks: on', 3],
       ]);
       assert.deepEqual(alice.last.allowedMentions, { parse: [] });
     });
@@ -205,7 +208,7 @@ describe('the notifications settings, in a DM', () => {
 
     it('changes nothing by showing', async () => {
       await say(alice, 'notifications');
-      assert.deepEqual(prefs(alice), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: true, takeoff: true, landing: true });
     });
 
     it('says so for a kind that is off, with the button offering to switch it back on', async () => {
@@ -216,15 +219,16 @@ describe('the notifications settings, in a DM', () => {
       assert.deepEqual(buttons(alice.last), [
         ['notices:completed:off', 'Flights completed for you: on', 3],
         ['notices:takeoff:on', 'Take-off warnings: off', 2],
+        ['notices:landing:off', 'Hard-landing remarks: on', 3],
       ]);
     });
 
     it('is a message that fits in one Discord message, however things are set', async () => {
       for (const on of [true, false]) {
-        const text = noticesText({ completed: on, takeoff: on }, 'x'.repeat(100));
+        const text = noticesText({ completed: on, takeoff: on, landing: on }, 'x'.repeat(100));
         assert.ok(text.length < 1800, `${text.length}`);
       }
-      assert.equal(noticesButtons({ completed: true, takeoff: true }).length, 1, 'one row');
+      assert.equal(noticesButtons({ completed: true, takeoff: true, landing: true }).length, 1, 'one row');
     });
 
     it('is the same whether or not a Reserve conversation is open, and leaves it open', async () => {
@@ -248,7 +252,7 @@ describe('the notifications settings, in a DM', () => {
   describe('changing it by typing', () => {
     it('switches one kind off, says so, and shows the button to switch it back', async () => {
       await say(alice, 'notifications completed off');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: true, landing: true });
       assert.match(alice.lastText, /^🔕 Switched off: \*\*Flights completed for you\*\*\.\n\n🔔 \*\*Your notifications\*\*/);
       assert.match(alice.lastText, /• \*\*Flights completed for you\*\*: 🔕 off\./);
       assert.equal(buttons(alice.last)[0][0], 'notices:completed:on');
@@ -257,36 +261,36 @@ describe('the notifications settings, in a DM', () => {
     it('switches the other kind, and the first stays as it was', async () => {
       await say(alice, 'notifications completed off');
       await say(alice, 'notifications takeoff off');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: false });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: false, landing: true });
       await say(alice, 'notifications take-off on');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: true, landing: true });
       assert.match(alice.lastText, /^✅ Switched on: \*\*Take-off warnings\*\*\./);
     });
 
-    it('switches both with just off, and back with just on', async () => {
+    it('switches all three with just off, and back with just on', async () => {
       await say(alice, 'notifications off');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: false });
-      assert.match(alice.lastText, /^🔕 Switched off: \*\*Flights completed for you\*\* and \*\*Take-off warnings\*\*\./);
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: false, landing: false });
+      assert.match(alice.lastText, /^🔕 Switched off: \*\*Flights completed for you\*\*, \*\*Take-off warnings\*\* and \*\*Hard-landing remarks\*\*\./);
       await say(alice, 'notify on');
-      assert.deepEqual(prefs(alice), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: true, takeoff: true, landing: true });
     });
 
     it('is only for the person who asked', async () => {
       await say(alice, 'notifications off');
-      assert.deepEqual(prefs(bob), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(bob), { completed: true, takeoff: true, landing: true });
     });
 
     it('says it could not tell, changes nothing, and shows how things are', async () => {
       h.store.setNotice(alice.id, 'completed', false, T0);
       await say(alice, 'notifications maybe later');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: true, landing: true });
       assert.match(alice.lastText, /^I couldn't tell what you wanted to change, so nothing is different\. Here is how things are:\n\n🔔 \*\*Your notifications\*\*/);
     });
 
     it('is the same again when it is said twice', async () => {
       await say(alice, 'notifications completed off');
       await say(alice, 'notifications completed off');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: true, landing: true });
     });
   });
 
@@ -294,13 +298,14 @@ describe('the notifications settings, in a DM', () => {
     it('switches that kind and redraws the same message to show how things are now', async () => {
       await say(alice, 'notifications');
       const calls = await press(alice, 'notices:completed:off');
-      assert.deepEqual(prefs(alice), { completed: false, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: false, takeoff: true, landing: true });
       assert.equal(calls.updates.length, 1, 'the message is edited in place');
       const u = calls.updates[0];
       assert.match(u.content, /^🔕 Switched off: \*\*Flights completed for you\*\*\.\n\n🔔 \*\*Your notifications\*\*/);
       assert.deepEqual(buttons(u), [
         ['notices:completed:on', 'Flights completed for you: off', 2],
         ['notices:takeoff:off', 'Take-off warnings: on', 3],
+        ['notices:landing:off', 'Hard-landing remarks: on', 3],
       ]);
       assert.deepEqual(u.allowedMentions, { parse: [] });
     });
@@ -308,7 +313,7 @@ describe('the notifications settings, in a DM', () => {
     it('turns it back on with the button it now shows', async () => {
       await press(alice, 'notices:takeoff:off');
       const calls = await press(alice, 'notices:takeoff:on');
-      assert.deepEqual(prefs(alice), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: true, takeoff: true, landing: true });
       assert.match(calls.updates[0].content, /^✅ Switched on: \*\*Take-off warnings\*\*\./);
     });
 
@@ -320,7 +325,7 @@ describe('the notifications settings, in a DM', () => {
 
     it('is only for the person who pressed it', async () => {
       await press(alice, 'notices:completed:off');
-      assert.deepEqual(prefs(bob), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(bob), { completed: true, takeoff: true, landing: true });
     });
 
     it('says an unknown or damaged button is out of date, and changes nothing', async () => {
@@ -329,13 +334,13 @@ describe('the notifications settings, in a DM', () => {
         assert.match(calls.updates[0].content, /That button is out of date\. Send me `notifications` for the current ones\./, id);
         assert.deepEqual(calls.updates[0].components, []);
       }
-      assert.deepEqual(prefs(alice), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: true, takeoff: true, landing: true });
     });
 
     it('is not something a menu can do: only a button', async () => {
       const calls = await press(alice, 'notices:completed:off', { values: ['x'] });
       assert.equal(calls.updates.length, 0);
-      assert.deepEqual(prefs(alice), { completed: true, takeoff: true });
+      assert.deepEqual(prefs(alice), { completed: true, takeoff: true, landing: true });
     });
   });
 });
@@ -624,15 +629,15 @@ describe('the messages that stay on whatever is switched off', () => {
     assert.match(alice.lastText, /is reserved for you/);
   });
 
-  it('has no switch for any of them: the only kinds there are are the two optional ones', async () => {
-    assert.deepEqual(NOTICE_KINDS, ['completed', 'takeoff']);
+  it('has no switch for any of them: the only kinds there are are the optional ones', async () => {
+    assert.deepEqual(NOTICE_KINDS, ['completed', 'takeoff', 'landing']);
     for (const text of ['released off', 'reservation off', 'backup off', 'removed off', 'off']) {
       const change = parseNoticeChange(text);
       assert.equal(change.kind, 'set', text);
       if (change.kind === 'set') assert.ok(change.kinds.every((k) => NOTICE_KINDS.includes(k)), text);
     }
     await handleDmMessage(d.ctx, fakeDm(alice, 'notifications backup off'));
-    assert.deepEqual(h.store.getNotices(alice.id), { completed: false, takeoff: false }, 'it switched the two optional kinds, and there is nothing else to switch');
+    assert.deepEqual(h.store.getNotices(alice.id), { completed: false, takeoff: false, landing: false }, 'it switched the optional kinds, and there is nothing else to switch');
     h.jobs.reserve(idOf('a'), [1], USER_A);
     h.jobs.addBackup(idOf('a'), USER_B);
     h.jobs.sync(pid(), [sj('b', 'EGKK-EGCC')]);

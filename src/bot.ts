@@ -25,6 +25,7 @@ import { DepartureWarnings } from './services/departureWarnings.js';
 import { JobEvents } from './services/events.js';
 import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
+import { HardLandings } from './services/hardLanding.js';
 import { JobService } from './services/jobs.js';
 import { LiveTracker } from './services/liveTracker.js';
 import { SourceRefresher } from './services/refresh.js';
@@ -92,7 +93,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // Optional: with a FsHub token, typed pilot IDs are checked, and a panel linked to its airline's FsHub roster
   // learns who is who by itself. Nothing is asked of FsHub without one.
   const fshub = config.fshubToken ? new FsHubClient({ token: config.fshubToken, logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }) : null;
-  const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId) }) : null;
+  // A pilot FsHub shows landing very hard gets a light-hearted message (they can switch it off). It only needs FsHub's flights, so it rides on that read.
+  let notifier: Notifier | null = null;
+  const hardLandings = new HardLandings(store, async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log });
+  const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId), onFlights: (panel, flights) => hardLandings.check(panel, flights) }) : null;
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
   let writeback: SheetWriteBack | null = null;
@@ -107,7 +111,6 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   }
 
   // With FsHub, flights it shows flown are completed by themselves once an hour (the pilot is told in a DM).
-  let notifier: Notifier | null = null;
   const autoComplete = fshubSync
     ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
     : null;

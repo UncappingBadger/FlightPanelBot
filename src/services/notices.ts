@@ -14,6 +14,10 @@ export const NOTICE_INFO: Record<NoticeKind, { name: string; what: string }> = {
     name: 'Take-off warnings',
     what: "A heads-up shortly before the latest time you could take off and still land inside a flight's window, for flights you hold or are the backup for.",
   },
+  landing: {
+    name: 'Hard-landing remarks',
+    what: 'When FsHub shows you landed very hard, a light-hearted message about it. A normal landing never gets one.',
+  },
 };
 
 /** The line at the bottom of an optional message, so the person knows they can switch it off. */
@@ -28,8 +32,9 @@ export type NoticeChange = { kind: 'show' } | { kind: 'set'; kinds: NoticeKind[]
 const ON = /\b(on|enable|enabled|yes|resume|unmute)\b/i;
 const OFF = /\b(off|disable|disabled|no|stop|mute|silence|pause)\b/i;
 const CATEGORY: Record<NoticeKind, RegExp> = {
-  completed: /complet|\bdone\b|fshub|landed|landing/i,
+  completed: /complet|\bdone\b|fshub/i,
   takeoff: /take[\s-]?off|depart|warn|\blate\b|heads/i,
+  landing: /\bland(?:ing|ings|ed)?\b|touchdown|\bhard\b|thump|bounce|remark|joke|funny|banter|kevin/i,
 };
 
 /**

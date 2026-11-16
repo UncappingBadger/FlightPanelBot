@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type Message, type MessageActionRowComponentBuilder } from 'discord.js';
 import { NOTICE_KINDS, type NoticeKind } from '../db/store.js';
+import { andList } from '../services/jobs.js';
 import { NOTICE_INFO, NOTICES_REQUEST, parseNoticeChange } from '../services/notices.js';
 import type { BotContext, ComponentHandler } from './context.js';
 import { noPings } from './ui.js';
@@ -13,11 +14,11 @@ export function noticesText(prefs: Record<NoticeKind, boolean>, note = ''): stri
   return [
     ...(note ? [note, ''] : []),
     '🔔 **Your notifications**',
-    'I send two kinds of message that you can switch off:',
+    'I send three kinds of message that you can switch off:',
     ...NOTICE_KINDS.map((k) => `• **${NOTICE_INFO[k].name}**: ${state(prefs[k])}. ${NOTICE_INFO[k].what}`),
     '',
     'What I tell you about your reservations always stays on: a flight of yours being released or removed, a backup spot ending, and a manager changing your FsHub pilot ID. So does every answer to something you did yourself.',
-    'Press a button to switch one, or send me `notifications completed off`, `notifications takeoff on`, `notifications off` (both) or `notifications on`.',
+    'Press a button to switch one, or send me `notifications completed off`, `notifications takeoff on`, `notifications off` (all three) or `notifications on`.',
   ].join('\n');
 }
 
@@ -40,7 +41,7 @@ export function noticesButtons(prefs: Record<NoticeKind, boolean>): ActionRowBui
 
 /** What changed, in a line. */
 function changeNote(kinds: NoticeKind[], on: boolean): string {
-  const names = kinds.map((k) => `**${NOTICE_INFO[k].name}**`).join(' and ');
+  const names = andList(kinds.map((k) => `**${NOTICE_INFO[k].name}**`));
   return `${on ? '✅ Switched on' : '🔕 Switched off'}: ${names}.`;
 }
 

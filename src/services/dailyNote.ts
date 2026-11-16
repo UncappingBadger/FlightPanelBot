@@ -168,6 +168,11 @@ export class DailyNote {
     return Number.isFinite(n) ? n : null;
   }
 
+  /** Is this the one person the notes go to? */
+  isTarget(userId: string): boolean {
+    return userId === this.o.target.userId;
+  }
+
   /** Which Kevin this is: the first, or a replacement hired after one was fired. */
   get generation(): number {
     return Math.max(1, this.num(KV.gen) ?? 1);

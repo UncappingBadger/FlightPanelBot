@@ -74,6 +74,8 @@ export interface FsHubFlight {
   aircraftName: string | null;
   /** FsHub's own word for how the flight went against its schedule: `ON-TIME`, `DELAYED` or `LATE`. */
   scheduleStatus: 'ON-TIME' | 'DELAYED' | 'LATE' | null;
+  /** The vertical speed at touchdown FsHub recorded, in feet per minute (negative for a descent), or null/missing when it gave none. */
+  landingRate?: number | null;
 }
 
 /** One page of an airline's flights, oldest first. */
@@ -161,7 +163,18 @@ const FlightSchema = z.object({
   departure: z.object({ icao: text(8).nullish(), time: z.string().nullish() }).nullish(),
   arrival: z.object({ icao: text(8).nullish(), time: z.string().nullish() }).nullish(),
   schedule_status: text(16).nullish(),
+  // Whatever FsHub puts here is read leniently (and below): an odd value must never cost the whole flight.
+  landing_rate: z.unknown().optional(),
 });
+
+/**
+ * The vertical speed at touchdown FsHub recorded, in feet per minute with a descent negative (`landing_rate`, an integer at the top of a
+ * flight). Anything that is not a plain number, or is beyond what any landing could be, counts as none.
+ */
+export function landingRateOf(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(value) ? Number(value) : NaN;
+  return Number.isFinite(n) && Math.abs(n) <= 100_000 ? Math.round(n) : null;
+}
 
 const dataOf = (body: unknown): unknown => (body as { data?: unknown } | null)?.data;
 
@@ -215,6 +228,7 @@ export function parseFlightPage(items: unknown[]): FlightPage {
       aircraftIcao: f.aircraft?.icao ? f.aircraft.icao.toUpperCase() : null,
       aircraftName: f.aircraft?.icao_name || null,
       scheduleStatus: status === 'ON-TIME' || status === 'DELAYED' || status === 'LATE' ? status : null,
+      landingRate: landingRateOf(f.landing_rate),
     });
   });
   return { flights, count: items.length, lastId, firstAt, lastAt };

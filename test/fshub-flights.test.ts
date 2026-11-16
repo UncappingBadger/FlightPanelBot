@@ -44,6 +44,7 @@ describe('reading a page of flights', () => {
         aircraftIcao: 'B738',
         aircraftName: 'Boeing 737-800',
         scheduleStatus: 'ON-TIME',
+        landingRate: null,
       },
     ]);
     assert.deepEqual([page.count, page.lastId, page.firstAt, page.lastAt], [1, 7, Date.UTC(2026, 10, 11, 11), Date.UTC(2026, 10, 11, 11)]);
