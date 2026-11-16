@@ -387,7 +387,7 @@ describe('asking the bot for a weather report in a DM', () => {
 
     it('is mentioned in the short pointer people get when they message the bot with nothing open', async () => {
       await say(alice, 'hello');
-      assert.match(alice.lastText, /or `metar EGLL` \(any airport code\) for a weather report in plain language\.$/);
+      assert.match(alice.lastText, /`metar EGLL` \(any airport code\) for a weather report in plain language, or `notifications` to choose which messages I send you\.$/);
     });
   });
 });

@@ -495,6 +495,14 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN grid_dates TEXT NOT NULL DEFAULT 'dmy';
   `,
+
+  /* v28: which of the bot's optional private messages a person wants. Both start on, as they always were: 'notify_completed' (the bot
+     marked a flight of theirs completed from FsHub) and 'notify_takeoff' (the late-departure warning, as a pilot or as a backup). Messages
+     about what they have reserved, released or stand by for are not optional and are not here. */
+  `
+  ALTER TABLE user_prefs ADD COLUMN notify_completed INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE user_prefs ADD COLUMN notify_takeoff INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

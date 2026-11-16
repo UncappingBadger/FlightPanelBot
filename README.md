@@ -70,6 +70,16 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    channel does not change for anyone else. Press **List view** again to get a fresh copy at the bottom of the DM. **`/hideunavailable`** (anyone can use it) hides, for you only, the flights that are no longer available to you from your list view and your searches: the ones already taken by others (every leg held in Discord or named in the schedule) and the completed ones. Flights you hold or stand by for stay. It switches on and off (`mode:on`, `mode:off`, or just run it again), and a list you already have is redrawn to match. The panel in the channel is one message everybody shares, so Discord cannot show it differently to one person. At most 200 people can have a list of one panel at once, and one is dropped if the person leaves the
    server, can no longer see the panel's channel (checked every half hour) or closes their DMs to the bot. If the
    admin has put completed flights in a channel of their own, the list leaves them out and says where they are.
+8. **Notifications** (DM the bot **`notifications`**) lets each person choose which of the bot's *optional* private
+   messages they get. There are two, both on until you switch them off: **Flights completed for you** (the DM saying the bot
+   marked a flight completed from FsHub; the flight is still completed, you are just not told) and **Take-off warnings** (the
+   late-departure heads-up, both to a pilot and to a backup). The reply shows each as on or off with a button to switch it,
+   or you can type `notifications completed off`, `notifications takeoff on`, `notifications off` (both) or `notifications on`.
+   It is yours alone, covers every airline you fly for, and each of those two messages ends with a line pointing to it.
+   **What the bot tells you about your reservations always stays on**: a flight of yours released or removed, a backup spot
+   that ended, a manager changing your FsHub pilot ID, and every answer to something you did yourself (reserving, the buttons,
+   your commands). A warning switched off is not counted as sent, so switching it back on before the latest take-off still
+   warns you in time.
 
 **Looking for a flight.** **Search** (under the panel) opens a small form with four optional boxes: where you want to
 fly **from**, where you want to fly **to**, the **date**, and the **aircraft type**. Fill in any of them, one or together,
@@ -378,7 +388,8 @@ the name with, and whom FsHub shows flying every leg. It does not guess from Dis
 
 - **The pilot is told.** One DM per pilot per check, however many flights it completed: *"FsHub shows you flew a flight
   for **Example Air**, so I marked it completed"*, with the aircraft and landing time, and that there is nothing to do. A
-  pilot with DMs closed is simply not told; the flight is still completed.
+  pilot with DMs closed is simply not told; the flight is still completed. A pilot can also switch this message off for
+  themselves by DMing the bot `notifications` (the flight is still completed), and the message ends with a line saying so.
 - **The sheet is ticked too** where write-back is set up, before the flight is marked completed. If the sheet won't
   accept it (it names someone else for that flight, say) the flight is left alone.
 - **If FsHub can't be read** nothing is completed and the check is tried again in ten minutes rather than an hour.
@@ -577,6 +588,9 @@ time, the deadline, the flight time it used **and where that time came from**:
 
 A few things it does and does not do:
 
+- **Anyone can switch the warning off for themselves** by DMing the bot `notifications` (pilots and backups alike; the warning
+  ends with a line saying so). Someone who has switched it off is not warned and is not counted as warned, so switching it back
+  on before the latest take-off still warns them in time. The server's own setting (`/setup depart-warning`) is unchanged.
 - With **live tracking** (below, on by default) it can see who is already in the air: a pilot flying the flight is not warned.
   Without it, or when the live feed cannot be read, it **cannot see a flight in the air** (FsHub's records show a flight only
   after it has landed), so the message tells anyone who has already taken off to ignore it.
@@ -719,7 +733,8 @@ per reservation the Discord user ID and username, plus any pilot name a linked G
 that person goes by in airline sheets, and per reservation the name it wrote. It holds a Google service account
 key only as a file path in `.env`; the key file itself stays wherever you put it. It also keeps, per Discord user,
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
-(shown beside their name on flights they hold), and per server the channel and message of an AeroDAQ market
+(shown beside their name on flights they hold), per Discord user their own settings (whether `/hideunavailable` is on, and
+which of the two optional private messages they have switched off with `notifications`), and per server the channel and message of an AeroDAQ market
 board if one is switched on. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
@@ -740,7 +755,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1785 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1838 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

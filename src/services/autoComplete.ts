@@ -158,10 +158,12 @@ export class AutoCompleter {
     }
     if (!scope.only) store.updatePanel(current.id, { fshubAutoCompleteAt: now });
 
-    // One message per pilot, however many of their flights were completed.
+    // One message per pilot, however many of their flights were completed. A pilot who has turned these messages off still has
+    // their flights completed (that is the point of it); they are only not told.
     const byPilot = new Map<string, AutoCompleted[]>();
     for (const c of completed) byPilot.set(c.discordId, [...(byPilot.get(c.discordId) ?? []), c]);
     for (const [pilot, done] of byPilot) {
+      if (!store.wantsNotice(pilot, 'completed')) continue;
       try {
         await this.d.onCompleted?.(pilot, done);
       } catch (e) {

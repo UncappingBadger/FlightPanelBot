@@ -357,7 +357,7 @@ describe('completing flights automatically from FsHub', () => {
       assert.match(alice.lastText, /✅ \*\*TST-001\*\* \(EGLL → EGKK\): A320 \(Airbus A320\), landed <t:\d+:t> · on time/);
       assert.match(alice.lastText, /✅ \*\*TST-002\*\* \(EGKK → EGCC\): B738 \(Boeing 737-800\)/);
       assert.doesNotMatch(alice.lastText, /TST-003/);
-      assert.match(alice.lastText, /There is nothing for you to do\. I check FsHub for your landings every hour\.$/);
+      assert.match(alice.lastText, /There is nothing for you to do\. I check FsHub for your landings every hour\.\nDon't want these\? DM me `notifications` to switch them off\.$/);
       assert.deepEqual(alice.last.allowedMentions, { parse: [] });
 
       assert.equal(bob.dms.length, 1);

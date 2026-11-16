@@ -213,7 +213,17 @@ export interface JobView {
   backup?: Holder | null;
 }
 
-export type SessionStep = 'await_pilot' | 'await_code' | 'await_mode' | 'await_legs' | 'await_confirm';
+/**
+ * The private messages a person can turn off: 'completed' (the bot completed a flight of theirs from FsHub) and 'takeoff' (the
+ * late-departure warning, to a pilot or to a backup). Anything about what they reserved, released or stand by for is not one of
+ * these; it always goes out.
+ */
+export type NoticeKind = 'completed' | 'takeoff';
+export const NOTICE_KINDS: readonly NoticeKind[] = ['completed', 'takeoff'];
+/** The column of `user_prefs` for each (a fixed list, so no text from outside is ever put in a query). */
+const NOTICE_COLUMN: Record<NoticeKind, string> = { completed: 'notify_completed', takeoff: 'notify_takeoff' };
+
+export type SessionStep ='await_pilot' | 'await_code' | 'await_mode' | 'await_legs' | 'await_confirm';
 
 /** What a DM conversation is for: picking a flight to fly, or one to stand by for. */
 export type SessionPurpose = 'reserve' | 'backup';
@@ -1195,6 +1205,27 @@ export class Store {
     this.run(
       `INSERT INTO user_prefs(discord_id, hide_unavailable, updated_at) VALUES (?,?,?)
        ON CONFLICT(discord_id) DO UPDATE SET hide_unavailable = excluded.hide_unavailable, updated_at = excluded.updated_at`,
+      discordId,
+      on ? 1 : 0,
+      now,
+    );
+  }
+
+  /** Does this person want this optional private message? Everyone does until they say otherwise. */
+  wantsNotice(discordId: string, kind: NoticeKind): boolean {
+    return n(this.get(`SELECT ${NOTICE_COLUMN[kind]} AS on_ FROM user_prefs WHERE discord_id = ?`, discordId)?.on_ ?? 1) !== 0;
+  }
+
+  /** Which optional private messages this person wants. */
+  getNotices(discordId: string): Record<NoticeKind, boolean> {
+    return { completed: this.wantsNotice(discordId, 'completed'), takeoff: this.wantsNotice(discordId, 'takeoff') };
+  }
+
+  setNotice(discordId: string, kind: NoticeKind, on: boolean, now: number): void {
+    const column = NOTICE_COLUMN[kind];
+    this.run(
+      `INSERT INTO user_prefs(discord_id, ${column}, updated_at) VALUES (?,?,?)
+       ON CONFLICT(discord_id) DO UPDATE SET ${column} = excluded.${column}, updated_at = excluded.updated_at`,
       discordId,
       on ? 1 : 0,
       now,

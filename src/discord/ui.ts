@@ -12,6 +12,7 @@ import type { FlownFlight, Holder, JobView, LegView, Panel } from '../db/store.j
 import type { AutoCompleted } from '../services/autoComplete.js';
 import { isAliasUse } from '../services/aircraftAliases.js';
 import { sameAircraft, type Confirmations } from '../services/flightMatch.js';
+import { NOTICE_HINT } from '../services/notices.js';
 import { MAX_SEARCH_RESULTS, type SearchDay } from '../services/search.js';
 import type { Reminder } from '../services/reminders.js';
 import { OPEN_STAMP_PNG_BASE64 } from './openStampImage.js';
@@ -136,6 +137,7 @@ export function autoCompletedMessage(done: AutoCompleted[]): string {
     `FsHub shows you flew ${many ? `${done.length} flights` : 'a flight'} for **${airline}**, so I marked ${many ? 'them' : 'it'} completed:`,
     ...lines,
     'There is nothing for you to do. I check FsHub for your landings every hour.',
+    NOTICE_HINT,
   ].join('\n');
 }
 

@@ -49,7 +49,7 @@ export const helpCommand: Command = {
             {
               name: 'A heads-up before it is too late',
               value:
-                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. If FsHub's live feed shows you already flying it, I don't send it; otherwise ignore it if you are flying.",
+                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. If FsHub's live feed shows you already flying it, I don't send it; otherwise ignore it if you are flying. DM me `notifications` to switch it, or the completed-flight DM, off.",
             },
             {
               name: 'When you have flown it',

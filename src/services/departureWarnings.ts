@@ -5,6 +5,7 @@ import { confirmationsFor } from './flightMatch.js';
 import type { FlightTime, FlightTimes } from './flightTime.js';
 import type { JobService } from './jobs.js';
 import type { LiveStatus, LiveTracker } from './liveTracker.js';
+import { NOTICE_HINT } from './notices.js';
 
 /** How many minutes before the latest take-off a pilot is warned, when the server has not chosen. */
 export const DEPART_WARNING_DEFAULT_MINUTES = 30;
@@ -138,6 +139,9 @@ export class DepartureWarnings {
         if (job.completedAt !== null || job.deadline === null || job.deadline <= now) continue;
         if (job.deadline - now > MAX_FLIGHT_MS + lead) continue; // no flight takes this long, so the time to warn is a long way off
         const pending = this.targets(panel, view, now).filter((t) => {
+          // Someone who has turned these warnings off is left alone, and not marked as warned: if they turn them back on before the
+          // latest take-off, they are still warned in time.
+          if (!this.store.wantsNotice(t.discordId, 'takeoff')) return false;
           if (this.store.wasWarned(job.id, t.discordId)) return false;
           const failed = this.failedAt.get(`${job.id}:${t.discordId}`);
           return failed === undefined || now - failed >= RETRY_AFTER_FAILURE_MS;
@@ -205,6 +209,7 @@ export function pilotWarning(panel: Panel, plan: DeparturePlan, notInAir = false
     notInAir
       ? "This is only a heads-up. FsHub's live feed doesn't show you in the air right now. If you can't fly it any more, give it back from **My flights** on the panel so someone else can."
       : "This is only a heads-up. If you have already taken off, ignore it: I only see a flight once FsHub shows it landed. If you can't fly it any more, give it back from **My flights** on the panel so someone else can.",
+    NOTICE_HINT,
   ].join('\n');
 }
 
@@ -217,5 +222,6 @@ export function backupWarning(panel: Panel, plan: DeparturePlan, flownBy: string
     notInAir
       ? "FsHub's live feed doesn't show the pilot in the air yet, so this may be the moment to check they are on their way."
       : "I can't see whether the pilot has gone (FsHub shows a flight only once it has landed), so this may be the moment to check they are on their way.",
+    NOTICE_HINT,
   ].join('\n');
 }
