@@ -17,6 +17,7 @@ import type { DmSession, FlownFlight, Holder, JobView, Panel, SessionPurpose } f
 import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
 import { beyondDaysText, JobError, type ReserveResult } from '../services/jobs.js';
+import { looksLikeMetar } from '../services/metar.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
 import { aliasNote, expandAircraftTypes } from '../services/aircraftAliases.js';
@@ -31,6 +32,7 @@ import { memberHasRole } from './guard.js';
 import { handleGridAction } from './gridHandlers.js';
 import { MAX_FOLLOWERS } from './panel.js';
 import { avatarIdsOf, flightFacts, noPings, jobBlock, searchEmbeds, stampFiles } from './ui.js';
+import { METAR_REQUEST, showMetar } from './weather.js';
 
 /** How long a Reserve conversation stays open. */
 export const SESSION_TTL_MS = 10 * 60_000;
@@ -913,6 +915,18 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
+  // `metar EGLL`: the current weather report for an airport, fetched from VATSIM and put in plain language; or a METAR pasted after
+  // it (or on its own), which is translated. Also leaves an open conversation alone.
+  const metarRequest = METAR_REQUEST.exec(text);
+  if (metarRequest) {
+    await showMetar(ctx, message, metarRequest[1] ?? '');
+    return;
+  }
+  if (looksLikeMetar(text)) {
+    await showMetar(ctx, message, text);
+    return;
+  }
+
   // `fshub 1234`: the pilot's FsHub pilot ID. Also works whether or not a conversation is open.
   const fshub = /^fshub(?:\s+(.*))?$/is.exec(text);
   if (fshub) {
@@ -928,7 +942,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
       lastHint.set(user.id, now);
       // Forget people whose cooldown is over, so the map can't grow for ever with everyone who has ever messaged the bot.
       if (lastHint.size > 5000) for (const [k, t] of lastHint) if (now - t >= HINT_COOLDOWN_MS) lastHint.delete(k);
-      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, or `my contributions` to see what your completed flights made for the airline.');
+      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, or `metar EGLL` (any airport code) for a weather report in plain language.');
     }
     return;
   }

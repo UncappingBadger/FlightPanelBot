@@ -197,7 +197,7 @@ writeFileSync(
 [assembly: AssemblyDescription("Runs a virtual airline's Discord flight panel bot from the Windows notification area.")]
 [assembly: AssemblyCompany("UncappingBadger")]
 [assembly: AssemblyProduct("Flight Panel Bot")]
-[assembly: AssemblyCopyright("MIT licence. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ or Discord.")]
+[assembly: AssemblyCopyright("MIT licence. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ, VATSIM or Discord.")]
 [assembly: AssemblyVersion("${pkg.version}.0")]
 [assembly: AssemblyFileVersion("${pkg.version}.0")]
 `,
@@ -291,7 +291,7 @@ writeFileSync(
   debug
     ? debugReadme(version)
     : `Flight Panel Bot ${version}
-By UncappingBadger. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ or Discord.
+By UncappingBadger. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ, VATSIM or Discord.
 
 Runs your virtual airline's flight panel in your own Discord server, from your own Windows PC.
 
@@ -316,7 +316,8 @@ one from the icon, and run the new one. Your settings and data carry over. The c
 the setup page, and only sends the program's name and version to github.com.
 
 The bot also uses AeroDAQ (aerodaq.com, an in-game market, not real money) for /fuel and the optional market
-board, but only when someone uses them. If you save a FsHub token, it also asks fshub.io (read-only) about the
+board, but only when someone uses them. When someone DMs the bot "metar <airport>", it asks VATSIM's public METAR
+service (metar.vatsim.net) for that airport's weather report; only the airport code is sent. If you save a FsHub token, it also asks fshub.io (read-only) about the
 pilot IDs people type and about the roster and recent flights of an airline you link with /setup fshub.
 
 The server owner's manual is inside the program: right-click the icon and choose User manual. The same PDF is

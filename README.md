@@ -6,7 +6,7 @@ press **Reserve**, the bot DMs them, they reply with the flight's ID, and the pa
 FsHub pilot ID) next to the flight. Multi-leg flights can be split between pilots leg by leg. It can also look
 up fuel prices (`/fuel`) and show the AeroDAQ in-game market in a channel.
 
-By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy or AeroDAQ.
+By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy, AeroDAQ or VATSIM.
 
 ## How it works for pilots
 
@@ -426,6 +426,38 @@ about pilots, servers or airlines.
 
 The bot only contacts AeroDAQ when someone uses `/fuel` or a server has a market board switched on.
 
+### Weather reports (METAR) in plain language
+
+A METAR is an airport's routine weather report, written in a compact code (`EGLL 161350Z 26008KT 9999 NSC 08/01 Q1006`).
+**DM the bot `metar EGLL`** (any four-letter ICAO code, up to three at once) and it fetches the current report from
+[VATSIM's public METAR service](https://vatsim.dev/api/metar-api/get-metar) (`https://metar.vatsim.net/<ICAO>`, no account or key)
+and answers with a card that explains it for someone who doesn't know the abbreviations: a one-line summary first, then
+wind, visibility (and runway visual range), weather, clouds, temperature, humidity, pressure, anything else the report
+carries (wind shear, sea state, runway condition, military colour states), what to expect over the next two hours, and the remarks,
+each with the units a pilot of either habit would want (knots and km/h, metres and miles, hPa and inHg, °C and °F). The report
+as written is shown at the bottom. It is for flight simulation only, and says so on every card.
+
+- **Pasting works too.** **Paste a METAR after `metar`, or on its own**, and the bot translates that instead, without
+  contacting anyone (so it also works when VATSIM can't be reached, and is never held up by the pause below). Several
+  reports can be pasted at once, one to a line or ending in `=`; the first three are translated.
+- **Units are read from each report, never guessed from the country.** METARs share one group order worldwide, but the
+  United States and Canada give visibility in statute miles and pressure in inches of mercury (`A2992`), most of the world
+  gives metres and hectopascals (`Q1013`), Russia and China give wind in metres per second, a few stations give both
+  pressures, and the remarks after `RMK` are national and free-form. The decoder understands all of those, plus the common US
+  remarks (`AO2`, `SLP`, the exact temperature group, peak wind, lightning, precipitation totals, pressure tendency), Canadian
+  cloud-by-type groups, Russian `QFE` and runway state groups, Australian rainfall, and military colour states. **Anything it
+  does not recognise is handed back as written ("Left as written"), never dropped or guessed.**
+- **A US-style rating (VFR, MVFR, IFR, LIFR)** is worked out from the ceiling and visibility and shown with what it means.
+  Those names come from the US; the card says where they are in everyday use (the US and Canada) and that elsewhere they are a
+  rough guide.
+- **Only full four-character codes are asked for.** VATSIM reads a code of three characters or fewer as "every airport starting
+  with these", and `all` as every airport, so the bot refuses those (and tells people that US airports start with a K: `KJFK`,
+  not `JFK`) instead of passing them on. An airport with no report gets a plain message.
+- **Kind to VATSIM.** An airport's report is remembered for ten minutes (what the service itself asks of caches), overlapping
+  requests share one call, one person can ask about every few seconds, answers are size-capped, redirects are not followed,
+  and only the airport code and the bot's name and version are ever sent. The service is only contacted when someone asks.
+- It leaves an open Reserve conversation alone, so asking for the weather halfway through reserving a flight costs nothing.
+
 ### Who can reserve
 
 By default anyone who can see the panel's channel can press **Reserve**, so channel permissions are the first
@@ -687,6 +719,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board);
+`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
@@ -698,7 +731,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1533 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1711 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

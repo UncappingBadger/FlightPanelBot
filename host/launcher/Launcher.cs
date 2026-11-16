@@ -707,7 +707,7 @@ namespace FlightPanelBot
             MessageBox.Show(
                 "Flight Panel Bot " + BuildInfo.Version + "\nBy UncappingBadger\n\n" +
                 "Keeps your virtual airline's flight panel running in your own Discord server.\n" +
-                "Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy, AeroDAQ or Discord.\n\n" +
+                "Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy, AeroDAQ, VATSIM or Discord.\n\n" +
                 "Settings, data and logs: " + Paths.AppHome + "\n" +
                 "Licence: MIT. Includes Node.js and other open-source software; see THIRD_PARTY_NOTICES.txt that came with this program.",
                 "About Flight Panel Bot", MessageBoxButtons.OK, MessageBoxIcon.Information);

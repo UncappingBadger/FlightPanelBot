@@ -1,5 +1,6 @@
 import { Client, Events, GatewayIntentBits, Partials, Routes } from 'discord.js';
 import { AeroDaqClient } from './aerodaq/client.js';
+import { MetarClient } from './metar/client.js';
 import type { Config } from './config.js';
 import { openDatabase } from './db/db.js';
 import { Store } from './db/store.js';
@@ -84,6 +85,8 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   const market = new MarketService(store, aerodaq, log);
+  // VATSIM's public METAR service: only asked when someone sends the bot `metar <airport>` in a DM, and only ever sent the airport code.
+  const metar = new MetarClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   // A flight with no pilot a day before it starts is announced in the panel's channel.
   const reminders = new ReminderService(store, jobs, async (panel, due) => (await panels.remind(panel, due)) === 'sent', { logger: log });
   // Optional: with a FsHub token, typed pilot IDs are checked, and a panel linked to its airline's FsHub roster
@@ -156,7 +159,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, writeback, fshub, fshubSync, autoComplete, dailyNote, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

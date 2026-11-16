@@ -194,6 +194,6 @@ describe('asking the bot for your flights in a DM', () => {
 
   it('is mentioned in the pointer people get when they message the bot out of the blue', async () => {
     await say(alice, 'hello there');
-    assert.match(alice.lastText, /Send me `flights` any time to see the flights you have, or `my contributions` to see what your completed flights made for the airline\./);
+    assert.match(alice.lastText, /Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, or `metar EGLL` \(any airport code\) for a weather report in plain language\./);
   });
 });

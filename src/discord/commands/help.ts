@@ -54,7 +54,12 @@ export const helpCommand: Command = {
             {
               name: 'When you have flown it',
               value:
-                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights are listed in a panel of their own below the open ones, and on a FsHub panel they also show the aircraft FsHub recorded. On a FsHub panel I also complete the flights FsHub shows you flew, within minutes of landing and again once an hour, and DM you, so you don't have to press anything.",
+                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights get a panel of their own below the open ones. On a FsHub panel I also complete the flights FsHub shows you flew, within minutes of landing and again every hour, and DM you.",
+            },
+            {
+              name: 'Weather reports (METAR)',
+              value:
+                "DM me `metar EGLL` (any four-letter airport code, up to 3 at once) and I fetch the current report from VATSIM and explain it in plain language. Paste a METAR after `metar`, or on its own, and I translate that instead.",
             },
             {
               name: 'Fuel prices',

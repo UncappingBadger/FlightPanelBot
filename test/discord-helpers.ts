@@ -1,6 +1,7 @@
 import { PermissionFlagsBits } from 'discord.js';
 import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction, Client, Message, StringSelectMenuInteraction } from 'discord.js';
 import type { AeroDaqClient, AirportFuel, Stock } from '../src/aerodaq/client.js';
+import type { MetarClient } from '../src/metar/client.js';
 import type { Config } from '../src/config.js';
 import type { BotContext } from '../src/discord/context.js';
 import type { FlightPage, FsHubAccount, FsHubAirline, FsHubApi, FsHubFlight, FsHubPilot, RosterPilot } from '../src/fshub/client.js';
@@ -463,6 +464,20 @@ export class FakeAeroDaq {
   }
 }
 
+/** A stand-in for VATSIM's METAR service: tests set the reports it knows, or make it fail. */
+export class FakeMetar {
+  /** The report for each airport (a line starting with its code); an airport that is not here has none. */
+  reports = new Map<string, string>();
+  /** When set, every call throws it. */
+  error: Error | null = null;
+  calls: string[] = [];
+  async report(station: string): Promise<string | null> {
+    this.calls.push(station);
+    if (this.error) throw this.error;
+    return this.reports.get(station) ?? null;
+  }
+}
+
 /**
  * A stand-in for FsHub. Everything in it is made up: the pilots, airlines and Discord IDs are not real
  * people. Tests set what it knows, or make it fail the way a real outage or refusal would.
@@ -534,6 +549,7 @@ export interface DiscordHarness {
   panels: PanelService;
   refresher: SourceRefresher;
   aerodaq: FakeAeroDaq;
+  metar: FakeMetar;
   market: MarketService;
   notifier: Notifier;
   /** Present when the test asked for FsHub (`fshub: true`); otherwise ctx.fshub is null, as for a host with no token. */
@@ -542,7 +558,7 @@ export interface DiscordHarness {
 
 export function makeDiscordHarness(
   h: Harness,
-  opts: { source?: JobSource | null; fetchFn?: typeof fetch; writeback?: SheetWriteBack | null; pilotIds?: boolean; aerodaq?: FakeAeroDaq; fshub?: boolean | FakeFsHub } = {},
+  opts: { source?: JobSource | null; fetchFn?: typeof fetch; writeback?: SheetWriteBack | null; pilotIds?: boolean; aerodaq?: FakeAeroDaq; metar?: FakeMetar; fshub?: boolean | FakeFsHub } = {},
 ): DiscordHarness {
   const client = new FakeClient();
   const now = () => h.clock.now;
@@ -558,6 +574,7 @@ export function makeDiscordHarness(
   // The same selection the real bot uses: a panel's linked sheet first, then the test's own source.
   const refresher = new SourceRefresher(h.store, h.jobs, sourceSelector({ fallback: opts.source ?? null, fetchFn: opts.fetchFn }), silentLogger, now);
   const aerodaq = opts.aerodaq ?? new FakeAeroDaq();
+  const metar = opts.metar ?? new FakeMetar();
   const market = new MarketService(h.store, aerodaq, silentLogger, now);
   market.attach(client as unknown as Client);
   const fshub = opts.fshub ? (opts.fshub === true ? new FakeFsHub() : opts.fshub) : null;
@@ -576,6 +593,7 @@ export function makeDiscordHarness(
     refresher,
     aerodaq: aerodaq as unknown as AeroDaqClient,
     market,
+    metar: metar as unknown as MetarClient,
     writeback: opts.writeback ?? null,
     fshub,
     fshubSync,
@@ -585,7 +603,7 @@ export function makeDiscordHarness(
     fetchFn: opts.fetchFn ?? fetch,
   };
   notifier.subscribe(h.events);
-  return { ctx, client, panels, refresher, aerodaq, market, notifier, fshub };
+  return { ctx, client, panels, refresher, aerodaq, metar, market, notifier, fshub };
 }
 
 /** Let fire-and-forget event listeners and debounce timers finish. */

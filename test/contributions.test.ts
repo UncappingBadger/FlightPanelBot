@@ -403,7 +403,7 @@ describe('my contributions, in a DM', () => {
 
   it('is mentioned in the pointer people get when they message the bot out of the blue', async () => {
     await say(bob, 'hello there');
-    assert.match(bob.lastText, /Send me `flights` any time to see the flights you have, or `my contributions` to see what your completed flights made for the airline\./);
+    assert.match(bob.lastText, /Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, or `metar EGLL` \(any airport code\) for a weather report in plain language\./);
   });
 
   it('keeps a long list inside what one message can carry, and still names every flight with no profit', async () => {

@@ -10,6 +10,7 @@ import type { AeroDaqClient } from '../aerodaq/client.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
+import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
 import type { DailyNote } from '../services/dailyNote.js';
 import type { FsHubSync } from '../services/fshubSync.js';
@@ -31,6 +32,8 @@ export interface BotContext {
   aerodaq: AeroDaqClient;
   /** Keeps each server's market board up to date. */
   market: MarketService;
+  /** VATSIM's public METAR service, for the `metar` message to the bot. Only asked when someone asks for a weather report. */
+  metar: MetarClient;
   /** Writes pilots' names and completions into a linked Google Sheet; null when the bot has no Google credentials. */
   writeback: SheetWriteBack | null;
   /** FsHub, for checking pilot IDs and reading an airline's roster; null when the host saved no FsHub token. */
