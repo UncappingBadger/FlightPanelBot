@@ -39,6 +39,15 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    that it goes straight to: *"Reply with the flight ID shown on the panel."*
 3. Reply with the ID (`DMO-004`, `dmo4` and `4` all work; where your airline's schedule gives flights their own
    numbers, such as `SKY123`, that number is the ID: see [Flight numbers](#flight-numbers)).
+   **To reserve several flights at once, send all their IDs in one message**: `DMO-004, DMO-007, DMO-011`, or one to a
+   line, or with `and`, `&`, `;` or a space between them. The bot reserves each one-leg flight straight away, as if you
+   had sent it alone (the airline's sheet gets your name against each), and answers once, saying how every flight went:
+   reserved, already yours, taken by someone (and who), no open flight with that ID, or too far ahead to book yet. The
+   same flight written twice, or in two ways (`DMO-004` and `4`), counts once, and the words around the IDs ("please
+   reserve ...") are ignored. A flight with several legs is not taken for you in a batch, because the bot has to ask
+   which legs you want; it names those flights and keeps the conversation open, so you send each one on its own and
+   answer the usual buttons. Up to 10 flights are taken from one message; the bot lists any it did not get to so you
+   can send them again. (Standing by as backup is still one flight at a time.)
 4. One-leg flight: you're booked and the panel updates. Several legs: the bot asks **All legs** or **Some
    legs**. For some, pick from a menu of the legs still free. If you ask for all but someone holds a leg, it
    tells you who and offers the legs that are free.
@@ -731,7 +740,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1711 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1785 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

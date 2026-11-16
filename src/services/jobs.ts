@@ -3,6 +3,7 @@ import type { SourceJob } from '../jobs/types.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
+import { flightIdChunks, MAX_ID_WORDS, MAX_SHOWN_ID } from './flightIds.js';
 import { namedForOneOf } from './pilotNames.js';
 import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
 
@@ -49,6 +50,14 @@ export interface ReserveResult {
   job: JobView;
 }
 
+/** What `JobService.findSeveral` found in a message: flights and unrecognised IDs in the order written, and the words it did not get to. */
+export interface FoundIds {
+  items: Array<{ kind: 'flight'; view: JobView } | { kind: 'unknown'; typed: string }>;
+  skipped: string[];
+}
+/** Most flights taken from one message. Each one may be written to the airline's sheet in turn, so there is a limit. */
+export const MAX_IDS_AT_ONCE = 10;
+
 const DAY = 24 * 3_600_000;
 const STALE_AFTER_MS = 7 * DAY;
 /** How long a completed flight stays on the panel, marked done. */
@@ -74,6 +83,14 @@ export const beyondDaysText = (days: number, code: string, verb: 'book' | 'stand
   const d = `${days} day${days === 1 ? '' : 's'}`;
   return `You can't ${verb} flights more than ${d} ahead, and **${code}** starts further off than that. It will be open for booking once it comes within ${d}.`;
 };
+/** The same, for flights asked for together (several IDs in one message): one sentence naming all of them. */
+export const beyondDaysManyText = (days: number, codes: string[]): string => {
+  if (codes.length === 1) return beyondDaysText(days, codes[0]!, 'book');
+  const d = `${days} day${days === 1 ? '' : 's'}`;
+  return `You can't book flights more than ${d} ahead, and ${andList(codes.map((c) => `**${c}**`))} start further off than that. They will be open for booking once they come within ${d}.`;
+};
+/** "a", "a and b", "a, b and c". */
+export const andList = (items: string[]): string => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 /** Is this flight one the panel lists: open now, or starting within the panel's days? The search uses the same rule, so it never finds more than the panel shows. */
 export const inPanelWindow = (job: { availableFrom: number | null }, now: number, days: number): boolean => job.availableFrom === null || job.availableFrom <= now + panelHorizonMs(days);
 /**
@@ -359,6 +376,49 @@ export class JobService {
     // A deadline that has just passed counts as closed even if the sweep hasn't run yet.
     if (job.deadline !== null && job.deadline <= this.now()) return null;
     return this.store.getJobView(job.id);
+  }
+
+  /**
+   * Every flight named in a message that may hold several IDs (`DMO-004, DMO-007 and DMO-011`, or one to a line), in the
+   * order they were written, each flight once however many times or ways it was named. A word that names no open flight
+   * is reported back as `unknown` when it has a number in it (it looks like an ID that was mistyped, or is closed); a word with
+   * no number in it is a word of the sentence ("please", "reserve") and is left out. Each word is tried on its own first and
+   * is only joined to the next when it is not a flight by itself, so `DMO 7` is one flight and `7 8` is two. At most `max`
+   * flights are taken; the words after that are given back in `skipped` to be sent again. Like `findByCode` it does not look
+   * at the panel's days (see `isListed`).
+   */
+  findSeveral(panel: Panel, text: string, max = MAX_IDS_AT_ONCE): FoundIds {
+    const items: FoundIds['items'] = [];
+    const skipped: string[] = [];
+    const seenFlights = new Set<number>();
+    const seenWords = new Set<string>();
+    const shown = (w: string) => w.slice(0, MAX_SHOWN_ID);
+    let looked = 0;
+    for (const words of flightIdChunks(text)) {
+      for (let i = 0; i < words.length; i++) {
+        const word = words[i]!;
+        if (seenFlights.size >= max || looked >= MAX_ID_WORDS) {
+          if (/\d/.test(word) && !skipped.some((s) => s.toUpperCase() === shown(word).toUpperCase())) skipped.push(shown(word));
+          continue;
+        }
+        looked++;
+        let view = this.findByCode(panel, word);
+        if (!view && i + 1 < words.length) {
+          view = this.findByCode(panel, `${word}${words[i + 1]}`);
+          if (view) i++;
+        }
+        if (view) {
+          if (!seenFlights.has(view.job.id)) {
+            seenFlights.add(view.job.id);
+            items.push({ kind: 'flight', view });
+          }
+        } else if (/\d/.test(word) && !seenWords.has(word.toUpperCase())) {
+          seenWords.add(word.toUpperCase());
+          items.push({ kind: 'unknown', typed: shown(word) });
+        }
+      }
+    }
+    return { items, skipped };
   }
 
   /** The flights the panel lists: open now or starting within the panel's days. These are the only ones a pilot can reach. */

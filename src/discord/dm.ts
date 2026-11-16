@@ -16,7 +16,7 @@ import {
 import type { DmSession, FlownFlight, Holder, JobView, Panel, SessionPurpose } from '../db/store.js';
 import { str } from '../jobs/import.js';
 import { confirmationsFor, landingWindow } from '../services/flightMatch.js';
-import { beyondDaysText, JobError, type ReserveResult } from '../services/jobs.js';
+import { andList, beyondDaysManyText, beyondDaysText, JobError, MAX_IDS_AT_ONCE, type FoundIds, type ReserveResult } from '../services/jobs.js';
 import { looksLikeMetar } from '../services/metar.js';
 import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
@@ -58,8 +58,8 @@ function takenBy(t: { holder: Holder | null; sheetHolder: string | null }): stri
   return `**${plainText(truncate(t.sheetHolder ?? 'someone', 40))}** (named in the airline's schedule)`;
 }
 
-/** What happened when someone tried to reserve, in plain words. */
-export function outcomeText(res: ReserveResult): string {
+/** What happened to one flight when someone tried to reserve it, a line for each thing that happened. */
+function outcomeLines(res: ReserveResult): string[] {
   const view = res.job;
   const code = view.job.code;
   const single = view.legs.length === 1;
@@ -74,20 +74,36 @@ export function outcomeText(res: ReserveResult): string {
   for (const t of res.taken) {
     lines.push(`⚠️ ${single ? `**${code}** is` : `Leg ${t.legNo} (${legText(view.legs.find((l) => l.legNo === t.legNo) ?? { dep: '?', arr: '?' })}) is`} already taken by ${takenBy(t)}.`);
   }
-  if (res.reserved.length > 0) lines.push('The panel has been updated with your name.');
-  else if (res.alreadyMine.length === 0) lines.push('Nothing was reserved.');
-  return lines.join('\n');
+  return lines;
+}
+
+/** The closing line of a reservation's outcome: the panel has been updated, or nothing was reserved (said nothing when the person already had what they asked for). */
+const outcomeFooter = (reservedAny: boolean, alreadyMineAny: boolean): string | null =>
+  reservedAny ? 'The panel has been updated with your name.' : alreadyMineAny ? null : 'Nothing was reserved.';
+
+/** What happened when someone tried to reserve, in plain words. */
+export function outcomeText(res: ReserveResult): string {
+  const footer = outcomeFooter(res.reserved.length > 0, res.alreadyMine.length > 0);
+  return [...outcomeLines(res), ...(footer ? [footer] : [])].join('\n');
 }
 
 /** An ID to give as an example: that of a flight that is really on the panel (it may be a flight number from the schedule), else the automatic form. */
 const exampleId = (ctx: BotContext, panel: Panel): string => ctx.jobs.listed(panel)[0]?.job.code ?? `${panel.prefix}-001`;
 
-const askCodeText = (ctx: BotContext, panel: Panel) =>
-  [
+/** A second example, so the line about sending several IDs at once can show what that looks like; null when the panel lists only one flight. */
+const exampleTwoIds = (ctx: BotContext, panel: Panel): string | null => {
+  const [a, b] = ctx.jobs.listed(panel);
+  return a && b ? `${a.job.code}, ${b.job.code}` : null;
+};
+
+const askCodeText = (ctx: BotContext, panel: Panel) => {
+  const two = exampleTwoIds(ctx, panel);
+  return [
     `**Reserve a flight for ${panel.airlineName}.**`,
-    `Reply with the flight ID shown on the panel, for example \`${exampleId(ctx, panel)}\`.`,
+    `Reply with the flight ID shown on the panel, for example \`${exampleId(ctx, panel)}\`.${two ? ` To reserve several at once, send their IDs in one message, like \`${two}\`.` : ''}`,
     'Say `cancel` to stop. This conversation closes in 10 minutes.',
   ].join('\n');
+};
 
 /** An ID to give as an example when standing by: a flight this person could really be the backup for, else any on the panel. */
 const exampleBackupId = (ctx: BotContext, panel: Panel, discordId: string): string => ctx.jobs.backupCandidates(panel, discordId)[0]?.job.code ?? exampleId(ctx, panel);
@@ -140,9 +156,32 @@ function writesToSheet(ctx: BotContext, panel: Panel, legCount: number): boolean
  * be reached the reservation stands, and the person is told it isn't in the sheet yet.
  */
 async function reserveFor(ctx: BotContext, user: Person, jobId: number, legNos: number[]): Promise<string> {
+  const { res, sheet } = await reserveAndClaim(ctx, user, jobId, legNos);
+  const code = res.job.job.code;
+  switch (sheet.kind) {
+    case 'none':
+      return outcomeText(res);
+    case 'undone':
+      return `⚠️ ${sheet.message} So I haven't reserved **${code}** for you.`;
+    case 'unreachable':
+      return `${outcomeText(res)}\n⚠️ I couldn't update the airline's sheet (${sheet.message}), so it doesn't show your name yet. Please ask a manager to add you to **${code}** there.`;
+    case 'written':
+      return `${outcomeText(res)}\n📝 I've put **${plainText(sheet.name)}** against it in the airline's sheet. Not how you appear there? Reply \`name <your name>\` and I'll use that from now on.`;
+  }
+}
+
+/** What happened in the airline's sheet when a reservation was made. */
+type SheetResult =
+  | { kind: 'none' } // the sheet is not involved (no write-back, several legs), or nothing was reserved
+  | { kind: 'written'; name: string } // the person's name is against the flight there
+  | { kind: 'undone'; message: string } // the sheet already names someone else, or shows the flight finished: the reservation was undone
+  | { kind: 'unreachable'; message: string }; // the sheet could not be written to: the reservation stands
+
+/** Reserve the legs, and put the pilot's name in the airline's sheet where that is kept (see `reserveFor`). */
+async function reserveAndClaim(ctx: BotContext, user: Person, jobId: number, legNos: number[]): Promise<{ res: ReserveResult; sheet: SheetResult }> {
   const res = ctx.jobs.reserve(jobId, legNos, { discordId: user.id, username: user.username });
   const panel = ctx.store.getPanel(res.job.job.panelId);
-  if (res.reserved.length === 0 || !panel || !writesToSheet(ctx, panel, res.job.legs.length)) return outcomeText(res);
+  if (res.reserved.length === 0 || !panel || !writesToSheet(ctx, panel, res.job.legs.length)) return { res, sheet: { kind: 'none' } };
 
   const job = res.job.job;
   const name = pilotNameFor(ctx, user);
@@ -154,13 +193,13 @@ async function reserveFor(ctx: BotContext, user: Person, jobId: number, legNos: 
       // Someone got there first in the sheet. The sheet is the airline's record, so it wins.
       if (e.code === 'CONFLICT' && e.existing) ctx.store.setLegSheetHolder(job.id, 1, truncate(e.existing, 40));
       ctx.jobs.release(job.id, user.id, res.reserved);
-      return `⚠️ ${e.message} So I haven't reserved **${job.code}** for you.`;
+      return { res, sheet: { kind: 'undone', message: e.message } };
     }
     ctx.log.warn(`Could not write ${job.code} to the sheet: ${e.message}`);
-    return `${outcomeText(res)}\n⚠️ I couldn't update the airline's sheet (${e.message}), so it doesn't show your name yet. Please ask a manager to add you to **${job.code}** there.`;
+    return { res, sheet: { kind: 'unreachable', message: e.message } };
   }
   for (const legNo of res.reserved) ctx.store.setReservationSheetName(job.id, legNo, name);
-  return `${outcomeText(res)}\n📝 I've put **${plainText(name)}** against it in the airline's sheet. Not how you appear there? Reply \`name <your name>\` and I'll use that from now on.`;
+  return { res, sheet: { kind: 'written', name } };
 }
 
 /** After legs are given back: take the name the bot wrote off the sheet. Best effort; the sheet is the airline's, so failures are only noted. */
@@ -1000,7 +1039,22 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
-  const view = ctx.jobs.findByCode(panel, text);
+  let view: JobView | null;
+  if (session.purpose === 'backup') {
+    view = ctx.jobs.findByCode(panel, text);
+  } else {
+    // Reserving: the message can name several flights (`TST-001, TST-004 and TST-009`). One flight, or none that can be
+    // made out, goes the way it always has; two or more are reserved together.
+    const found = ctx.jobs.findSeveral(panel, text);
+    const flights = found.items.flatMap((i) => (i.kind === 'flight' ? [i.view] : []));
+    const unknown = found.items.length - flights.length;
+    if (found.skipped.length === 0 && ((flights.length === 0 && unknown <= 1) || (flights.length === 1 && unknown === 0))) {
+      view = flights[0] ?? null;
+    } else {
+      await reserveSeveral(ctx, user, session, panel, found);
+      return;
+    }
+  }
   if (!view) {
     const attempts = session.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) {
@@ -1033,12 +1087,13 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
   await proceedWithJob(ctx, user, session, view);
 }
 
-/** Found the flight: take it straight away if it has one leg, otherwise ask which legs. */
+/** Found the flight: take it straight away if it has one leg, otherwise ask which legs. `note` is said first (what was wrong with other IDs sent with it). */
 async function proceedWithJob(
   ctx: BotContext,
   user: Message['author'],
   session: DmSession,
   view: JobView,
+  note = '',
 ): Promise<void> {
   if (view.legs.length === 1) {
     ctx.store.deleteSession(user.id);
@@ -1048,9 +1103,122 @@ async function proceedWithJob(
   ctx.store.upsertSession({ ...session, step: 'await_mode', jobId: view.job.id, pendingLegs: [], attempts: 0, expiresAt: ctx.now() + SESSION_TTL_MS });
   await say(
     user,
-    `${jobBlock(view, ctx.now())}\n\n**${view.job.code}** has ${view.legs.length} legs. Are you flying all of them, or just some?`,
+    `${note ? `${note}\n\n` : ''}${jobBlock(view, ctx.now())}\n\n**${view.job.code}** has ${view.legs.length} legs. Are you flying all of them, or just some?`,
     [row(button('dm:all', 'All legs', ButtonStyle.Success), button('dm:some', 'Some legs', ButtonStyle.Primary), button('dm:cancel', 'Cancel', ButtonStyle.Secondary))],
   );
+}
+
+/** IDs the person typed, as they are shown back: `A`, `B`, `C`. */
+const typedList = (typed: string[]): string => typed.map((t) => `\`${t}\``).join(', ');
+
+/**
+ * Two or more flight IDs came in one message. A flight with one leg is reserved straight away, one after another, each just as
+ * if it had been sent on its own (the airline's sheet included), and the answer says how each went. A flight with several legs
+ * has to be asked about (all of it, or some?), so it is left for the person to send by itself, and the conversation stays open
+ * for that. IDs that are not open flights, and flights too far ahead to book, are said once at the end. If nothing at all could
+ * be used, that is one wrong try, like any other.
+ */
+async function reserveSeveral(ctx: BotContext, user: Message['author'], session: DmSession, panel: Panel, found: FoundIds): Promise<void> {
+  const flights = found.items.flatMap((i) => (i.kind === 'flight' ? [i.view] : []));
+  const unknown = found.items.flatMap((i) => (i.kind === 'unknown' ? [i.typed] : []));
+  const beyond = flights.filter((v) => !ctx.jobs.isListed(panel, v));
+  const listed = flights.filter((v) => ctx.jobs.isListed(panel, v));
+  const singles = listed.filter((v) => v.legs.length === 1);
+  const multis = listed.filter((v) => v.legs.length > 1);
+
+  // What can't be used, said once each: IDs that are not open flights, flights too far ahead to book, and what was too much for one message.
+  const unusable: string[] = [];
+  if (unknown.length > 0) unusable.push(`❓ I can't find ${unknown.length === 1 ? 'an open flight with the ID' : 'open flights with the IDs'} ${typedList(unknown)}.`);
+  if (beyond.length > 0) unusable.push(beyondDaysManyText(panel.showDays, beyond.map((v) => v.job.code)));
+  if (found.skipped.length > 0) {
+    const shown = found.skipped.slice(0, 5);
+    const more = found.skipped.length - shown.length;
+    const why = flights.length >= MAX_IDS_AT_ONCE ? `I take up to ${MAX_IDS_AT_ONCE} flights at a time` : "That's a lot for one message";
+    unusable.push(`${why}, so I haven't looked at ${typedList(shown)}${more > 0 ? ` and ${more} more` : ''}. Send ${found.skipped.length === 1 ? 'it' : 'them'} again.`);
+  }
+
+  if (listed.length === 0) {
+    const attempts = session.attempts + 1;
+    if (attempts >= MAX_ATTEMPTS) {
+      ctx.store.deleteSession(user.id);
+      await say(user, `${unusable.join('\n')}\nThat's a few IDs I couldn't use, so I've closed this. Press ${startButton(session.purpose)} on the panel to start again.`);
+      return;
+    }
+    ctx.store.upsertSession({ ...session, jobId: null, attempts, expiresAt: ctx.now() + SESSION_TTL_MS });
+    const tail = unknown.length > 0 && beyond.length === 0 ? `IDs look like \`${exampleId(ctx, panel)}\` and are listed on the panel. Try again, or say \`cancel\`.` : 'Send different flight IDs, or say `cancel`.';
+    await say(user, `${unusable.join('\n')}\n${tail}`);
+    return;
+  }
+
+  // Only one flight can be acted on and it has several legs: ask about its legs the usual way, with what was wrong with the rest above the question.
+  if (singles.length === 0 && multis.length === 1 && found.skipped.length === 0) {
+    await proceedWithJob(ctx, user, session, multis[0]!, unusable.join('\n'));
+    return;
+  }
+
+  // Finished with first, so a message that arrives while the airline's sheet is being written to is not read as part of this conversation.
+  ctx.store.deleteSession(user.id);
+  const lines: string[] = [];
+  let reservedAny = false;
+  let alreadyMineAny = false;
+  let sheetName = '';
+  const written: string[] = [];
+  const unreachable = new Map<string, string[]>();
+  for (const view of singles) {
+    const code = view.job.code;
+    try {
+      const { res, sheet } = await reserveAndClaim(ctx, user, view.job.id, [1]);
+      if (sheet.kind === 'undone') {
+        lines.push(`⚠️ ${sheet.message} So I haven't reserved **${code}** for you.`);
+        continue;
+      }
+      lines.push(...outcomeLines(res));
+      reservedAny ||= res.reserved.length > 0;
+      alreadyMineAny ||= res.alreadyMine.length > 0;
+      if (sheet.kind === 'written') {
+        sheetName = sheet.name;
+        written.push(code);
+      } else if (sheet.kind === 'unreachable') {
+        unreachable.set(sheet.message, [...(unreachable.get(sheet.message) ?? []), code]);
+      }
+    } catch (e) {
+      if (e instanceof JobError) {
+        lines.push(`⚠️ ${e.message}`);
+        continue;
+      }
+      // One flight going wrong must not take the others' answers with it: say so and carry on.
+      ctx.log.error(`Could not reserve ${code} for ${user.id}: ${e instanceof Error ? e.message : e}`);
+      lines.push(`⚠️ Something went wrong with **${code}**. Press **My flights** under the panel to see whether you have it.`);
+    }
+  }
+  const footer = outcomeFooter(reservedAny, alreadyMineAny);
+  if (footer) lines.push(footer);
+  if (written.length > 0) {
+    lines.push(
+      `📝 I've put **${plainText(sheetName)}** against ${written.length === 1 ? `**${written[0]}**` : `${written.length} of them`} in the airline's sheet. Not how you appear there? Reply \`name <your name>\` and I'll use that from now on.`,
+    );
+  }
+  for (const [message, codes] of unreachable) {
+    lines.push(`⚠️ I couldn't update the airline's sheet (${message}), so it doesn't show your name on ${andList(codes.map((c) => `**${c}**`))} yet. Please ask a manager to add you to ${codes.length === 1 ? 'it' : 'them'} there.`);
+  }
+
+  const notes = [...unusable];
+  if (multis.length > 0) {
+    notes.push(
+      `↪️ ${andList(multis.map((v) => `**${v.job.code}**`))} ${multis.length === 1 ? 'has' : 'have'} several legs, so I need to know which you're flying. Send me ${multis.length === 1 ? 'its ID' : 'one of those IDs'} on its own and I'll ask.`,
+    );
+  }
+  // Still something to do: keep the conversation going, unless the person started another meanwhile.
+  if ((multis.length > 0 || found.skipped.length > 0) && !ctx.store.getSession(user.id, ctx.now())) {
+    ctx.store.upsertSession({ ...session, step: 'await_code', jobId: null, pendingLegs: [], attempts: 0, expiresAt: ctx.now() + SESSION_TTL_MS });
+    notes.push('Say `cancel` when you are done.');
+  }
+
+  // One message holds 2000 characters; a long answer is sent in two rather than cut.
+  const parts = [lines.join('\n'), notes.join('\n')].filter(Boolean);
+  const whole = parts.join('\n\n');
+  if (whole.length < 1900) await say(user, whole);
+  else for (const part of parts) await say(user, part);
 }
 
 /* ------------------------------------------------------------------ buttons and menus in the DM */
