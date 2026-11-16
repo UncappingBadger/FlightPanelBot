@@ -24,10 +24,13 @@ describe('midnight, UTC', () => {
     assert.equal(startOfUtcDay(MIDNIGHT - 1), MIDNIGHT - DAY);
     assert.equal(startOfUtcDay(MIDNIGHT + DAY - 1), MIDNIGHT);
     assert.equal(startOfUtcDay(0), 0);
+    assert.equal(startOfUtcDay(-1), -DAY, 'and before 1970 too');
+    assert.equal(startOfUtcDay(-DAY), -DAY);
+    assert.equal(startOfUtcDay(-DAY - 1), -2 * DAY);
   });
 });
 
-describe('clearing the "pilots needed" announcements at midnight', () => {
+describe('clearing the "pilots needed" announcements at 23:59', () => {
   let h: Harness;
   let d: DiscordHarness;
   const pid = () => h.panel.id;
@@ -80,19 +83,35 @@ describe('clearing the "pilots needed" announcements at midnight', () => {
   });
 
   describe('deleting them', () => {
-    it('keeps today\'s announcement, then deletes it once midnight (UTC) has passed', async () => {
+    it('keeps today\'s announcement, then deletes it at 23:59 (UTC), a minute before the next one is posted', async () => {
       const id = await announce(); // 12:00Z
       assert.equal(await d.panels.cleanReminders(), 0);
       assert.ok(alive(id), 'still there during the day');
 
-      h.clock.advance(11 * HOUR + 59 * 60_000); // 23:59Z
+      h.clock.advance(11 * HOUR + 58 * 60_000); // 23:58Z
       assert.equal(await d.panels.cleanReminders(), 0);
-      assert.ok(alive(id), 'a minute before midnight');
+      assert.ok(alive(id), 'two minutes before midnight');
 
-      h.clock.advance(60_000); // 00:00Z next day
+      h.clock.advance(60_000); // 23:59Z
       assert.equal(await d.panels.cleanReminders(), 1);
-      assert.equal(alive(id), false, 'gone at midnight');
+      assert.equal(alive(id), false, 'gone at 23:59');
       assert.deepEqual(h.store.listReminderMessages(pid()), [], 'and forgotten');
+    });
+
+    it('has the old one gone by the time the new one is posted, at midnight', async () => {
+      const id = await announce(); // 12:00Z
+      h.clock.advance(12 * HOUR); // 00:00Z next day
+      assert.equal(await d.panels.cleanReminders(), 1, 'a bot that only runs at midnight still clears it first');
+      assert.equal(alive(id), false);
+    });
+
+    it('waits for 23:59 even for one posted just before it', async () => {
+      h.clock.advance(11 * HOUR + 50 * 60_000); // 23:50Z
+      const early = await announce();
+      assert.equal(await d.panels.cleanReminders(), 0);
+      h.clock.advance(9 * 60_000); // 23:59Z
+      assert.equal(await d.panels.cleanReminders(), 1);
+      assert.equal(alive(early), false);
     });
 
     it('clears yesterday\'s but not the ones posted since midnight', async () => {
@@ -238,7 +257,7 @@ describe('clearing the "pilots needed" announcements at midnight', () => {
   });
 
   describe('the scheduler runs it', () => {
-    it('every pass, after the announcements and before the market boards, and survives a failure', async () => {
+    it('every pass, before the new list is posted and before the market boards, and survives a failure', async () => {
       const calls: string[] = [];
       const ok = new Scheduler(h.jobs, d.refresher, {
         reminders: { run: async () => calls.push('reminders') },
@@ -246,7 +265,7 @@ describe('clearing the "pilots needed" announcements at midnight', () => {
         markets: { run: async () => void calls.push('markets') },
       });
       await ok.tick();
-      assert.deepEqual(calls, ['reminders', 'cleanup', 'markets']);
+      assert.deepEqual(calls, ['cleanup', 'reminders', 'markets']);
 
       const failing = new Scheduler(h.jobs, d.refresher, {
         cleanup: { run: async () => Promise.reject(new Error('boom')) },
@@ -293,7 +312,7 @@ describe('/setup reminders cleanup', () => {
 
   it('is on for every panel to begin with, and the reply says so', async () => {
     assert.equal(h.panel.reminderCleanup, true);
-    assert.match(await run(), /deleted at midnight UTC.*`\/setup reminders cleanup:off` keeps them/);
+    assert.match(await run(), /deleted at 23:59 UTC.*`\/setup reminders cleanup:off` keeps them/);
   });
 
   it('switches off, says what that means, and remembers', async () => {
@@ -305,7 +324,7 @@ describe('/setup reminders cleanup', () => {
 
   it('switches back on', async () => {
     await run({ cleanup: 'off' });
-    assert.match(await run({ cleanup: 'on' }), /deleted at midnight UTC/);
+    assert.match(await run({ cleanup: 'on' }), /deleted at 23:59 UTC/);
     assert.equal(h.store.getPanel(h.panel.id)!.reminderCleanup, true);
   });
 
@@ -318,8 +337,8 @@ describe('/setup reminders cleanup', () => {
 
   it('says nothing about tidying when reminders are off altogether', async () => {
     const reply = await run({ mode: 'off' });
-    assert.match(reply, /Off\. Flights without a pilot are not announced\./);
-    assert.doesNotMatch(reply, /midnight/);
+    assert.match(reply, /Off\. Flights without a pilot are not listed\./);
+    assert.doesNotMatch(reply, /midnight|23:59/);
   });
 
   it('is an option of the command, with a short description and two choices', () => {

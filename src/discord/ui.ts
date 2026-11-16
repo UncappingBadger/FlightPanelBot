@@ -608,7 +608,16 @@ function reminderLine(r: Reminder, now: number): string {
   return [head.join(' · '), [when, partial].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
 }
 
-/** The channel message asking pilots to take flights that have nobody on them. Null if reminders are off. */
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** The UTC day a moment falls in, as people say it: "Monday 16 November". */
+export function utcDayLabel(ms: number): string {
+  const d = new Date(ms);
+  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/** The channel message listing the day's flights that have nobody on them, asking pilots to take them. Null if reminders are off. */
 export function renderReminder(panel: Panel, due: Reminder[], now: number) {
   const target = reminderTarget(panel);
   if (!target || due.length === 0) return null;
@@ -621,7 +630,7 @@ export function renderReminder(panel: Panel, due: Reminder[], now: number) {
     `Can you take ${many ? 'one' : 'it'}? Press **Reserve** below and reply to my DM with the flight ID.`,
   ].join('\n\n');
   return {
-    content: `${target.text} ✈️ ${due.length} flight${many ? 's' : ''} ${many ? 'have' : 'has'} no pilot yet and ${many ? 'start' : 'starts'} within 24 hours.`,
+    content: `${target.text} ✈️ ${due.length} flight${many ? 's' : ''} on ${utcDayLabel(now)} (UTC) ${many ? 'have' : 'has'} no pilot yet.`,
     embeds: [
       new EmbedBuilder()
         .setColor(COLORS.error)

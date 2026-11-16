@@ -155,12 +155,13 @@ When it is on, reserving a flight puts the pilot's name in the sheet's Pilot col
 and **Complete** ticks the *Flight Completed* box. DM the bot `name <your name>` if you appear in the sheet under
 a different name than your Discord one.
 
-**Flights with no pilot get announced.** A day before a flight starts (when its landing window opens, or its
-deadline if it has no start time), if nobody has it, the bot posts once in the panel's channel: a ping, the
-flights that still need someone, and a **Reserve** button. One message covers every such flight, listing the
-soonest 12. For a multi-leg flight it says which legs are open. A flight is announced once, and again only if
-it gets a pilot and later loses them. A pilot named in a linked Google Sheet counts as a pilot. Flights whose
-window is already open and still unclaimed are announced the first time the bot sees them.
+**Flights with no pilot get listed once a day.** At **midnight UTC** the bot posts once in the panel's channel: a ping,
+the flights that start *that day* and still have nobody, and a **Reserve** button. A flight belongs to the day its landing
+window opens (its deadline, if it has no start time), however early or late in the day that is, so there is one message a
+day however differently the flights open, and nothing else is pinged that day. It lists the soonest 12 and, for a
+multi-leg flight, says which legs are open. A pilot named in a linked Google Sheet counts as a pilot. A day on which
+every flight has a pilot gets no message. A flight that loses its pilot later in the day is not announced again: the pilot
+who gave it back is sent a direct message instead (see below).
 
 **Times are shown in each person's own timezone.** Everything on the panel and in the bot's messages uses
 Discord timestamps, which each person's Discord app converts to their own timezone and date format (plus a
@@ -277,7 +278,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup template` | Download an example flights file (itself a valid import). |
 | `/setup release code [leg] [airline]` | Free someone's reservation on a flight (they're told). |
 | `/setup panels` | List panels with open flights and how many legs are reserved. |
-| `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged when a flight has no pilot 24 hours before it starts. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each announcement at midnight UTC; `off` leaves them in the channel. With no options it shows the current setting. |
+| `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged by the midnight (UTC) list of the day's flights that have no pilot. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each list at 23:59 UTC; `off` leaves them in the channel. With no options it shows the current setting. |
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
 | `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
@@ -550,21 +551,32 @@ own `PREFIX-NNN` one. The rules, so nothing surprising happens:
 
 ### Pilot reminders
 
-The announcement described above is on for every panel. Discord only lets a bot ping `@here` or a role that
+The daily list described above is on for every panel. Discord only lets a bot ping `@here` or a role that
 isn't set to "mentionable" if the bot has the **Mention Everyone** permission in that channel, so grant it (or
 make the role mentionable). Without it the message still appears, but nobody is notified. `/setup reminders`
-warns you when that is the case. The check runs once a minute, a failed post is retried after an hour, and
-nothing is posted for a panel whose channel the bot can't write in.
+warns you when that is the case. The check runs once a minute, a failed post is retried after an hour (until 22:00 UTC),
+and nothing is posted for a panel whose channel the bot can't write in.
 
-**The channel tidies itself at midnight.** The bot remembers each announcement it posts and deletes it at the
-next midnight **UTC** (UTC because every flight time here is Zulu, whatever timezone the host's PC is set to), so
-old pings don't pile up. An announcement posted at 12:00Z lives until 00:00Z; one posted at 23:55Z goes five
-minutes later. If the bot was off over midnight it clears the old ones as soon as it starts. It only ever
-deletes its own announcements (never the panel), treats one that someone already deleted as done, gives up on
-one it can't delete rather than trying forever, and removes a panel's announcements when you remove the panel.
-`/setup reminders cleanup:off` leaves them in the channel for that panel (`cleanup:on` turns it back on); it is
-on by default, including for panels that existed before this feature. Flights are still announced only once,
-so a flight whose announcement was cleared is not announced again unless it gets a pilot and later loses them.
+**Exactly once a day.** The bot remembers which UTC day it last dealt with each panel, so a restart never repeats the list.
+A bot that was off at midnight posts the list when it is back, as long as that is before 22:00 UTC (later than that it would
+be gone almost as soon as it appeared, so that day is let go). The first time the bot looks at a panel, whether it is new or
+this is the first start after an upgrade, it counts that day as done without posting, so nothing is ever posted at an odd
+hour; turning reminders back on in the middle of a day likewise waits for the next midnight.
+
+**The channel tidies itself at 23:59.** The bot remembers each list it posts and deletes it at **23:59 UTC** (UTC because
+every flight time here is Zulu, whatever timezone the host's PC is set to), a minute before the next one is posted, so
+old pings don't pile up. A list posted at 00:00Z lives until 23:59Z. If the bot was off at 23:59 it clears the old one as
+soon as it starts, before posting the new one. It only ever deletes its own lists (never the panel), treats one that
+someone already deleted as done, gives up on one it can't delete rather than trying forever, and removes a panel's lists
+when you remove the panel. `/setup reminders cleanup:off` leaves them in the channel for that panel (`cleanup:on` turns
+it back on); it is on by default.
+
+**When a pilot gives a flight back.** There is no ping for it. Instead, if the pilot takes themselves off a flight (from
+**My flights**) and nobody is down as its backup, the bot sends **that pilot** a direct message saying the flight is open
+again and asking them to tell anyone they know who is free to fly it (they can press **Reserve** and reply with the flight
+ID). If the flight did have a backup, the backup is told instead, as before, and the pilot is not. It is only said for a flight
+that is still open and that the panel lists, and, like any message about reserving or releasing a flight, it cannot be
+switched off. A pilot with DMs closed is told in the answer to the menu instead.
 
 ### Late-departure warnings
 
@@ -779,7 +791,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1913 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 1951 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

@@ -123,10 +123,10 @@ export class Scheduler {
       } catch (e) {
         this.log.error('Panel time check failed', e);
       }
-      // Then ask for pilots for anything that starts within a day and still has nobody.
-      await this.reminders?.run().catch((e) => this.log.error('Pilot reminders failed', e));
-      // Clear yesterday's "pilots needed" messages away (after today's are posted, so a failure there can't block either).
+      // Clear the "pilots needed" list of a day that is nearly over away (23:59 UTC), first, so it is gone before the next one is posted...
       await this.cleanup?.run().catch((e) => this.log.error('Announcement cleanup failed', e));
+      // ...then, at midnight UTC, list the day's flights that still have nobody (a failure in one cannot block the other).
+      await this.reminders?.run().catch((e) => this.log.error('Pilot reminders failed', e));
       // And keep any AeroDAQ market boards fresh.
       await this.markets?.run().catch((e) => this.log.error('Market boards failed', e));
       // FsHub's work goes on beside this pass, not inside it.

@@ -619,11 +619,60 @@ function pilotIdNote(ctx: BotContext, discordId: string): string {
   return `\nYour FsHub pilot ID is shown as ${pilotLabel(link.fshubId, link.name)}${from}. Wrong? DM me \`fshub <your ID>\`.`;
 }
 
+/** A flight a pilot gave back that is open again, and the legs they gave back. */
+export interface OpenAgain {
+  view: JobView;
+  legs: number[];
+}
+
+/**
+ * Of the flights a pilot has just given back, the ones that are open again with nobody standing by for them: not the ones that had a backup
+ * (the backup is told, and takes it if they can), not ones that have finished or passed their deadline, and not ones the panel does not
+ * list yet (nobody can book those). Soonest first.
+ */
+function openAgain(ctx: BotContext, panelId: number, givenBack: Map<number, number[]>, hadBackup: Set<number>): OpenAgain[] {
+  const panel = ctx.store.getPanel(panelId);
+  if (!panel) return [];
+  const out: OpenAgain[] = [];
+  for (const [jobId, legs] of givenBack) {
+    if (hadBackup.has(jobId)) continue;
+    const view = ctx.jobs.view(jobId);
+    if (!view || view.job.status !== 'open' || view.job.completedAt !== null) continue;
+    if (view.job.deadline !== null && view.job.deadline <= ctx.now()) continue;
+    if (!ctx.jobs.isListed(panel, view)) continue;
+    out.push({ view, legs: [...new Set(legs)].sort((a, b) => a - b) });
+  }
+  return out.sort((a, b) => (a.view.job.availableFrom ?? a.view.job.deadline ?? 0) - (b.view.job.availableFrom ?? b.view.job.deadline ?? 0) || a.view.job.id - b.view.job.id);
+}
+
+/**
+ * What a pilot is told after giving a flight back that nobody is standing by for: it is open again, and if anyone they know is free to
+ * fly it they should say so. Null when there is nothing to say.
+ */
+export function openAgainText(items: OpenAgain[]): string | null {
+  if (items.length === 0) return null;
+  const line = (i: OpenAgain) => {
+    const { view, legs } = i;
+    const partial = view.legs.length > 1 ? ` ${legs.length === 1 ? 'leg' : 'legs'} ${legList(legs)}` : '';
+    return `**${view.job.code}**${partial} (${routeText(view.legs.filter((l) => legs.includes(l.legNo)))})`;
+  };
+  const many = items.length > 1;
+  const flights = many ? `:\n${items.map((i) => `• ${line(i)}`).join('\n')}\n` : ` ${line(items[0] as OpenAgain)}, `;
+  return [
+    `You've given back${flights}${many ? 'Nobody is down as backup, so they are' : 'and nobody is down as its backup, so it is'} open again.`,
+    `If anyone you know is free to fly ${many ? 'them' : 'it'}, let them know: they can press **Reserve** on the panel and reply with the flight ID.`,
+  ].join(many ? '\n' : ' ');
+}
+
 async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInteraction, panelId: number): Promise<void> {
   await interaction.deferUpdate();
   const freed: string[] = [];
   const stoodDown: string[] = [];
   const written: Array<{ sourceKey: string; name: string }> = [];
+  // Which flights had a backup before anything was given back (giving a flight back ends its backup's spot), and which legs went from each.
+  const hadBackup = new Set<number>();
+  const seen = new Set<number>();
+  const givenBack = new Map<number, number[]>();
   for (const value of interaction.values) {
     if (value.startsWith('b:')) {
       const backupJob = ctx.store.getJob(Number(value.slice(2)));
@@ -635,8 +684,13 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
     const job = ctx.store.getJob(jobId as number);
     if (!job || job.panelId !== panelId) continue;
     const name = ctx.store.getHolder(job.id, legNo as number)?.sheetName ?? null;
+    if (!seen.has(job.id)) {
+      seen.add(job.id);
+      if (ctx.jobs.view(job.id)?.backup) hadBackup.add(job.id);
+    }
     const done = ctx.jobs.release(job.id, interaction.user.id, [legNo as number]);
     if (done.length > 0) {
+      givenBack.set(job.id, [...(givenBack.get(job.id) ?? []), ...done]);
       freed.push(`${job.code} leg ${legNo}`);
       if (name) written.push({ sourceKey: job.sourceKey, name });
     }
@@ -649,8 +703,19 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
       : outcomes.includes('cleared')
         ? "\nI've taken your name off the airline's sheet too."
         : '';
+  // A flight given back with nobody standing by for it is open again, and nobody will say so: the pilot who gave it back is asked to tell people.
+  const spread = openAgainText(openAgain(ctx, panelId, givenBack, hadBackup));
+  let spreadNote = '';
+  if (spread) {
+    try {
+      await interaction.user.send({ content: spread, allowedMentions: noPings });
+    } catch (e) {
+      if (!isDmClosed(e)) ctx.log.warn(`Could not tell ${interaction.user.id} that a flight they gave back is open`, e);
+      spreadNote = `\n${spread}`; // their DMs are closed, so it is said here instead
+    }
+  }
   const said = [
-    freed.length > 0 ? `Released: ${freed.join(', ')}. The panel is updated and those legs are free again.${note}` : '',
+    freed.length > 0 ? `Released: ${freed.join(', ')}. The panel is updated and those legs are free again.${note}${spreadNote}` : '',
     stoodDown.length > 0 ? `You're no longer the backup for ${stoodDown.join(', ')}.` : '',
   ].filter(Boolean);
   await interaction.editReply({

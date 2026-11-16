@@ -2,8 +2,19 @@ import type { JobView, Panel, Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import type { JobService } from './jobs.js';
 
-/** A flight with no pilot is announced this long before it starts. */
-export const REMINDER_LEAD_MS = 24 * 3_600_000;
+export const DAY_MS = 86_400_000;
+/** The first moment of the UTC day that `ms` falls in. UTC (Zulu) because every flight time here is Zulu, whatever timezone the host's PC is set to. */
+export function startOfUtcDay(ms: number): number {
+  return ms - (((ms % DAY_MS) + DAY_MS) % DAY_MS);
+}
+
+/** The "pilots needed" announcement is deleted this long before midnight UTC (23:59), so the old one is gone before the new one is posted. */
+export const CLEANUP_BEFORE_MIDNIGHT_MS = 60_000;
+/**
+ * A list that was not posted at midnight (the bot was off) is still posted if the bot comes back before this long into the day (22:00 UTC); after
+ * that it would be gone almost as soon as it appeared, so that day is let go.
+ */
+export const CATCH_UP_UNTIL_MS = 22 * 3_600_000;
 /** After a failed announcement (the bot can't write in the channel), wait this long before trying again. */
 const RETRY_AFTER_FAILURE_MS = 60 * 60_000;
 
@@ -30,11 +41,15 @@ export function openLegsOf(view: JobView): number[] {
 }
 
 /**
- * Watches for flights that still have no pilot 24 hours before they start and announces each one
- * once, in a single message per panel. Knows nothing about Discord: `deliver` does the posting.
+ * Once a day, at midnight UTC, lists the flights that start that day and still have no pilot, in a single message per panel,
+ * whenever each of them opens and however far off it was a moment ago. Nothing else is posted for them that day: a flight
+ * that loses its pilot later is not announced (the pilot who gave it back is asked to spread the word instead, in a DM).
+ * Knows nothing about Discord: `deliver` does the posting.
  *
- * A flight is announced again only if it gets a pilot and later loses them, so nobody is nagged
- * about the same flight over and over.
+ * Which day a flight belongs to is the UTC day its window opens (its deadline, for a flight with no start). The day a panel was last
+ * dealt with is kept in the database (`remindedDay`), so a restart does not repeat the list and a bot that was off at midnight still posts it,
+ * if it is back before 22:00. A panel's first pass counts that day as done without posting, so adding a panel, or installing this version,
+ * never sends a list at some odd hour.
  */
 export class ReminderService {
   private readonly now: () => number;
@@ -51,14 +66,14 @@ export class ReminderService {
     this.log = opts.logger ?? silentLogger;
   }
 
-  /** The flights on this panel that need announcing right now, soonest first. */
+  /** The flights on this panel that start today (UTC) and still have nobody on some leg, soonest first. */
   due(panel: Panel): Reminder[] {
     const now = this.now();
+    const dayStart = startOfUtcDay(now);
     const out: Reminder[] = [];
     for (const view of this.jobs.open(panel.id)) {
       const startsAt = startOf(view);
-      if (startsAt === null || view.job.remindedAt !== null) continue;
-      if (startsAt - REMINDER_LEAD_MS > now) continue; // more than a day away
+      if (startsAt === null || startsAt < dayStart || startsAt >= dayStart + DAY_MS) continue; // not a flight of today
       if (view.job.deadline !== null && view.job.deadline <= now) continue; // too late to ask
       const openLegs = openLegsOf(view);
       if (openLegs.length > 0) out.push({ view, openLegs, startsAt });
@@ -66,26 +81,32 @@ export class ReminderService {
     return out.sort((a, b) => a.startsAt - b.startsAt || a.view.job.id - b.view.job.id);
   }
 
-  /**
-   * One pass over every panel: forget the announcement for flights that have since found a pilot,
-   * then announce the ones that need it. Returns how many messages went out.
-   */
+  /** One pass over every panel: post today's list where it has not been posted yet. Returns how many messages went out. */
   async run(): Promise<number> {
     const now = this.now();
+    const dayStart = startOfUtcDay(now);
+    const day = dayStart / DAY_MS;
     let sent = 0;
     for (const panel of this.store.listAllPanels()) {
-      if (panel.reminderMode === 'off') continue;
-
-      // A flight that has a pilot again may be announced afresh if it loses them.
-      for (const view of this.jobs.open(panel.id)) {
-        if (view.job.remindedAt !== null && openLegsOf(view).length === 0) this.store.updateJob(view.job.id, { remindedAt: null });
+      // Today is done for a panel that has nothing to say or is not to say it: reminders off (turning them on later waits for the next
+      // midnight), or a panel the bot has not dealt with before (new, or this is the first start with the daily list).
+      if (panel.reminderMode === 'off' || panel.remindedDay === null) {
+        if (panel.remindedDay !== day) this.store.updatePanel(panel.id, { remindedDay: day });
+        continue;
       }
-
+      if (panel.remindedDay >= day) continue; // already dealt with today
+      if (now - dayStart > CATCH_UP_UNTIL_MS) {
+        this.store.updatePanel(panel.id, { remindedDay: day }); // too late in the day to be worth posting
+        continue;
+      }
       const failed = this.failedAt.get(panel.id);
       if (failed !== undefined && now - failed < RETRY_AFTER_FAILURE_MS) continue;
-      const due = this.due(panel);
-      if (due.length === 0) continue;
 
+      const due = this.due(panel);
+      if (due.length === 0) {
+        this.store.updatePanel(panel.id, { remindedDay: day });
+        continue;
+      }
       let ok = false;
       try {
         ok = await this.deliver(panel, due);
@@ -97,8 +118,8 @@ export class ReminderService {
         continue;
       }
       this.failedAt.delete(panel.id);
-      for (const r of due) this.store.updateJob(r.view.job.id, { remindedAt: now });
-      this.log.info(`Asked for pilots for ${due.length} flight(s) on ${panel.airlineName}`);
+      this.store.updatePanel(panel.id, { remindedDay: day });
+      this.log.info(`Listed ${due.length} flight(s) without a pilot for today on ${panel.airlineName}`);
       sent++;
     }
     return sent;

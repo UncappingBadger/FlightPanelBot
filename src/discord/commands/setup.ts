@@ -378,7 +378,7 @@ export const setupCommand: Command = {
     .addSubcommand((s) =>
       s
         .setName('reminders')
-        .setDescription('Who is pinged when a flight still has no pilot 24 hours before it starts')
+        .setDescription('Who is pinged by the midnight (UTC) list of the day\'s flights that have no pilot')
         .addStringOption((o) =>
           o
             .setName('mode')
@@ -581,7 +581,7 @@ export const setupCommand: Command = {
             `✅ ${existing ? 'Updated' : 'Created'} the **${airlineLabel({ name: panel.airlineName, abbr: panel.airlineAbbr })}** panel in <#${channel.id}> (flight IDs look like \`${prefix}-001\`).${listed}`,
             panel.requiredRoleId ? `Only members with <@&${panel.requiredRoleId}> can reserve.` : 'Anyone who can see the channel can reserve (use `/setup panel-role` to require a role).',
             panelProblem(result),
-            existing ? '' : `A flight with no pilot 24 hours before it starts will be announced in the channel, pinging ${reminderTarget(panel)?.text}, and the announcement is deleted at midnight UTC. Change that with \`/setup reminders\`.`,
+            existing ? '' : `Once a day, at midnight UTC, the flights starting that day that still have no pilot will be listed in the channel, pinging ${reminderTarget(panel)?.text}, and the list is deleted at 23:59 UTC. Change that with \`/setup reminders\`.`,
             ctx.refresher.hasSource(panel)
               ? 'Flights refresh automatically every 24 hours.'
               : "Next: if your airline keeps its schedule in a Google Sheet, link it with `/setup sheet`. Otherwise get a file of flights with `/setup template`, fill it in, and load it with `/setup import`.",
@@ -782,14 +782,14 @@ export const setupCommand: Command = {
 
         const who =
           current.reminderMode === 'off'
-            ? 'Off. Flights without a pilot are not announced.'
-            : `A flight with no pilot 24 hours before it starts is announced in <#${current.channelId}> once, pinging ${target?.text}.`;
+            ? 'Off. Flights without a pilot are not listed.'
+            : `At midnight UTC each day, the flights starting that day that still have no pilot are listed in <#${current.channelId}> in one message, pinging ${target?.text}. Nothing else is pinged that day.`;
         const tidy =
           current.reminderMode === 'off'
             ? ''
             : current.reminderCleanup
-              ? 'Each announcement is deleted at midnight UTC, so the channel stays tidy (`/setup reminders cleanup:off` keeps them).'
-              : 'Announcements stay in the channel until someone deletes them (`/setup reminders cleanup:on` clears them at midnight UTC).';
+              ? 'Each list is deleted at 23:59 UTC, a minute before the next one, so the channel stays tidy (`/setup reminders cleanup:off` keeps them).'
+              : 'Lists stay in the channel until someone deletes them (`/setup reminders cleanup:on` clears them at 23:59 UTC).';
         await interaction.editReply({
           content: [`**${panel.airlineName}** reminders: ${who}`, tidy, warning].filter(Boolean).join('\n'),
           allowedMentions: noPings,

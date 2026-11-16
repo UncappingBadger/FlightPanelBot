@@ -27,12 +27,14 @@ export interface Panel {
   sheetGid: string | null;
   /** Anything worth an admin's attention from the last refresh, such as rows that were skipped. */
   lastRefreshNote: string | null;
-  /** Who is pinged when a flight has no pilot 24 hours before it starts. */
+  /** Who is pinged by the midnight (UTC) list of the day's flights that have no pilot, or off. */
   reminderMode: ReminderMode;
   /** The role to ping when `reminderMode` is 'role'. */
   reminderRoleId: string | null;
-  /** Whether the "pilots needed" announcements are deleted at midnight (UTC) to keep the channel tidy. */
+  /** Whether the "pilots needed" announcements are deleted at 23:59 (UTC) to keep the channel tidy. */
   reminderCleanup: boolean;
+  /** The UTC day (days since 1970-01-01) this panel's list was last dealt with, so a restart does not repeat it; null until the bot first looks at the panel. */
+  remindedDay: number | null;
   /** Whether pilots' names and completions are written back to the linked Google Sheet (when the bot is able to). */
   writeback: boolean;
   /** The airline's FsHub ID, when the panel is linked to its FsHub roster (which fills in pilots' IDs by itself). */
@@ -291,6 +293,7 @@ const toPanel = (r: Row): Panel => ({
   reminderMode: (['auto', 'role', 'off'].includes(s(r.reminder_mode)) ? s(r.reminder_mode) : 'auto') as ReminderMode,
   reminderRoleId: sn(r.reminder_role_id),
   reminderCleanup: r.reminder_cleanup === undefined || r.reminder_cleanup === null ? true : n(r.reminder_cleanup) !== 0,
+  remindedDay: nn(r.reminded_day),
   writeback: r.writeback === undefined || r.writeback === null ? true : n(r.writeback) !== 0,
   fshubAirlineId: nn(r.fshub_airline_id),
   fshubAirlineName: sn(r.fshub_airline_name),
@@ -494,6 +497,7 @@ export class Store {
       reminderMode: ReminderMode;
       reminderRoleId: string | null;
       reminderCleanup: boolean;
+      remindedDay: number | null;
       writeback: boolean;
       fshubAirlineId: number | null;
       fshubAirlineName: string | null;
@@ -548,6 +552,7 @@ export class Store {
     if (patch.fshubSyncedAt !== undefined) (sets.push('fshub_synced_at = ?'), params.push(patch.fshubSyncedAt));
     if (patch.fshubNote !== undefined) (sets.push('fshub_note = ?'), params.push(patch.fshubNote));
     if (patch.reminderCleanup !== undefined) (sets.push('reminder_cleanup = ?'), params.push(patch.reminderCleanup ? 1 : 0));
+    if (patch.remindedDay !== undefined) (sets.push('reminded_day = ?'), params.push(patch.remindedDay));
     if (patch.writeback !== undefined) (sets.push('writeback = ?'), params.push(patch.writeback ? 1 : 0));
     if (patch.reminderMode !== undefined) (sets.push('reminder_mode = ?'), params.push(patch.reminderMode));
     if (patch.reminderRoleId !== undefined) (sets.push('reminder_role_id = ?'), params.push(patch.reminderRoleId));

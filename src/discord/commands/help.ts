@@ -69,7 +69,7 @@ export const helpCommand: Command = {
             {
               name: 'Server admins',
               value:
-                '`/setup panel-add` name the airline and choose the channel for its panel, optionally with a role that may reserve\n`/setup panel-role` change that role\n`/setup sheet` read flights from your airline\'s Google Sheet schedule (every hour) · `/setup import` load flights from a CSV or JSON file instead (`/setup template` gives an example)\n`/setup window` choose how many days ahead the panel lists flights (1 to 7) · `/setup reminders` choose who is pinged when a flight has no pilot 24 hours before it starts · `/setup writeback` check or switch off writing names and completions to the sheet\n`/setup depart-warning` warn a pilot and the backup by DM shortly before the latest take-off that still makes the flight window (30 minutes by default, or off)',
+                '`/setup panel-add` name the airline and choose the channel for its panel, optionally with a role that may reserve\n`/setup panel-role` change that role\n`/setup sheet` read flights from your airline\'s Google Sheet schedule (every hour) · `/setup import` load flights from a CSV or JSON file instead (`/setup template` gives an example)\n`/setup window` choose how many days ahead the panel lists flights (1 to 7) · `/setup reminders` choose who is pinged by the midnight (UTC) list of flights with no pilot · `/setup writeback` check or switch off writing names and completions to the sheet\n`/setup depart-warning` warn a pilot and the backup by DM shortly before the latest take-off that still makes the flight window (30 minutes by default, or off)',
             },
             {
               name: 'Server admins, continued',

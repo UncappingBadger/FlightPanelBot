@@ -522,6 +522,14 @@ export const MIGRATIONS: string[] = [
 
   ALTER TABLE user_prefs ADD COLUMN notify_landing INTEGER NOT NULL DEFAULT 1;
   `,
+
+  /* v30: the "pilots needed" announcement became a single list at midnight UTC of the flights that start that day and have no pilot (it used to
+     be one announcement per flight, 24 hours before it starts, which meant several a day). 'reminded_day' is the UTC day (days since 1970-01-01) the
+     panel was last dealt with, so a restart does not repeat the list. It starts empty: the first pass over a panel counts that day as done without
+     posting. The older 'reminded_at' column of a flight is no longer used. */
+  `
+  ALTER TABLE panels ADD COLUMN reminded_day INTEGER;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

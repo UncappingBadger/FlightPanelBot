@@ -4,7 +4,7 @@ import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor } from '../services/flightMatch.js';
 import { COMPLETED_SHOW_MS, panelHorizonMs, type JobService } from '../services/jobs.js';
-import type { Reminder } from '../services/reminders.js';
+import { CLEANUP_BEFORE_MIDNIGHT_MS, DAY_MS, startOfUtcDay, type Reminder } from '../services/reminders.js';
 import { discordErrorCode, isDmClosed, isMissingAccess, isUnknownMessage } from './errors.js';
 import { availableFor } from '../services/availability.js';
 import { flightState, renderGridPanel, type GridFlight } from './gridUi.js';
@@ -51,15 +51,7 @@ export type FollowResult = { ok: true; channelId: string } | { ok: false; reason
  */
 export type PanelRefreshResult = 'updated' | 'posted' | 'skipped' | 'no-access' | 'failed';
 
-const DAY_MS = 86_400_000;
-
-/**
- * The start of the UTC day that `ms` falls in. The "pilots needed" announcements are deleted at this
- * "midnight": UTC because every flight time here is Zulu, whatever timezone the host's PC is set to.
- */
-export function startOfUtcDay(ms: number): number {
-  return ms - (((ms % DAY_MS) + DAY_MS) % DAY_MS);
-}
+export { startOfUtcDay };
 
 /** A tracked announcement the bot could not remove is given up on after this long. */
 const GIVE_UP_AFTER_MS = 3 * DAY_MS;
@@ -445,7 +437,7 @@ export class PanelService {
         return 'no-access';
       }
       const sent = await channel.send(message);
-      // Remember it, so it can be cleared at midnight (unless this panel keeps its announcements).
+      // Remember it, so it can be cleared at 23:59 UTC (unless this panel keeps its announcements).
       if (panel.reminderCleanup) this.store.addReminderMessage(panel.id, panel.channelId, sent.id, this.now());
       return 'sent';
     } catch (e) {
@@ -459,17 +451,16 @@ export class PanelService {
   }
 
   /**
-   * Delete the "pilots needed" announcements posted before the start of today (UTC): the midnight tidy-up.
-   * Panels that keep their announcements are skipped (those records are simply forgotten). A message that is
-   * already gone, or whose channel is, counts as done; a hiccup is retried on the next pass. Because it asks
-   * "posted before today" rather than "is it midnight", a bot that was off at midnight catches up when it starts.
-   * Returns how many announcements were dealt with.
+   * Delete the "pilots needed" announcements of a day once it is 23:59 UTC, a minute before the next list is posted at midnight, so the old
+   * one is gone before the new one pings. Panels that keep their announcements are skipped (those records are simply forgotten). A message
+   * that is already gone, or whose channel is, counts as done; a hiccup is retried on the next pass. Because it asks "posted on a day that is
+   * nearly over" rather than "is it 23:59", a bot that was off then catches up when it starts. Returns how many announcements were dealt with.
    */
   async cleanReminders(): Promise<number> {
     if (!this.client) return 0;
     const now = this.now();
     let done = 0;
-    for (const m of this.store.listReminderMessagesBefore(startOfUtcDay(now))) {
+    for (const m of this.store.listReminderMessagesBefore(startOfUtcDay(now + CLEANUP_BEFORE_MIDNIGHT_MS))) {
       if (!m.cleanup) {
         this.store.deleteReminderMessage(m.messageId);
         continue;
