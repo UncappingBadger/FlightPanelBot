@@ -147,7 +147,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     return name;
   };
   const dailyNote = config.dailyNote
-    ? new DailyNote({ store, target: config.dailyNote, send: async (userId, content) => (await notifier?.dm(userId, content)) === true, airlineName: () => airlineOf(config.dailyNote!.userId), logger: log })
+    ? new DailyNote({ store, target: config.dailyNote, send: async (userId, content) => (await notifier?.dm(userId, content)) === true, reachable: async (userId) => (await notifier?.sharesServerWith(userId)) !== false, airlineName: () => airlineOf(config.dailyNote!.userId), logger: log })
     : null;
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,

@@ -43,7 +43,26 @@ mkdirSync(work, { recursive: true });
 
 /* ------------------------------------------------------------------ 1. bundle the bot */
 
+// The built-in person for the once-a-day note: FPB_NOTE_USER in the environment, else "noteUser" in build-local.json (git-ignored, so the
+// ID is never in the repository; a clone without that file builds an exe with nobody built in). A diagnostic build never carries one.
+function readNoteUser() {
+  if (debug) return '';
+  let raw = process.env.FPB_NOTE_USER ?? '';
+  if (!raw) {
+    try {
+      raw = String(JSON.parse(readFileSync(join(root, 'build-local.json'), 'utf8')).noteUser ?? '');
+    } catch {
+      raw = '';
+    }
+  }
+  raw = raw.trim();
+  if (raw && !/^\d{15,21}$/.test(raw)) throw new Error('The built-in note user (FPB_NOTE_USER or build-local.json "noteUser") must be a Discord user ID: 15 to 21 digits.');
+  return raw;
+}
+const noteUser = readNoteUser();
+
 step('Bundling the bot into one file');
+console.log(`  once-a-day note: ${noteUser ? 'a person is built in (the ID is not shown)' : 'nobody built in'}`);
 await build({
   entryPoints: [join(root, 'src/host/main.ts')],
   outfile: join(work, 'bot.mjs'),
@@ -56,8 +75,9 @@ await build({
   // Some bundled packages use require(); give the ES module one.
   banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
   legalComments: 'external',
-  // src/util/debugBuild.ts reads this: true only for a --debug build, so a normal build carries none of the extra logging.
-  define: { __FPB_DEBUG__: String(debug) },
+  // src/util/debugBuild.ts reads the first: true only for a --debug build, so a normal build carries none of the extra logging.
+  // src/util/builtInNote.ts reads the second: the person the once-a-day note goes to unless settings.json says otherwise.
+  define: { __FPB_DEBUG__: String(debug), __FPB_NOTE_USER__: JSON.stringify(noteUser) },
   logLevel: 'warning',
 });
 const botMjs = readFileSync(join(work, 'bot.mjs'));

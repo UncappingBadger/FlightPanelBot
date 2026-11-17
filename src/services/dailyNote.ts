@@ -25,6 +25,11 @@ export interface DailyNoteOptions {
   send: SendNote;
   /** The airline's name for the note to use, where it can be found; null to say "the airline". */
   airlineName?: () => Promise<string | null>;
+  /**
+   * Whether the bot can reach the person at all (whether they share a server with it, since Discord does not let a bot message anyone
+   * else). When it says no, no attempt is made and the note waits for tomorrow; when it fails, an attempt is made anyway.
+   */
+  reachable?: (userId: string) => Promise<boolean>;
   now?: () => number;
   /** 0 up to but not including 1; replaceable so tests are not random. */
   random?: () => number;
@@ -245,6 +250,13 @@ export class DailyNote {
       }
       if (this.store.getKv(KV.last) === today) {
         this.store.setKv(KV.next, String(this.plan(now, true)));
+        return false;
+      }
+
+      if (this.o.reachable && !(await this.o.reachable(this.o.target.userId).catch(() => true))) {
+        // Nobody to send to from here (they are in none of this bot's servers): not a failed attempt, just not today.
+        this.store.setKv(KV.next, String(this.plan(now, true)));
+        this.log.debug('The daily note was not sent: the person is in none of the servers this bot is in');
         return false;
       }
 

@@ -36,6 +36,25 @@ export class Notifier {
     }
   }
 
+  /**
+   * Is this person in any server the bot is in? Discord only lets a bot message someone it shares a server with. A look-up that fails
+   * for any other reason says nothing either way, so it counts as yes (the message is then simply tried).
+   */
+  async sharesServerWith(discordId: string): Promise<boolean> {
+    let unsure = false;
+    for (const guild of this.client.guilds.cache.values()) {
+      try {
+        await guild.members.fetch(discordId);
+        return true;
+      } catch (e) {
+        const code = (e as { code?: unknown }).code;
+        if (code === 10007 || code === 10013) continue; // Unknown Member / Unknown User: not in this one
+        unsure = true;
+      }
+    }
+    return unsure;
+  }
+
   /** Send a person a private message. True if it went out, false if they could not be reached (closed DMs, an unknown user). */
   async dm(discordId: string, content: string): Promise<boolean> {
     try {

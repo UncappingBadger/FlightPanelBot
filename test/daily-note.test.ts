@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { dailyHours, loadConfig } from '../src/config.js';
 import { hostPaths } from '../src/host/paths.js';
+import type { Client } from 'discord.js';
+import { Notifier } from '../src/discord/notifier.js';
+import type { PanelService } from '../src/discord/panel.js';
 import { loadSettings, saveSettings, toConfig } from '../src/host/settings.js';
+import { BUILT_IN_NOTE_USER, validNoteUser } from '../src/util/builtInNote.js';
+import { silentLogger } from '../src/util/log.js';
 import { composeNote, DailyNote, FIRE_KEVIN, NOTES, REHIRE_KEVIN, signature, STALE_AFTER_MS } from '../src/services/dailyNote.js';
 import { Scheduler } from '../src/services/scheduler.js';
 import { handleDmMessage } from '../src/discord/dm.js';
@@ -299,6 +304,71 @@ describe('the once-a-day note', () => {
     });
   });
 
+  describe('when the person is in none of the servers the bot is in', () => {
+    it('sends nothing and waits for tomorrow, and that is not counted as a failed delivery', async () => {
+      const asked: string[] = [];
+      const away = build({ reachable: async (id) => (asked.push(id), false) });
+      h.clock.now = at(0, 9);
+      await away.run();
+      h.clock.now = away.plannedAt!;
+      assert.equal(await away.run(), false);
+      assert.deepEqual(sent, [], 'no attempt at all, so no failed message either');
+      assert.deepEqual(asked, [TARGET], 'asked about the person the notes are for');
+      assert.ok(away.plannedAt! >= at(1, 14) && away.plannedAt! <= at(1, 23), 'tomorrow, in the window');
+      assert.equal(h.store.getKv('daily.last'), null);
+      assert.equal(h.store.getKv('daily.sent'), null, 'the introduction has not been used up');
+    });
+
+    it('is asked only when a note is about to go, never on the checks before then', async () => {
+      let asked = 0;
+      const counting = build({ reachable: async () => (asked++, true) });
+      h.clock.now = at(0, 9);
+      await counting.run();
+      h.clock.now = counting.plannedAt! - 1;
+      await counting.run();
+      await counting.run();
+      assert.equal(asked, 0);
+      h.clock.now = counting.plannedAt!;
+      assert.equal(await counting.run(), true);
+      assert.equal(asked, 1);
+      assert.equal(await counting.run(), false, 'and not again once it has gone today');
+      assert.equal(asked, 1);
+    });
+
+    it('sends as usual when the person can be reached', async () => {
+      const here = build({ reachable: async () => true });
+      h.clock.now = at(0, 9);
+      await here.run();
+      h.clock.now = here.plannedAt!;
+      assert.equal(await here.run(), true);
+      assert.equal(sent.length, 1);
+    });
+
+    it('tries to send anyway when the check itself fails, because that says nothing about the person', async () => {
+      const unsure = build({ reachable: async () => Promise.reject(new Error('Discord is having a moment')) });
+      h.clock.now = at(0, 9);
+      await unsure.run();
+      h.clock.now = unsure.plannedAt!;
+      assert.equal(await unsure.run(), true);
+      assert.equal(sent.length, 1);
+    });
+
+    it('looks again the next day, so a person who has joined a server since gets it then', async () => {
+      let joined = false;
+      const late = build({ reachable: async () => joined });
+      h.clock.now = at(0, 9);
+      await late.run();
+      h.clock.now = late.plannedAt!;
+      await late.run();
+      assert.equal(sent.length, 0);
+      joined = true;
+      h.clock.now = late.plannedAt!;
+      assert.equal(await late.run(), true);
+      assert.equal(sent.length, 1);
+      assert.match(sent[0]!.content, /Kevin here, your scheduler/, 'and it is the introduction, as it has not been sent before');
+    });
+  });
+
   describe('which note', () => {
     it('is never the same twice until every one has been used, and then goes round again', async () => {
       h.store.setKv('daily.sent', '1');
@@ -524,6 +594,48 @@ describe('the scheduler and the note', () => {
   });
 });
 
+/* ------------------------------------------------------------------ is the person in a server the bot is in */
+
+describe('whether the bot shares a server with the person', () => {
+  const unknownMember = Object.assign(new Error('Unknown Member'), { code: 10007 });
+  const unknownUser = Object.assign(new Error('Unknown User'), { code: 10013 });
+  const guild = (fetch: (id: string) => Promise<unknown>) => ({ members: { fetch } });
+  const notifierFor = (guilds: Array<ReturnType<typeof guild>>) =>
+    new Notifier({ guilds: { cache: new Map(guilds.map((g, i) => [String(i), g])) } } as unknown as Client, {} as unknown as PanelService, silentLogger);
+
+  it('is yes when they are a member of any server the bot is in, and asks about that person', async () => {
+    const asked: string[] = [];
+    const n = notifierFor([guild(async () => Promise.reject(unknownMember)), guild(async (id) => (asked.push(id), {}))]);
+    assert.equal(await n.sharesServerWith(TARGET), true);
+    assert.deepEqual(asked, [TARGET]);
+  });
+
+  it('stops at the first server they are in', async () => {
+    let second = 0;
+    const n = notifierFor([guild(async () => ({})), guild(async () => (second++, {}))]);
+    assert.equal(await n.sharesServerWith(TARGET), true);
+    assert.equal(second, 0);
+  });
+
+  it('is no when Discord says they are not a member, or not a user, of any of them', async () => {
+    assert.equal(await notifierFor([guild(async () => Promise.reject(unknownMember)), guild(async () => Promise.reject(unknownUser))]).sharesServerWith(TARGET), false);
+  });
+
+  it('is no when the bot is in no servers at all', async () => {
+    assert.equal(await notifierFor([]).sharesServerWith(TARGET), false);
+  });
+
+  it('is yes when a look-up failed for another reason and nothing showed them to be absent (the message is then tried)', async () => {
+    const outage = Object.assign(new Error('Missing Access'), { code: 50001 });
+    assert.equal(await notifierFor([guild(async () => Promise.reject(outage)), guild(async () => Promise.reject(unknownMember))]).sharesServerWith(TARGET), true);
+    assert.equal(await notifierFor([guild(async () => Promise.reject(new Error('socket hang up')))]).sharesServerWith(TARGET), true);
+  });
+
+  it('is yes when one look-up failed but another server has them', async () => {
+    assert.equal(await notifierFor([guild(async () => Promise.reject(new Error('boom'))), guild(async () => ({}))]).sharesServerWith(TARGET), true);
+  });
+});
+
 /* ------------------------------------------------------------------ settings and config */
 
 describe('who gets it is set by the host, and nobody is by default', () => {
@@ -563,6 +675,26 @@ describe('who gets it is set by the host, and nobody is by default', () => {
       assert.equal(loadSettings(paths).dailyNote, undefined, bad);
     }
     assert.ok(existsSync(paths.settings));
+  });
+
+  it('is the person built into the build when the settings name nobody, and the settings win when they do', () => {
+    const plain = { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info' as const, fshubAccessToken: '' };
+    assert.deepEqual(toConfig(paths, plain, TARGET).dailyNote, { userId: TARGET, fromHour: 14, toHour: 23 }, 'on without anyone having to turn it on');
+    const other = '987654321098765432';
+    assert.deepEqual(toConfig(paths, { ...plain, dailyNote: { userId: other, fromHour: 8, toHour: 12 } }, TARGET).dailyNote, { userId: other, fromHour: 8, toHour: 12 });
+    for (const bad of ['', 'kevin', '123', '<@123456789012345678>']) assert.equal(toConfig(paths, plain, bad).dailyNote, undefined, `"${bad}" is not an ID`);
+  });
+
+  it('only ever takes a Discord user ID as the person built in', () => {
+    assert.equal(validNoteUser(TARGET), TARGET);
+    assert.equal(validNoteUser('12345678901234'), '', 'too short');
+    assert.equal(validNoteUser('1'.repeat(22)), '', 'too long');
+    for (const bad of ['', 'kevin', '12345678901234567x', ' 123456789012345678', undefined, null, 123456789012345678, {}]) assert.equal(validNoteUser(bad), '', String(bad));
+  });
+
+  it('is nobody in a dev run, a test, or any build that was not given a person: no ID is ever part of the source', () => {
+    assert.equal(BUILT_IN_NOTE_USER, '');
+    assert.equal(toConfig(paths, { discordToken: TOKEN, checkForUpdates: true, logLevel: 'info', fshubAccessToken: '' }).dailyNote, undefined);
   });
 
   it('can also be set in the environment, for a host that runs from a .env file', () => {

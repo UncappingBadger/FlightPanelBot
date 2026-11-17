@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { dailyHours, type Config } from '../config.js';
 import { normalizeFsHubToken } from '../fshub/client.js';
 import { parseServiceAccount } from '../google/serviceAccount.js';
+import { BUILT_IN_NOTE_USER, validNoteUser } from '../util/builtInNote.js';
 import type { HostPaths } from './paths.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -130,10 +131,15 @@ export function missingSettings(s: HostSettings): string[] {
   return out;
 }
 
-/** The settings as the bot's own config object. Throws if the Discord token isn't usable. */
-export function toConfig(paths: HostPaths, s: HostSettings): Config {
+/**
+ * The settings as the bot's own config object. Throws if the Discord token isn't usable. The once-a-day note goes to the person in
+ * settings.json when there is one, else to the person built into this build (none unless the build was given one), else nobody.
+ */
+export function toConfig(paths: HostPaths, s: HostSettings, builtInNoteUser: string = BUILT_IN_NOTE_USER): Config {
   const clientId = clientIdFromToken(s.discordToken);
   if (!clientId) throw new Error(discordTokenProblem(s.discordToken) ?? 'The Discord bot token is not usable.');
+  const builtIn = validNoteUser(builtInNoteUser);
+  const note = s.dailyNote ?? (builtIn ? { userId: builtIn, ...dailyHours(undefined, undefined) } : undefined);
   return {
     discordToken: s.discordToken,
     discordClientId: clientId,
@@ -142,7 +148,7 @@ export function toConfig(paths: HostPaths, s: HostSettings): Config {
     logLevel: s.logLevel,
     googleServiceAccountFile: existsSync(paths.googleKey) ? paths.googleKey : undefined,
     fshubToken: s.fshubAccessToken || undefined,
-    dailyNote: s.dailyNote ? { userId: s.dailyNote.userId, ...dailyHours(s.dailyNote.fromHour, s.dailyNote.toHour) } : undefined,
+    dailyNote: note ? { userId: note.userId, ...dailyHours(note.fromHour, note.toHour) } : undefined,
   };
 }
 
