@@ -193,7 +193,7 @@ export interface ParsedSchedule extends FetchedJobs {
   /** The sheet row (1 = the first row) each flight's key was read from. */
   rowOf: Map<string, number>;
   /** Zero-based column positions, or -1 if the tab has no such column. */
-  cols: { pilot: number; done: number; profit: number; pay: number };
+  cols: { pilot: number; done: number; profit: number; pay: number; distance: number };
 }
 
 /** Column titles (as `canon` writes them) that hold a flight's profit: the airline's own, not a pilot's pay. */
@@ -201,6 +201,23 @@ export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofi
 
 /** Column titles that hold what the pilot is paid for the flight (not `Pilot Paid`, which is a box ticked once they have been). */
 export const PAY_COLUMNS = ['pilotpay'];
+
+/** Column titles that hold a flight's distance in nautical miles ("Distance (NM)"). */
+export const DISTANCE_COLUMNS = ['distancenm', 'distance', 'distancenmi'];
+
+/**
+ * A distance as a manager writes it in the Distance column: `392`, `1,177`, `392.5` or `392 nm`. Null for an empty cell, a note, or anything
+ * that is not a distance above nothing.
+ */
+export function parseDistanceNm(text: string | null | undefined): number | null {
+  const m = /^\s*(\d[\d,]*(?:\.\d+)?)\s*(?:nmi?)?\s*$/i.exec(text ?? '');
+  if (!m) return null;
+  const n = Number((m[1] as string).replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 && n <= 25_000 ? n : null;
+}
+
+/** Column titles that hold where a flight stands in a day's run of flights that depend on one another (1, 2, 3, ...). */
+export const SEQUENCE_COLUMNS = ['dailyflightsequence', 'flightsequence', 'dailysequence', 'sequence'];
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -233,6 +250,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
   const iProfit = at((n) => PROFIT_COLUMNS.includes(n));
   const iPay = at((n) => PAY_COLUMNS.includes(n));
+  const iDistance = at((n) => DISTANCE_COLUMNS.includes(n));
+  const iSequence = at((n) => SEQUENCE_COLUMNS.includes(n));
   // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
   const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
 
@@ -240,6 +259,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const jobs: SourceJob[] = [];
   const rowOf = new Map<string, number>();
   const seenKeys = new Map<string, number>();
+  const blankDistances: string[] = [];
 
   for (let i = header.index + 1; i < rows.length; i++) {
     const r = rows[i] as string[];
@@ -281,6 +301,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     const completed = !cancelled && isTicked(cell(iDone));
     const heldBy = pilot && !cancelled ? str(pilot, 40) : null;
     const backupName = backup && !isCancelled(backup) ? str(backup, 40) : null;
+    // Flights that depend on one another carry a number in the sheet (1, 2, 3...) in place of a colour; it is shown with the flight.
+    const sequence = str(cell(iSequence), 20);
 
     const dayKey = `${day.y}-${String(day.m).padStart(2, '0')}-${String(day.d).padStart(2, '0')}`;
     const base = `${legs.map((l) => `${l.dep}-${l.arr}`).join('+')}@${dayKey}`;
@@ -289,6 +311,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
 
     const key = nth === 1 ? base : `${base}#${nth}`;
     rowOf.set(key, rowNo);
+    // A Distance cell with nothing in it (not a space, not a zero) is one the bot can fill in. A cancelled flight is not worth it.
+    if (iDistance >= 0 && !cancelled && (r[iDistance] ?? '') === '') blankDistances.push(key);
 
     let flightNumber: string | null = null;
     const rawNumber = cell(iFlightNo);
@@ -305,7 +329,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
       availableFrom,
       deadline,
       pay: null,
-      notes: backupName ? `Backup: ${backupName}` : null,
+      distanceNm: iDistance >= 0 ? parseDistanceNm(cell(iDistance)) : null,
+      notes: [sequence ? `Flight sequence: ${sequence}` : null, backupName ? `Backup: ${backupName}` : null].filter(Boolean).join(' · ') || null,
       closed: cancelled || completed,
       completed,
     });
@@ -336,7 +361,14 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     warnings.push(`the sheet has ${jobs.length} flights; only the last ${MAX_JOBS} are used`);
     jobs.splice(0, jobs.length - MAX_JOBS);
   }
-  return { jobs, warnings: capWarnings(warnings), rowOf, cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay } };
+  const kept = new Set(jobs.map((j) => j.key));
+  return {
+    jobs,
+    warnings: capWarnings(warnings),
+    rowOf,
+    cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, distance: iDistance },
+    ...(iDistance >= 0 ? { blankDistances: blankDistances.filter((k) => kept.has(k)) } : {}),
+  };
 }
 
 /** A schedule tab given as rows of cells (as the Sheets API returns it). Null if it isn't a schedule layout. */
@@ -355,7 +387,7 @@ export function parseSheetCsv(text: string, now: number): FetchedJobs {
   if (rows.length === 0) throw new ImportError('That sheet is empty.');
 
   const schedule = parseScheduleValues(rows, now);
-  if (schedule) return { jobs: schedule.jobs, warnings: schedule.warnings };
+  if (schedule) return { jobs: schedule.jobs, warnings: schedule.warnings, ...(schedule.blankDistances ? { blankDistances: schedule.blankDistances } : {}) };
 
   try {
     return { jobs: parseJobsFile(text, 'sheet.csv'), warnings: [] };

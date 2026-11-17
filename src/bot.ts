@@ -19,6 +19,7 @@ import { sourceSelector } from './jobs/sheet.js';
 import { FsHubClient } from './fshub/client.js';
 import { LiveFeed } from './fshub/liveFeed.js';
 import { AirportDirectory } from './services/airports.js';
+import { DistanceFiller } from './services/distanceFill.js';
 import { AutoCompleter } from './services/autoComplete.js';
 import { DailyNote } from './services/dailyNote.js';
 import { DepartureWarnings } from './services/departureWarnings.js';
@@ -104,7 +105,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     logger: log,
     slot,
   });
-  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list) => aeroNumbers.enrich(panel, list), slot);
+  // A schedule sheet with a Distance column gets the distance of each flight filled in as the schedule is read (set up once the sheet
+  // write-back and the airport positions exist, below).
+  let distances: DistanceFiller | null = null;
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, (panel, fetched) => distances?.run(panel, fetched));
   const panels = new PanelService(store, jobs, log);
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
@@ -142,6 +146,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // airline's own FsHub flights of the route when there are some, and from the distance between the airports (their positions read
   // from the public OurAirports list) otherwise.
   const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
+  distances = new DistanceFiller({ writeback, airports, positions: (codes) => store.getAirportCoords(codes), logger: log });
   // FsHub's public live feed (no token): who is flying now, so a warning skips a pilot already in the air, and a flight is looked for in
   // FsHub's own record the minute its pilot lands (it is only completed when FsHub shows it flown).
   const liveFeed = new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });

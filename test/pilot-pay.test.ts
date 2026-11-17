@@ -190,7 +190,7 @@ describe('finding the Pilot Pay column', () => {
 
   it('is the column called Pilot Pay, and not the Pilot Paid box before it', () => {
     const parsed = parseScheduleValues(grid(HDR), T0)!;
-    assert.deepEqual(parsed.cols, { pilot: 4, done: 7, profit: 9, pay: 10 });
+    assert.deepEqual(parsed.cols, { pilot: 4, done: 7, profit: 9, pay: 10, distance: -1 });
     const read = readSheetFlights(csvOf(grid(HDR)))!;
     assert.deepEqual([read.hasPay, read.flights[0]!.payRaw, read.flights[0]!.profitRaw], [true, '$750', '$5,000']);
   });

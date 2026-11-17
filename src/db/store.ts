@@ -174,6 +174,8 @@ export interface Job {
   deadline: number | null;
   pay: string | null;
   notes: string | null;
+  /** How far the flight is, in nautical miles, when the airline's sheet says (or the bot could work it out); null otherwise. */
+  distanceNm: number | null;
   status: JobStatus;
   firstSeen: number;
   lastSeen: number;
@@ -255,6 +257,7 @@ export interface NewJob {
   deadline: number | null;
   pay: string | null;
   notes: string | null;
+  distanceNm?: number | null;
   status: JobStatus;
   /** Set when a flight is first seen already completed. */
   completedAt?: number | null;
@@ -371,6 +374,7 @@ const toJob = (r: Row): Job => ({
   deadline: nn(r.deadline),
   pay: sn(r.pay),
   notes: sn(r.notes),
+  distanceNm: nn(r.distance_nm),
   status: s(r.status) as JobStatus,
   firstSeen: n(r.first_seen),
   lastSeen: n(r.last_seen),
@@ -604,8 +608,8 @@ export class Store {
 
   insertJob(j: NewJob): Job {
     const { lastId } = this.run(
-      `INSERT INTO jobs(panel_id, code, source_key, title, aircraft, available_from, deadline, pay, notes, status, first_seen, last_seen, completed_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO jobs(panel_id, code, source_key, title, aircraft, available_from, deadline, pay, notes, distance_nm, status, first_seen, last_seen, completed_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       j.panelId,
       j.code,
       j.sourceKey,
@@ -615,6 +619,7 @@ export class Store {
       j.deadline,
       j.pay,
       j.notes,
+      j.distanceNm ?? null,
       j.status,
       j.now,
       j.now,
@@ -640,7 +645,7 @@ export class Store {
 
   updateJob(
     id: number,
-    patch: Partial<Pick<Job, 'title' | 'aircraft' | 'availableFrom' | 'deadline' | 'pay' | 'notes' | 'status' | 'lastSeen' | 'remindedAt' | 'completedAt' | 'completedBy' | 'completedVia'>>,
+    patch: Partial<Pick<Job, 'title' | 'aircraft' | 'availableFrom' | 'deadline' | 'pay' | 'notes' | 'distanceNm' | 'status' | 'lastSeen' | 'remindedAt' | 'completedAt' | 'completedBy' | 'completedVia'>>,
   ): void {
     const cols: Array<[string, SQLInputValue | undefined]> = [
       ['reminded_at', patch.remindedAt],
@@ -653,6 +658,7 @@ export class Store {
       ['deadline', patch.deadline],
       ['pay', patch.pay],
       ['notes', patch.notes],
+      ['distance_nm', patch.distanceNm],
       ['status', patch.status],
       ['last_seen', patch.lastSeen],
     ];

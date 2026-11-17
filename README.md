@@ -520,10 +520,32 @@ The tab is found by its column headings, in any order. The layout it understands
 | `Flight Completed (by Pilot)` | `TRUE` takes the flight off the open list and shows it on the panel as ✅ completed, with the pilot's name, for 24 hours (see below). A `CANCELLED` pilot is never shown as completed. |
 | `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
 
+| `Daily Flight Sequence` (optional) | for flights that depend on one another (the same aircraft flies them one after another): where the flight stands in the day's run, `1`, `2`, `3`... (also headed `Flight Sequence`, `Daily Sequence` or `Sequence`). It is shown on the flight with its other notes, as *Flight sequence: 2*, so nobody needs a colour to see it. The bot only shows it; it does not hold a flight back for another. |
+| `Distance (NM)` (optional) | the distance of the flight in nautical miles (also headed `Distance`). **The bot fills this in itself**, see below. |
+
 Other columns (pay, profit, US Central times) are ignored. A sheet without a landing-window column must use the
 columns of the flights file below. A flight keeps its bot ID and its reservations from one refresh to the next
 as long as its route and date stay the same. If a reserved flight disappears from the sheet, its holder is told;
 a flight whose *Flight Completed* box is ticked is not "removed", it is shown as completed.
+
+#### The Distance column
+
+The distance of a flight is known before it is flown, so a sheet with a **Distance (NM)** column gets it filled in **when the bot reads
+the schedule** (every hour, and with `/setup refresh`). Nothing is asked of any pilot.
+
+- **How it is worked out.** The great-circle distance between the airports of the flight, in whole nautical miles, added up for a flight of
+  several legs. The airports' positions are the ones the bot already keeps for the late-departure warnings (OurAirports' public list), so no
+  new service is involved. It is the straight-line distance between the airports, not the distance a pilot ends up flying: FsHub's own
+  record of a flown flight can be longer, and is not used here.
+- **Only empty cells.** A Distance cell with anything in it (a number you typed, a zero, a note, a stray space, a formula) is never changed. The sheet is
+  read afresh just before writing, each flight is found again by its route and date, and a cancelled flight is skipped. Values go in as numbers, in one request.
+- **When it happens.** Only for a sheet that has the column, only where writing to the sheet is switched on for the panel (`/setup writeback`,
+  needs the Google key), and in the background: it never holds up the refresh, and if anything goes wrong it is logged and tried again at the next
+  read. A flight whose airport the bot cannot find is left blank for later.
+- **Older rows.** Only the flights the bot is showing (recent and coming ones) are filled; the sheet's history is left alone.
+- **On the card.** A flight's card shows its distance in small type under the route, like `📏 2,991 nm` (`in all` for a flight of several legs). It is
+  the number in the sheet's Distance cell, so a distance a manager typed is the one shown; for a blank cell it is the one the bot works out from the airports
+  it already knows, so the card does not wait for the write to the sheet. A sheet with no Distance column shows no distance.
 
 #### Flight numbers
 
@@ -810,9 +832,10 @@ A-1002,EGLL-EGCC-EGPH,A320,2026-11-12 08:00,2026-11-15 20:00,"28,000","Two legs,
 Optional. With a Google service account the sheet's owner shares the sheet with, the bot also writes: a pilot's
 name into the **Pilot** cell when they reserve, cleared when they give the flight back, and the **Flight
 Completed** box ticked when they press **Complete**. It touches only those two cells of that flight's row, and
-re-reads the tab and finds the row by route and date before every write. The one other thing it can write is a *blank*
-**Profit Made** cell (and the pilot's pay in a blank **Pilot Pay** cell beside it), and only when an admin asks for exactly that and confirms it (see
-[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)); it never changes a cell that has anything in it. It refuses rather than overwrite if the
+re-reads the tab and finds the row by route and date before every write. The only other things it writes are *blank* cells:
+the **Distance (NM)** of a flight, if the sheet has that column (see [The Distance column](#the-distance-column)), and a *blank*
+**Profit Made** cell (and the pilot's pay in a blank **Pilot Pay** cell beside it), which only happens when an admin asks for exactly that and confirms it (see
+[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)). It never changes a cell that has anything in it. It refuses rather than overwrite if the
 sheet already names someone else or shows the flight finished, and a *completion* is never recorded if the sheet
 can't be updated, so the two never disagree. Names are written as plain text, never as formulas.
 
@@ -893,7 +916,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2153 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2208 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

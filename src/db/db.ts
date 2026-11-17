@@ -536,6 +536,12 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN flight_numbers INTEGER NOT NULL DEFAULT 0;
   `,
+
+  /* v32: the distance of a flight in nautical miles, from the sheet's Distance column (or worked out from the airports when that cell is blank),
+     shown in small type under the route on the flight's card. Empty when the sheet has no such column. */
+  `
+  ALTER TABLE jobs ADD COLUMN distance_nm REAL;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

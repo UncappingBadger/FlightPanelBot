@@ -206,6 +206,7 @@ export class JobService {
             deadline: sj.deadline,
             pay: sj.pay,
             notes: sj.notes,
+            distanceNm: sj.distanceNm ?? null,
             status: expired ? 'expired' : 'open',
             completedAt: completed ? now : null,
             now,
@@ -237,6 +238,7 @@ export class JobService {
           existing.deadline !== sj.deadline ||
           existing.pay !== sj.pay ||
           existing.notes !== sj.notes ||
+          existing.distanceNm !== (sj.distanceNm ?? null) ||
           existing.status !== status ||
           existing.completedAt !== completedAt ||
           existing.completedBy !== completedBy ||
@@ -259,6 +261,7 @@ export class JobService {
           deadline: sj.deadline,
           pay: sj.pay,
           notes: sj.notes,
+          distanceNm: sj.distanceNm ?? null,
           status,
           completedAt,
           completedBy,

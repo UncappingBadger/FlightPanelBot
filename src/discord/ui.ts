@@ -236,6 +236,9 @@ export const isTaken = (view: JobView): boolean => view.legs.length > 0 && view.
 /** The route in large type, with a plane between the airports. */
 const routeHeading = (legs: Array<{ dep: string; arr: string }>): string => `## ${routeText(legs).replace(/ → /g, ' ✈ ')}`;
 
+/** The distance of a flight in small type under its route, or nothing when it is not known. */
+const distanceLine = (nm: number | null, legs: number): string => (nm !== null && nm > 0 ? `-# 📏 ${Math.round(nm).toLocaleString('en-US')} nm${legs > 1 ? ' in all' : ''}` : '');
+
 /** A small labelled box (three sit side by side). */
 const box = (name: string, value: string): APIEmbedField => ({ name, value: value || '-', inline: true });
 
@@ -250,7 +253,7 @@ export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { 
   const e = new EmbedBuilder()
     .setColor(taken ? COLORS.taken : COLORS.open)
     .setTitle(title)
-    .setDescription([routeHeading(legs), about ? `*${truncate(about, 160)}*` : ''].filter(Boolean).join('\n'));
+    .setDescription([routeHeading(legs), distanceLine(job.distanceNm, legs.length), about ? `*${truncate(about, 160)}*` : ''].filter(Boolean).join('\n'));
 
   // At a glance: a flight that still needs a pilot wears the green OPEN stamp; once it is taken, its pilot's picture is there instead.
   if (!taken) {
@@ -327,7 +330,7 @@ export function completedCard(view: JobView, confirmed?: Map<number, FlownFlight
   const how = single?.scheduleStatus ? SCHEDULE_WORD[single.scheduleStatus] : '';
   const title = [job.code, legs.length > 1 ? `${legs.length} legs` : '', type ? plainText(truncate(type, 20)) : '', how].filter(Boolean).join(' · ');
 
-  const lines = [routeHeading(legs)];
+  const lines = [routeHeading(legs), distanceLine(job.distanceNm, legs.length)].filter(Boolean);
   if (single?.aircraftName) lines.push(`*${plainText(truncate(single.aircraftName, 40))}*`);
   if (single && job.aircraft && sameAircraft(job.aircraft, single.aircraftIcao) === false) lines.push(`⚠️ scheduled ${plainText(truncate(job.aircraft, 12))}`);
   if (single && job.aircraft && single.aircraftIcao && isAliasUse(job.aircraft, single.aircraftIcao)) lines.push(`🔁 counts as ${plainText(truncate(job.aircraft, 12))} (a FsHub alias)`);

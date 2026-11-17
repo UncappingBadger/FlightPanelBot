@@ -210,7 +210,7 @@ describe('finding a flight in the sheet', () => {
 
   it('reports each flight\'s row and where the Pilot and Completed columns are', () => {
     const parsed = parseScheduleValues(scheduleGrid(), T0)!;
-    assert.deepEqual(parsed.cols, { pilot: 4, done: 7, profit: -1, pay: -1 });
+    assert.deepEqual(parsed.cols, { pilot: 4, done: 7, profit: -1, pay: -1, distance: -1 });
     assert.equal(parsed.rowOf.get(K.open), 3);
     assert.equal(parsed.rowOf.get(K.taken), 4);
     assert.equal(parsed.rowOf.get(K.next), 8);

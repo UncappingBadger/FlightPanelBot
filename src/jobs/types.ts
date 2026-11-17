@@ -39,6 +39,8 @@ export interface SourceJob {
   deadline: number | null;
   pay: string | null;
   notes: string | null;
+  /** How far the flight is, in nautical miles, when the source says (a schedule sheet's Distance column) or the bot has worked it out. */
+  distanceNm?: number | null;
   /**
    * The source says this job is finished or cancelled. It leaves the panel quietly, without telling
    * anyone who held it that it was "removed".
@@ -55,6 +57,11 @@ export interface SourceJob {
 export interface FetchedJobs {
   jobs: SourceJob[];
   warnings: string[];
+  /**
+   * A schedule sheet that has a Distance column: the keys of the flights whose Distance cell is empty (a cancelled flight is not one),
+   * which is what the bot can fill in. Missing when the sheet has no such column.
+   */
+  blankDistances?: string[];
 }
 
 /** Something that can list the current jobs for an airline. Polled once every 24 hours. */

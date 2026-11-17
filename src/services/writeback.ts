@@ -217,6 +217,40 @@ export class SheetWriteBack {
     });
   }
 
+  /**
+   * Write each flight's distance (nautical miles, a number) into its Distance cell, but only where that cell has nothing in it. The tab is
+   * read afresh, twice (what the cells show and what is stored in them, so a formula that shows nothing still counts as filled), and each
+   * flight is found again by its key; a flight that is gone is skipped. Nothing that is already in a cell is ever replaced, and nothing
+   * is asked of Google when there is nothing to write. Returns how many cells were written.
+   */
+  fillDistances(panel: Panel, plan: Array<{ sourceKey: string; nm: number }>): Promise<{ written: number }> {
+    return this.serial(async () => {
+      if (plan.length === 0) return { written: 0 };
+      const ref = this.refOf(panel);
+      try {
+        const tab = await this.api.readTab(ref);
+        const stored = await this.api.readTab(ref, 'FORMULA');
+        const parsed = parseScheduleValues(tab.values, this.now());
+        if (!parsed || parsed.cols.distance < 0) return { written: 0 };
+        const col = parsed.cols.distance;
+        const cells: Cell[] = [];
+        for (const item of plan) {
+          const row = parsed.rowOf.get(item.sourceKey);
+          if (row === undefined) continue;
+          if ((tab.values[row - 1]?.[col] ?? '') !== '' || (stored.values[row - 1]?.[col] ?? '') !== '') continue;
+          cells.push({ a1: `${colLetter(col)}${row}`, value: item.nm });
+        }
+        if (cells.length > 0) {
+          await this.api.update(ref, tab.title, cells);
+          this.log.info(`Wrote ${cells.length} blank Distance cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}`);
+        }
+        return { written: cells.length };
+      } catch (e) {
+        throw this.wrap(e);
+      }
+    });
+  }
+
   /* ------------------------------------------------------------------ internals */
 
   private serial<T>(work: () => Promise<T>): Promise<T> {

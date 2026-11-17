@@ -1,5 +1,5 @@
 import type { Panel, Store } from '../db/store.js';
-import { normalizeFetched, type JobSource, type SourceJob } from '../jobs/types.js';
+import { normalizeFetched, type FetchedJobs, type JobSource, type SourceJob } from '../jobs/types.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { HourlySlot } from './hourlySlot.js';
@@ -33,9 +33,14 @@ export class SourceRefresher {
     private readonly log: Logger = silentLogger,
     private readonly now: () => number = Date.now,
     /** Adds what the source does not say to the flights it listed (the airline's flight numbers, from Aeroconomy). */
-    private readonly enrich: ((panel: Panel, jobs: SourceJob[]) => SourceJob[]) | null = null,
+    private readonly enrich: ((panel: Panel, jobs: SourceJob[], fetched: FetchedJobs) => SourceJob[]) | null = null,
     /** The moment each hour at which the hourly checks happen together: a linked sheet is read once in each slot. */
     private readonly slot: HourlySlot = new HourlySlot(0),
+    /**
+     * Told what a read of the schedule found, once it has been applied, to do something with it in the background (the distances the
+     * sheet is missing). It is never waited for, and nothing it does wrong can fail the refresh.
+     */
+    private readonly afterRead: ((panel: Panel, fetched: FetchedJobs) => Promise<unknown> | void) | null = null,
   ) {}
 
   hasSource(panel: Panel): boolean {
@@ -51,7 +56,7 @@ export class SourceRefresher {
     if (DEBUG_BUILD) dbg(this.log, `refresh START ${panel.airlineName} (panel ${panel.id}), source ${source.kind}, last refresh ${panel.lastRefreshAt === null ? 'never' : new Date(panel.lastRefreshAt).toISOString()}, asked by ${callerPath(1, 5)}`);
     try {
       const fetched = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
-      const jobs = this.enrich ? this.enrich(panel, fetched.jobs) : fetched.jobs;
+      const jobs = this.enrich ? this.enrich(panel, fetched.jobs, fetched) : fetched.jobs;
       if (DEBUG_BUILD) dbg(this.log, `refresh: the source returned ${jobs.length} flight(s) and ${fetched.warnings.length} warning(s)${fetched.warnings.length > 0 ? `: ${fetched.warnings.join(' | ')}` : ''}`);
       const result = this.jobs.sync(panel.id, jobs);
       const clashes = [...new Set(result.numberClashes ?? [])];
@@ -65,6 +70,12 @@ export class SourceRefresher {
         lastRefreshNote: warnings.length > 0 ? warnings.join('; ').slice(0, 400) : null,
       });
       this.log.info(`Refreshed ${panel.airlineName} from ${source.kind}: +${result.added} ~${result.updated} -${result.removed}${warnings.length > 0 ? ` (${warnings.length} warning${warnings.length === 1 ? '' : 's'})` : ''}`);
+      if (this.afterRead) {
+        const after = this.afterRead;
+        void Promise.resolve()
+          .then(() => after(panel, fetched))
+          .catch((e) => this.log.warn(`Something done after reading ${panel.airlineName}'s schedule failed: ${e instanceof Error ? e.message : String(e)}`));
+      }
       return { ...result, warnings };
     } catch (e) {
       if (DEBUG_BUILD) dbg(this.log, `refresh FAILED for ${panel.airlineName} (panel ${panel.id}): ${e instanceof Error ? e.message : e}`);
