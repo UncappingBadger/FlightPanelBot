@@ -214,12 +214,92 @@ describe('the airport directory', () => {
     assert.equal(calls.length, 2, 'but is looked for again later');
   });
 
-  it('reads the list again when a new airport turns up after that half day', async () => {
+  it('reads the list again for a new airport that turns up after that half day', async () => {
     await dir.coords(['EGLL']);
     h.clock.advance(13 * HOUR);
     const got = await dir.coords(['EGLL', 'KLAX']);
     assert.equal(calls.length, 2);
     assert.deepEqual([...got.keys()].sort(), ['EGLL', 'KLAX']);
+  });
+
+  it('reads the list again at once, not half a day later, for an airport no read has looked for yet', async () => {
+    await dir.coords(['EGLL']);
+    h.clock.advance(11 * MIN);
+    const got = await dir.coords(['EGLL', 'KLAX', 'KORD']);
+    assert.equal(calls.length, 2);
+    assert.deepEqual([...got.keys()].sort(), ['EGLL', 'KLAX', 'KORD']);
+    assert.equal(h.store.getAirportCoords(['KLAX']).size, 1, 'kept for next time');
+  });
+
+  it('never reads the list twice within ten minutes, however many new airports turn up', async () => {
+    await dir.coords(['EGLL']);
+    h.clock.advance(9 * MIN);
+    assert.deepEqual([...(await dir.coords(['KLAX'])).keys()], []);
+    assert.equal(calls.length, 1);
+    h.clock.advance(2 * MIN);
+    assert.deepEqual([...(await dir.coords(['KLAX'])).keys()], ['KLAX']);
+    assert.equal(calls.length, 2);
+  });
+
+  it('does not read it again for an airport a read looked for and did not find, but does for a new one beside it', async () => {
+    await dir.coords(['EGLL', 'NOPE']);
+    h.clock.advance(30 * MIN);
+    await dir.coords(['NOPE']);
+    assert.equal(calls.length, 1, 'looked for already: it waits for the half day');
+    const got = await dir.coords(['NOPE', 'KLAX']);
+    assert.equal(calls.length, 2, 'but a new one beside it is looked for');
+    assert.deepEqual([...got.keys()], ['KLAX']);
+    await dir.coords(['NOPE', 'KLAX']);
+    h.clock.advance(30 * MIN);
+    await dir.coords(['NOPE', 'KLAX']);
+    assert.equal(calls.length, 2, 'and then both have been looked for');
+  });
+
+  it('reads at exactly ten minutes after the last read, and for an airport it did not find at exactly half a day', async () => {
+    await dir.coords(['EGLL', 'NOPE']);
+    h.clock.advance(10 * MIN - 1);
+    await dir.coords(['KLAX']);
+    assert.equal(calls.length, 1, 'a moment short of ten minutes');
+    h.clock.advance(1);
+    await dir.coords(['KLAX']);
+    assert.equal(calls.length, 2, 'ten minutes exactly');
+    h.clock.advance(12 * HOUR - 1);
+    await dir.coords(['NOPE']);
+    assert.equal(calls.length, 2, 'a moment short of half a day since that read');
+    h.clock.advance(1);
+    await dir.coords(['NOPE']);
+    assert.equal(calls.length, 3, 'half a day exactly');
+  });
+
+  it('remembers every airport a read looked for, not just the ones the latest read looked for', async () => {
+    await dir.coords(['EGLL', 'NOPE']);
+    h.clock.advance(30 * MIN);
+    await dir.coords(['KLAX']);
+    assert.equal(calls.length, 2);
+    h.clock.advance(30 * MIN);
+    await dir.coords(['NOPE']);
+    assert.equal(calls.length, 2, 'looked for in the first read, and still not new');
+  });
+
+  it('fills in what is missing after an upgrade, when the list was read an hour ago for some other airports and nothing was kept of which', async () => {
+    // The state of an install from before the bot kept track of which airports a read looked for: the list was read, only some airports are known.
+    h.store.saveAirportCoords([{ code: 'EGLL', lat: 51.4706, lon: -0.4619, name: 'London Heathrow' }]);
+    h.store.setKv('airports.fetched_at', String(h.clock.now - HOUR));
+    const got = await dir.coords(['EGLL', 'EGKK', 'KORD']);
+    assert.equal(calls.length, 1);
+    assert.deepEqual([...got.keys()].sort(), ['EGKK', 'EGLL', 'KORD']);
+  });
+
+  it('is not thrown by what it kept being damaged, or by not being a list of codes', async () => {
+    const wanted = ['EGLL', 'EGKK', 'KORD', 'KLAX'];
+    for (const [i, junk] of ['not json', '{"a":1}', '[1,2,null]', ''].entries()) {
+      h.store.setKv('airports.searched', junk);
+      h.store.setKv('airports.fetched_at', String(h.clock.now - HOUR));
+      const got = await dir.coords([wanted[i]!]);
+      assert.deepEqual([...got.keys()], [wanted[i]], junk);
+      assert.equal(calls.length, i + 1, `${junk}: a new airport still brings a read`);
+      h.clock.advance(HOUR);
+    }
   });
 
   it('makes one download for several askers at once', async () => {

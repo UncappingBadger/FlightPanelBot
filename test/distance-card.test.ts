@@ -30,6 +30,15 @@ describe('reading a distance out of a cell', () => {
     for (const [text, want] of cases) assert.equal(parseDistanceNm(text), want, text);
   });
 
+  it('reads a distance typed into a cell formatted as a date as the number it is: 427 shows as 3/2/1901', () => {
+    const cases: Array<[string, number]> = [['3/2/1901', 427], ['5/29/1902', 880], ['5/17/1909', 3425], ['1901-03-02', 427], ['1/1/1900', 2], [' 3/2/1901 ', 427]];
+    for (const [text, want] of cases) assert.equal(parseDistanceNm(text), want, text);
+  });
+
+  it('does not take a real date for a distance: anything from 1970 on, the zero date, or one too far back to be a distance', () => {
+    for (const text of ['11/12/2026', '1/1/1970', '5/17/2009', '12/30/1899', '12/29/1899', '1/1/1969', '2026-11-12']) assert.equal(parseDistanceNm(text), null, text);
+  });
+
   it('takes nothing from an empty cell, a note, zero, a negative, or something that is not a distance', () => {
     for (const text of ['', ' ', 'TBD', '#N/A', '0', '0.0', '-5', '12 km', '1e3', '5 6', 'about 300', '$300', '25,001', '999999']) assert.equal(parseDistanceNm(text), null, JSON.stringify(text));
     assert.equal(parseDistanceNm(null), null);
@@ -47,6 +56,13 @@ describe('a schedule sheet\'s Distance column', () => {
   it('gives a flight the distance the cell holds', () => {
     const jobs = read(sheet('EGLL-EGKK,24,11/12/2026,0600-2359z,,A320,FALSE', 'EGKK-EGLL,"1,177 nm",11/12/2026,0600-2359z,,A320,FALSE', 'EGLL-KJFK,,11/12/2026,0600-2359z,,A320,FALSE', 'KJFK-EGLL,TBD,11/12/2026,0600-2359z,,A320,FALSE'));
     assert.deepEqual([...jobs.values()].map((j) => j.distanceNm), [24, 1177, null, null]);
+  });
+
+  it('reads a distance the sheet shows as a date, and does not offer that cell to be filled in', () => {
+    const csv = sheet('EGLL-EGKK,3/2/1901,11/12/2026,0600-2359z,,A320,FALSE', 'EGKK-EGLL,,11/12/2026,0600-2359z,,A320,FALSE');
+    const read = parseSheetCsv(csv, T0);
+    assert.deepEqual(read.jobs.map((j) => j.distanceNm), [427, null]);
+    assert.deepEqual(read.blankDistances, ['EGKK-EGLL@2026-11-12']);
   });
 
   it('gives none to a sheet without such a column', () => {

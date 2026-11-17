@@ -534,14 +534,21 @@ The distance of a flight is known before it is flown, so a sheet with a **Distan
 the schedule** (every hour, and with `/setup refresh`). Nothing is asked of any pilot.
 
 - **How it is worked out.** The great-circle distance between the airports of the flight, in whole nautical miles, added up for a flight of
-  several legs. The airports' positions are the ones the bot already keeps for the late-departure warnings (OurAirports' public list), so no
-  new service is involved. It is the straight-line distance between the airports, not the distance a pilot ends up flying: FsHub's own
+  several legs. The airports' positions are the ones the bot keeps for the late-departure warnings (OurAirports' public list), so no
+  new service is involved. An airport the bot has not looked up yet is read from the list within ten minutes, so a schedule full of airports it has never
+  seen is filled in at the next read, not half a day later. It is the straight-line distance between the airports, not the distance a pilot ends up flying: FsHub's own
   record of a flown flight can be longer, and is not used here.
 - **Only empty cells.** A Distance cell with anything in it (a number you typed, a zero, a note, a stray space, a formula) is never changed. The sheet is
   read afresh just before writing, each flight is found again by its route and date, and a cancelled flight is skipped. Values go in as numbers, in one request.
 - **When it happens.** Only for a sheet that has the column, only where writing to the sheet is switched on for the panel (`/setup writeback`,
   needs the Google key), and in the background: it never holds up the refresh, and if anything goes wrong it is logged and tried again at the next
   read. A flight whose airport the bot cannot find is left blank for later.
+- **Cell formats.** What a number looks like is up to the cell's format: a Distance column copied from the Date column would show 392 as `1/26/1901`,
+  one copied from a money column as `$392.00`. So before it writes, the bot looks at the format of the cells it is about to fill. A cell formatted as a date,
+  a time, money, a percentage or in scientific notation is given a plain number format (`#,##0`), those cells only and nothing else about them (colours, fonts
+  and borders are not touched); a cell with no format, a number format (plain, or like `0 "NM"`) or a text format is left exactly as it is. If the format
+  cannot be changed, nothing is written. A distance somebody typed into a date-formatted cell is read as the number it stands for (`427` shows as `3/2/1901`).
+  The bot does not reformat cells it does not write to, so the tidy fix is to format the whole Distance column as a number yourself (*Format, Number*).
 - **Older rows.** Only the flights the bot is showing (recent and coming ones) are filled; the sheet's history is left alone.
 - **On the card.** A flight's card shows its distance in small type under the route, like `📏 2,991 nm` (`in all` for a flight of several legs). It is
   the number in the sheet's Distance cell, so a distance a manager typed is the one shown; for a blank cell it is the one the bot works out from the airports
@@ -905,7 +912,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
-`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
+`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes, and an airport it has looked for and not found is looked for again at most twice a day; only the positions of airports the airline's flights use are kept; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and
@@ -916,7 +923,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2208 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2227 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

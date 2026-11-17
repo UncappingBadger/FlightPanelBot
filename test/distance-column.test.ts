@@ -5,11 +5,11 @@ import { parseScheduleValues, parseSheetCsv } from '../src/jobs/sheet.js';
 import type { FetchedJobs, JobSource } from '../src/jobs/types.js';
 import { tokenProvider } from '../src/google/serviceAccount.js';
 import { SheetsApi } from '../src/google/sheetsApi.js';
-import { greatCircleNm } from '../src/services/airports.js';
+import { AirportDirectory, greatCircleNm } from '../src/services/airports.js';
 import { DistanceFiller } from '../src/services/distanceFill.js';
 import { SourceRefresher } from '../src/services/refresh.js';
 import { SheetWriteBack, WriteBackError } from '../src/services/writeback.js';
-import { makeHarness, T0, type Harness } from './helpers.js';
+import { HOUR, makeHarness, T0, type Harness } from './helpers.js';
 import { settle } from './discord-helpers.js';
 import { FakeGoogle, makeServiceAccount, SHEET_ID, TAB_GID } from './fake-google.js';
 
@@ -211,6 +211,117 @@ describe('writing distances into the sheet', () => {
     await assert.rejects(wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }]), (e: unknown) => e instanceof WriteBackError && e.code === 'GOOGLE');
     h.store.updatePanel(h.panel.id, { sheetId: null, sheetGid: null });
     await assert.rejects(wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }]), (e: unknown) => e instanceof WriteBackError && e.code === 'NO_SHEET');
+  });
+});
+
+/* ------------------------------------------------------------------ cells whose format would change how a number looks */
+
+describe('writing distances into cells that are formatted as something else', () => {
+  let h: Harness;
+  let g: FakeGoogle;
+  let wb: SheetWriteBack;
+  const panel = () => h.store.getPanel(h.panel.id)!;
+  const DATE = { type: 'DATE', pattern: 'M/d/yyyy' };
+  /** The calls that changed a format, and the one that wrote values, by where they come in the order of everything the bot sent. */
+  const kinds = () => g.calls.filter((c) => c.method === 'POST' && c.url.startsWith('https://sheets.googleapis.com')).map((c) => (c.url.endsWith('/values:batchUpdate') ? 'values' : c.url.endsWith(':batchUpdate') ? 'format' : 'other'));
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    h.clock.now = T0;
+    g = new FakeGoogle(publicKey);
+    g.values = grid();
+    wb = new SheetWriteBack(new SheetsApi(tokenProvider(account, g.fetchFn, () => h.clock.now), g.fetchFn), account.email, { now: () => h.clock.now });
+    h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: String(TAB_GID) });
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  it('gives a cell that would show a distance as a date a plain number format first, and then writes the number', async () => {
+    g.formats.set('B3', DATE);
+    g.formats.set('B4', DATE);
+    const got = await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }, { sourceKey: KEYS.b, nm: 25 }]);
+    assert.equal(got.written, 2);
+    assert.deepEqual(kinds(), ['format', 'values'], 'the format is changed before anything is written');
+    assert.equal(g.formatChanges.length, 1);
+    assert.deepEqual(g.formatChanges[0], [
+      {
+        repeatCell: {
+          range: { sheetId: TAB_GID, startRowIndex: 2, endRowIndex: 4, startColumnIndex: 1, endColumnIndex: 2 },
+          cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } },
+          fields: 'userEnteredFormat.numberFormat',
+        },
+      },
+    ]);
+    assert.deepEqual([g.formats.get('B3')!.type, g.formats.get('B4')!.type], ['NUMBER', 'NUMBER']);
+    assert.deepEqual([g.cell('B3'), g.cell('B4')], ['25', '25']);
+  });
+
+  it('changes nothing but the number format: only those cells, and nothing else about them', async () => {
+    g.formats.set('B3', DATE);
+    g.formats.set('B6', DATE); // a date-formatted cell the bot is not writing to
+    await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }]);
+    assert.equal(g.formats.get('B3')!.type, 'NUMBER');
+    assert.equal(g.formats.get('B6')!.type, 'DATE', 'a cell it did not write to keeps its format');
+    for (const request of g.formatChanges.flat()) assert.equal(request.repeatCell.fields, 'userEnteredFormat.numberFormat', 'colours, fonts and borders are not part of it');
+  });
+
+  it('fixes a format that would show the number as a date, a time, money, a percentage or in scientific notation', async () => {
+    for (const type of ['DATE', 'TIME', 'DATE_TIME', 'CURRENCY', 'PERCENT', 'SCIENTIFIC']) {
+      g.values = grid();
+      g.formats.clear();
+      g.formatChanges.length = 0;
+      g.formats.set('B3', { type });
+      assert.equal((await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }])).written, 1, type);
+      assert.equal(g.formatChanges.length, 1, type);
+      assert.equal(g.formats.get('B3')!.type, 'NUMBER', type);
+    }
+  });
+
+  it('leaves a format alone that shows a number as a number, a text format, and a cell that never had a format', async () => {
+    for (const format of [{ type: 'NUMBER', pattern: '0.0' }, { type: 'NUMBER', pattern: '0 "NM"' }, { type: 'NUMBER' }, { type: 'TEXT', pattern: '@' }, { type: 'NUMBER_FORMAT_TYPE_UNSPECIFIED' }, null]) {
+      g.values = grid();
+      g.formats.clear();
+      g.formatChanges.length = 0;
+      if (format) g.formats.set('B3', format);
+      assert.equal((await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }])).written, 1, JSON.stringify(format));
+      assert.deepEqual(g.formatChanges, [], `${JSON.stringify(format)}: the format was not touched`);
+      assert.deepEqual(g.formats.get('B3') ?? null, format);
+    }
+  });
+
+  it('asks for a format change for each run of rows when the cells it writes are not next to each other', async () => {
+    g.formats.set('B3', DATE);
+    g.formats.set('B7', DATE);
+    await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }, { sourceKey: KEYS.e, nm: 30 }]);
+    assert.deepEqual(g.formatChanges[0]!.map((r) => [r.repeatCell.range.startRowIndex, r.repeatCell.range.endRowIndex]), [[2, 3], [6, 7]]);
+    assert.deepEqual([g.cell('B3'), g.cell('B7')], ['25', '30']);
+  });
+
+  it('writes nothing, and says so, when the format cannot be changed: a distance never lands in a cell that would show a date', async () => {
+    g.formats.set('B3', DATE);
+    g.failFormatChange = true;
+    await assert.rejects(wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }]), (e: unknown) => e instanceof WriteBackError && e.code === 'GOOGLE');
+    assert.equal(g.writes.length, 0);
+    assert.equal(g.cell('B3'), '');
+  });
+
+  it('looks at no format, and changes none, when it has nothing to write', async () => {
+    g.formats.set('B5', DATE);
+    g.values[4]![1] = '152';
+    const got = await wb.fillDistances(panel(), [{ sourceKey: KEYS.c, nm: 25 }]);
+    assert.equal(got.written, 0);
+    assert.deepEqual(kinds(), []);
+    assert.equal(g.calls.filter((c) => c.url.includes('ranges=')).length, 0, 'it did not even ask what the cells look like');
+    assert.deepEqual(g.formatChanges, []);
+  });
+
+  it('asks for the format of just the rows it is going to write', async () => {
+    await wb.fillDistances(panel(), [{ sourceKey: KEYS.a, nm: 25 }, { sourceKey: KEYS.b, nm: 25 }]);
+    const asked = g.calls.filter((c) => c.url.includes('ranges='));
+    assert.equal(asked.length, 1);
+    assert.match(decodeURIComponent(asked[0]!.url), /ranges='Example Air Sign Up'!B3:B4&/);
+    assert.match(decodeURIComponent(asked[0]!.url), /userEnteredFormat\.numberFormat/);
   });
 });
 
@@ -422,5 +533,50 @@ describe('reading the schedule fills in the distances', () => {
     await assert.rejects(failing.refresh(panel()));
     await settle(40);
     assert.equal(hookCalls, 0);
+  });
+});
+
+/* ------------------------------------------------------------------ an install that only knows some of its airports */
+
+describe('filling in distances when the bot only knows some of the airports so far', () => {
+  let h: Harness;
+  let downloads: number;
+  const panel = () => h.store.getPanel(h.panel.id)!;
+  const LIST = [
+    'id,ident,type,name,latitude_deg,longitude_deg,gps_code,icao_code',
+    ...Object.entries(POS).map(([code, p], i) => `${i + 1},${code},large_airport,${p.name},${p.lat},${p.lon},${code},${code}`),
+  ].join('\n');
+  const job = (key: string, dep: string, arr: string) => ({ key, title: null, legs: [{ dep, arr }], aircraft: null, availableFrom: null, deadline: null, pay: null, notes: null });
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    h.clock.now = T0;
+    downloads = 0;
+    h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: String(TAB_GID) });
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  it('looks up the airports it has never looked for, though the list was read an hour ago for others: every flight gets a distance, not just the known ones', async () => {
+    // As on an install that has been running for a while: the list was read for the few flights that had pilots, so only their airports are kept.
+    h.store.saveAirportCoords([{ code: 'EGLL', ...POS.EGLL! }, { code: 'KJFK', ...POS.KJFK! }]);
+    h.store.setKv('airports.fetched_at', String(T0 - HOUR));
+    const directory = new AirportDirectory(h.store, { fetchFn: async () => (downloads++, new Response(LIST)), now: () => h.clock.now });
+    let plan: Array<{ sourceKey: string; nm: number }> = [];
+    const filler = new DistanceFiller({
+      writeback: { enabledFor: () => true, fillDistances: async (_p, p) => ((plan = p), { written: p.length }) },
+      airports: directory,
+      positions: (codes) => h.store.getAirportCoords(codes),
+    });
+    const jobs = [job('a', 'EGLL', 'KJFK'), job('b', 'EGLL', 'EGKK'), job('c', 'KJFK', 'KBOS'), job('d', 'KBOS', 'EGKK')];
+    const fetched: FetchedJobs = { jobs, warnings: [], blankDistances: jobs.map((j) => j.key) };
+    assert.equal(await filler.run(panel(), fetched), 4);
+    assert.deepEqual(plan.map((p) => p.sourceKey), ['a', 'b', 'c', 'd'], 'all of them, not only the flights between airports it already knew');
+    assert.equal(downloads, 1, 'one read of the list for all of them');
+    assert.deepEqual(plan.map((p) => p.nm), [['EGLL', 'KJFK'], ['EGLL', 'EGKK'], ['KJFK', 'KBOS'], ['KBOS', 'EGKK']].map(([x, y]) => Math.round(greatCircleNm(POS[x!]!, POS[y!]!))));
+    // And now the card has them at once, with no more downloads.
+    assert.deepEqual(filler.enrich(panel(), jobs, fetched).map((j) => j.distanceNm), plan.map((p) => p.nm));
+    assert.equal(downloads, 1);
   });
 });

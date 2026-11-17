@@ -206,14 +206,24 @@ export const PAY_COLUMNS = ['pilotpay'];
 export const DISTANCE_COLUMNS = ['distancenm', 'distance', 'distancenmi'];
 
 /**
- * A distance as a manager writes it in the Distance column: `392`, `1,177`, `392.5` or `392 nm`. Null for an empty cell, a note, or anything
- * that is not a distance above nothing.
+ * A distance as a manager writes it in the Distance column: `392`, `1,177`, `392.5` or `392 nm` (or, in a cell formatted as a date, the date that
+ * number shows as). Null for an empty cell, a note, or anything that is not a distance above nothing.
  */
 export function parseDistanceNm(text: string | null | undefined): number | null {
-  const m = /^\s*(\d[\d,]*(?:\.\d+)?)\s*(?:nmi?)?\s*$/i.exec(text ?? '');
-  if (!m) return null;
-  const n = Number((m[1] as string).replace(/,/g, ''));
-  return Number.isFinite(n) && n > 0 && n <= 25_000 ? n : null;
+  const t = text ?? '';
+  const m = /^\s*(\d[\d,]*(?:\.\d+)?)\s*(?:nmi?)?\s*$/i.exec(t);
+  if (m) {
+    const n = Number((m[1] as string).replace(/,/g, ''));
+    return Number.isFinite(n) && n > 0 && n <= 25_000 ? n : null;
+  }
+  // A distance typed into a cell that is formatted as a date shows as that date (427 as 3/2/1901). No real distance is a date, and no real
+  // date in this column is before 1970, so a date that early is the number it stands for: the days since 30 December 1899.
+  const day = parseSheetDate(t);
+  if (day && day.y < 1970) {
+    const n = Math.round((Date.UTC(day.y, day.m - 1, day.d) - Date.UTC(1899, 11, 30)) / 86_400_000);
+    return n > 0 && n <= 25_000 ? n : null;
+  }
+  return null;
 }
 
 /** Column titles that hold where a flight stands in a day's run of flights that depend on one another (1, 2, 3, ...). */

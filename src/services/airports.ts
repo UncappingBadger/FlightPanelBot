@@ -14,11 +14,15 @@ const MAX_BYTES = 40_000_000;
 const TIMEOUT_MS = 90_000;
 /** Having read the list, do not read it again for airports it turned out not to have until this long has passed. */
 const RECHECK_MS = 12 * 3_600_000;
+/** The list is never read twice within this long, however many airports it has not looked for turn up. */
+const MIN_GAP_MS = 10 * 60_000;
 /** After a failed download, wait this long. */
 const RETRY_AFTER_FAILURE_MS = 60 * 60_000;
 
 const KV_FETCHED = 'airports.fetched_at';
 const KV_FAILED = 'airports.failed_at';
+/** The airports a read of the list has already looked for (found or not), so an airport nobody has asked about yet is not mistaken for one that is not in it. */
+const KV_SEARCHED = 'airports.searched';
 
 export interface AirportDirectoryOptions {
   fetchFn?: typeof fetch;
@@ -49,14 +53,15 @@ export class AirportDirectory {
 
   /**
    * The positions of these airports (by ICAO code), those the bot could find. An airport it does not know is read from the
-   * downloaded list when the list has not been read lately, and left out when it has (so an airport that is not in the list
-   * does not make the bot download it again every minute).
+   * downloaded list: at once (but never twice within ten minutes) if no read of the list has looked for it yet, and otherwise only
+   * when the list has not been read for half a day, so an airport that is not in the list does not make the bot download it again
+   * every minute. Only the airports asked about are kept, so a read made for some airports says nothing about the others.
    */
   async coords(codes: string[]): Promise<Map<string, AirportCoord>> {
     const wanted = [...new Set(codes.map((c) => c.trim().toUpperCase()).filter((c) => /^[A-Z0-9]{2,5}$/.test(c)))];
     let known = this.store.getAirportCoords(wanted);
     const missing = wanted.filter((c) => !known.has(c));
-    if (missing.length === 0 || !this.mayRead()) return known;
+    if (missing.length === 0 || !this.mayRead(missing)) return known;
     try {
       this.loading ??= this.load(missing).finally(() => {
         this.loading = null;
@@ -71,12 +76,27 @@ export class AirportDirectory {
     return known;
   }
 
-  private mayRead(): boolean {
+  private mayRead(missing: string[]): boolean {
     const now = this.now();
     const failed = Number(this.store.getKv(KV_FAILED) ?? 0);
     if (failed > 0 && now - failed < RETRY_AFTER_FAILURE_MS) return false;
     const fetched = Number(this.store.getKv(KV_FETCHED) ?? 0);
-    return !(fetched > 0 && now - fetched < RECHECK_MS);
+    if (!(fetched > 0)) return true;
+    const age = now - fetched;
+    if (age < MIN_GAP_MS) return false;
+    if (age >= RECHECK_MS) return true;
+    // Read lately: only for an airport no read has looked for yet. One a read looked for and did not find waits for the half day.
+    const searched = this.searched();
+    return missing.some((c) => !searched.has(c));
+  }
+
+  private searched(): Set<string> {
+    try {
+      const raw = JSON.parse(this.store.getKv(KV_SEARCHED) ?? '[]');
+      return new Set(Array.isArray(raw) ? raw.filter((c): c is string => typeof c === 'string') : []);
+    } catch {
+      return new Set();
+    }
   }
 
   private async load(missing: string[]): Promise<void> {
@@ -90,6 +110,7 @@ export class AirportDirectory {
     const found = pickAirports(text, new Set(missing));
     if (found === null) throw new Error('the list is not in the expected format');
     this.store.saveAirportCoords(found);
+    this.store.setKv(KV_SEARCHED, JSON.stringify([...new Set([...this.searched(), ...missing])]));
     this.store.setKv(KV_FETCHED, String(this.now()));
     this.store.setKv(KV_FAILED, '0');
     this.log.info(`Read the airport list: found ${found.length} of ${missing.length} airport(s) wanted`);

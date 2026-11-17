@@ -33,6 +33,14 @@ export class WriteBackError extends Error {
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/**
+ * Formats that would show a distance as something else: a column copied from the Date column shows 392 as 1/26/1901, one copied from a money
+ * column as $392.00. A cell with one of these is given a plain number format before a distance is written into it. A cell with no format, a
+ * number format (plain, or one like `0 "NM"`) or a text format is left exactly as it is.
+ */
+const MISLEADING_FORMATS = new Set(['DATE', 'TIME', 'DATE_TIME', 'CURRENCY', 'PERCENT', 'SCIENTIFIC']);
+const DISTANCE_FORMAT = { type: 'NUMBER', pattern: '#,##0' };
+
 /** A profit to write into a blank Profit Made cell, and what the row looked like when the profit was worked out. */
 export interface ProfitFill {
   sourceKey: string;
@@ -234,15 +242,22 @@ export class SheetWriteBack {
         if (!parsed || parsed.cols.distance < 0) return { written: 0 };
         const col = parsed.cols.distance;
         const cells: Cell[] = [];
+        const rows: number[] = [];
         for (const item of plan) {
           const row = parsed.rowOf.get(item.sourceKey);
           if (row === undefined) continue;
           if ((tab.values[row - 1]?.[col] ?? '') !== '' || (stored.values[row - 1]?.[col] ?? '') !== '') continue;
           cells.push({ a1: `${colLetter(col)}${row}`, value: item.nm });
+          rows.push(row);
         }
         if (cells.length > 0) {
+          // What a number looks like is up to the cell's format, so look at it first. This comes before the write: if it fails, nothing has been
+          // written, and a distance never lands in a cell that would show it as a date.
+          const formats = await this.api.columnNumberFormats(ref, tab.title, col, Math.min(...rows), Math.max(...rows));
+          const misleading = rows.filter((r) => MISLEADING_FORMATS.has(formats.types.get(r) ?? ''));
+          if (misleading.length > 0) await this.api.setNumberFormat(ref, formats.sheetId, col, misleading, DISTANCE_FORMAT);
           await this.api.update(ref, tab.title, cells);
-          this.log.info(`Wrote ${cells.length} blank Distance cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}`);
+          this.log.info(`Wrote ${cells.length} blank Distance cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}${misleading.length > 0 ? ` (${misleading.length} of them were formatted as dates, money or the like, and were given a plain number format)` : ''}`);
         }
         return { written: cells.length };
       } catch (e) {

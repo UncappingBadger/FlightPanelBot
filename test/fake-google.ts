@@ -68,6 +68,12 @@ export class FakeGoogle {
   readonly writes: Array<{ valueInputOption: string; data: Array<{ range: string; values: unknown[][] }> }> = [];
   /** Cells that hold a formula, by A1 address (a read that asks for formulas shows these; `values` is what the cells show). */
   readonly formulas = new Map<string, string>();
+  /** The number format of cells that have one (by A1 address): what `columnNumberFormats` reads and `setNumberFormat` changes. */
+  readonly formats = new Map<string, { type: string; pattern?: string }>();
+  /** The format changes asked for, in order (each is the `requests` of one call). */
+  readonly formatChanges: any[][] = [];
+  /** Makes the next number-format change fail, as a sheet the bot may write values to but not format would. */
+  failFormatChange = false;
   /** Runs once, just before the next values read answers (to simulate the sheet changing under the bot). */
   beforeNextRead: (() => void) | null = null;
 
@@ -118,10 +124,31 @@ export class FakeGoogle {
     const base = 'https://sheets.googleapis.com/v4/spreadsheets/';
     if (!url.startsWith(base)) return this.json(404, {});
     const rest = url.slice(base.length);
-    const id = rest.split(/[/?]/)[0];
+    const id = rest.split(/[/?:]/)[0];
     if (id !== SHEET_ID) return this.json(404, { error: { message: 'not found' } });
     if (this.mode === 'not-shared') return this.json(403, { error: { message: 'The caller does not have permission' } });
 
+    if (method === 'GET' && rest.includes('ranges=')) {
+      const range = decodeURIComponent(/ranges=([^&]+)/.exec(rest)![1]!);
+      const m = /^'((?:[^']|'')*)'!([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
+      if (!m || m[1]!.replace(/''/g, "'") !== TAB_TITLE) return this.json(400, { error: { message: 'Unable to parse range' } });
+      const [col, first, last] = [m[2]!, Number(m[3]), Number(m[5])];
+      const rowData = Array.from({ length: last - first + 1 }, (_, i) => {
+        const f = this.formats.get(`${col}${first + i}`);
+        return f ? { values: [{ userEnteredFormat: { numberFormat: f } }] } : { values: [{}] };
+      });
+      return this.json(200, { sheets: [{ properties: { sheetId: TAB_GID }, data: [{ ...(first > 1 ? { startRow: first - 1 } : {}), rowData }] }] });
+    }
+    if (method === 'POST' && rest.endsWith(':batchUpdate') && !rest.endsWith('/values:batchUpdate')) {
+      if (this.mode === 'view-only' || this.failFormatChange) return this.json(403, { error: { message: 'The caller does not have permission' } });
+      const requests = (body.requests ?? []) as any[];
+      this.formatChanges.push(requests);
+      for (const r of requests) {
+        const g = r.repeatCell.range;
+        for (let row = g.startRowIndex; row < g.endRowIndex; row++) this.formats.set(`${String.fromCharCode(65 + g.startColumnIndex)}${row + 1}`, r.repeatCell.cell.userEnteredFormat.numberFormat);
+      }
+      return this.json(200, { spreadsheetId: SHEET_ID, replies: requests.map(() => ({})) });
+    }
     if (method === 'GET' && /^[^/]+\?/.test(rest)) {
       return this.json(200, { sheets: [{ properties: { sheetId: TAB_GID, title: TAB_TITLE } }, { properties: { sheetId: 1, title: 'Pilot Info' } }] });
     }

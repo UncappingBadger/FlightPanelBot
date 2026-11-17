@@ -1,4 +1,4 @@
-import type { SheetRef } from '../jobs/sheet.js';
+import { colLetter, type SheetRef } from '../jobs/sheet.js';
 import { GoogleAuthError, type TokenProvider } from './serviceAccount.js';
 
 export type SheetsErrorCode =
@@ -92,6 +92,48 @@ export class SheetsApi {
     const data = await this.call('GET', `${BASE}/${ref.id}/values/${range}?majorDimension=ROWS&valueRenderOption=${render}`);
     const rows: unknown[] = Array.isArray(data?.values) ? data.values : [];
     return { title, values: rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [])) };
+  }
+
+  /**
+   * What the cells of one column, from `firstRow` to `lastRow` (1 is the first row), were told to show a number as: row to format type
+   * (`NUMBER`, `DATE`, `CURRENCY`...). A cell that was never given a format is not listed. Also gives the tab's own number.
+   */
+  async columnNumberFormats(ref: SheetRef, title: string, col: number, firstRow: number, lastRow: number): Promise<{ sheetId: number; types: Map<number, string> }> {
+    const range = `${quoteTab(title)}!${colLetter(col)}${firstRow}:${colLetter(col)}${lastRow}`;
+    const fields = 'sheets(properties.sheetId,data(startRow,rowData(values(userEnteredFormat.numberFormat))))';
+    const data = await this.call('GET', `${BASE}/${ref.id}?ranges=${encodeURIComponent(range)}&fields=${encodeURIComponent(fields)}`);
+    const sheet = Array.isArray(data?.sheets) ? data.sheets[0] : undefined;
+    const sheetId = Number(sheet?.properties?.sheetId);
+    if (!Number.isSafeInteger(sheetId)) throw new SheetsError('NOT_FOUND', "Google couldn't find that tab in the sheet.");
+    const grid = Array.isArray(sheet?.data) ? sheet.data[0] : undefined;
+    const start = Number(grid?.startRow ?? 0);
+    const rows: unknown[] = Array.isArray(grid?.rowData) ? grid.rowData : [];
+    const types = new Map<number, string>();
+    rows.forEach((r, i) => {
+      const type = (r as { values?: Array<{ userEnteredFormat?: { numberFormat?: { type?: unknown } } }> } | null)?.values?.[0]?.userEnteredFormat?.numberFormat?.type;
+      if (typeof type === 'string') types.set(start + i + 1, type);
+    });
+    return { sheetId, types };
+  }
+
+  /** Give these cells of one column a number format and nothing else (their colours, fonts and contents are left as they are). */
+  async setNumberFormat(ref: SheetRef, sheetId: number, col: number, rows: number[], format: { type: string; pattern: string }): Promise<void> {
+    const runs: Array<[number, number]> = [];
+    for (const r of [...new Set(rows)].sort((a, b) => a - b)) {
+      const last = runs.at(-1);
+      if (last && r === last[1] + 1) last[1] = r;
+      else runs.push([r, r]);
+    }
+    if (runs.length === 0) return;
+    await this.call('POST', `${BASE}/${ref.id}:batchUpdate`, {
+      requests: runs.map(([first, last]) => ({
+        repeatCell: {
+          range: { sheetId, startRowIndex: first - 1, endRowIndex: last, startColumnIndex: col, endColumnIndex: col + 1 },
+          cell: { userEnteredFormat: { numberFormat: format } },
+          fields: 'userEnteredFormat.numberFormat',
+        },
+      })),
+    });
   }
 
   /** Write cells in one request. Values are stored as given (RAW), so text is never treated as a formula. */
