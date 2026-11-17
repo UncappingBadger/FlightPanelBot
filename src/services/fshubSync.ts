@@ -2,10 +2,11 @@ import { FsHubError, type FsHubApi } from '../fshub/client.js';
 import type { FlownFlight, JobView, Panel, RosterLink, Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor, confirmationsSignature } from './flightMatch.js';
+import { HourlySlot } from './hourlySlot.js';
 
-/** How often a linked airline's roster is read. Pilots rarely change, so once an hour is plenty. */
+/** How often a linked airline's roster is read: once an hour, in the slot all the hourly checks share (pilots rarely change, so that is plenty). */
 export const FSHUB_SYNC_MS = 60 * 60_000;
-/** After a failure that may pass by itself (FsHub down, or busy), try again sooner than the next hour. */
+/** After a failure that may pass by itself (FsHub down, or busy), try again sooner than the next slot. */
 const RETRY_MS = 10 * 60_000;
 
 /** How often a linked airline's new flights are read. A flight shows on FsHub about 40 seconds after landing. */
@@ -75,8 +76,17 @@ export class FsHubSync {
       completed?: (panelId: number) => JobView[];
       /** Told of each page of flights as it is read and kept (the same flight may come round again, so it must cope with that). */
       onFlights?: (panel: Panel, flights: FlownFlight[]) => Promise<unknown> | unknown;
+      /** The moment each hour at which the hourly checks happen together: a roster is read once in each slot. */
+      slot?: HourlySlot;
     } = {},
   ) {}
+
+  /** Rosters that could not be read for a reason that may pass by itself, and when to try them again (sooner than the next slot). */
+  private readonly rosterRetryAt = new Map<number, number>();
+
+  private get slot(): HourlySlot {
+    return (this.opts.slot ??= new HourlySlot(0));
+  }
 
   private get now(): number {
     return (this.opts.now ?? Date.now)();
@@ -103,6 +113,7 @@ export class FsHubSync {
       for (const discordId of changed) for (const panelId of this.store.listPanelIdsHeldBy(discordId)) redraw.add(panelId);
       for (const panelId of redraw) this.panels.schedule(panelId);
 
+      this.rosterRetryAt.delete(panel.id);
       this.store.updatePanel(panel.id, { fshubSyncedAt: now, fshubNote: null });
       this.log.debug(`FsHub roster for panel ${panel.id}: ${roster.length} pilots, ${links.length} with a Discord account, ${changed.length} changed`);
       return { ok: true, note: null, rosterSize: roster.length, withDiscord: links.length, changed: changed.length };
@@ -112,7 +123,9 @@ export class FsHubSync {
       if (!known) this.log.error(`FsHub roster for panel ${panel.id} failed`, e);
       else this.log.warn(`FsHub roster for panel ${panel.id}: ${e.message}`);
       const transient = known && (e.kind === 'unavailable' || e.kind === 'rate-limited');
-      this.store.updatePanel(panel.id, { fshubSyncedAt: transient ? now - (FSHUB_SYNC_MS - RETRY_MS) : now, fshubNote: note });
+      // A failure that may pass by itself is tried again in a few minutes; any other counts as this slot's read, and the next is in the next slot.
+      if (transient) this.rosterRetryAt.set(panel.id, now + RETRY_MS);
+      this.store.updatePanel(panel.id, transient ? { fshubNote: note } : { fshubSyncedAt: now, fshubNote: note });
       return { ok: false, note, rosterSize: 0, withDiscord: 0, changed: 0 };
     }
   }
@@ -264,7 +277,7 @@ export class FsHubSync {
     for (const listed of this.store.listFshubPanels()) {
       let panel: Panel = listed;
       const now = this.now;
-      if (panel.fshubSyncedAt === null || now - panel.fshubSyncedAt >= FSHUB_SYNC_MS) {
+      if (this.slot.due(panel.fshubSyncedAt, now) && now >= (this.rosterRetryAt.get(panel.id) ?? 0)) {
         const roster = await this.syncPanel(panel);
         // A token that can't see the roster can't see the flights either: no point asking again this pass.
         if (!roster.ok) continue;

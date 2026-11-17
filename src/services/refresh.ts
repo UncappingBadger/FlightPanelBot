@@ -2,6 +2,7 @@ import type { Panel, Store } from '../db/store.js';
 import { normalizeFetched, type JobSource, type SourceJob } from '../jobs/types.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { HourlySlot } from './hourlySlot.js';
 import { JobError, type JobService, type SyncResult } from './jobs.js';
 
 /** How often an automatic source (the demo) is re-read. */
@@ -33,6 +34,8 @@ export class SourceRefresher {
     private readonly now: () => number = Date.now,
     /** Adds what the source does not say to the flights it listed (the airline's flight numbers, from Aeroconomy). */
     private readonly enrich: ((panel: Panel, jobs: SourceJob[]) => SourceJob[]) | null = null,
+    /** The moment each hour at which the hourly checks happen together: a linked sheet is read once in each slot. */
+    private readonly slot: HourlySlot = new HourlySlot(0),
   ) {}
 
   hasSource(panel: Panel): boolean {
@@ -70,15 +73,19 @@ export class SourceRefresher {
     }
   }
 
-  /** Refresh every panel whose last refresh is older than its interval (a failed one is retried hourly). */
+  /**
+   * Refresh every panel that is due. A linked sheet is read once in each hourly slot (see `HourlySlot`: all the hourly checks happen
+   * together), and one that failed is tried again in the next slot; any other automatic source is read every 24 hours.
+   */
   async refreshDue(): Promise<number> {
     const now = this.now();
     let done = 0;
     for (const panel of this.store.listAllPanels()) {
       if (!this.sourceFor(panel)) continue;
-      const due = panel.lastRefreshAt === null || now - panel.lastRefreshAt >= refreshIntervalFor(panel);
+      const hourly = panel.sheetId !== null;
+      const due = panel.lastRefreshAt === null || (hourly ? this.slot.due(panel.lastRefreshAt, now) : now - panel.lastRefreshAt >= REFRESH_INTERVAL_MS);
       const last = this.lastAttempt.get(panel.id);
-      const cooling = last !== undefined && now - last < RETRY_AFTER_FAILURE_MS;
+      const cooling = last !== undefined && (hourly ? last >= this.slot.start(now) : now - last < RETRY_AFTER_FAILURE_MS);
       if (!due || cooling) continue;
       try {
         await this.refresh(panel);

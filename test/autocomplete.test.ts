@@ -311,14 +311,16 @@ describe('completing flights automatically from FsHub', () => {
       assert.equal(fshub.flightCalls.length, 0);
     });
 
-    it('looks at each linked panel, each on its own schedule', async () => {
+    it('looks at every linked panel in the same hourly slot, however long ago each was last checked, and none twice in a slot', async () => {
       const other = h.store.createPanel({ guildId: '9', name: 'Other Air', prefix: 'OTH', channelId: '8', now: NOW });
       h.store.updatePanel(other.id, { fshubAirlineId: 6000, fshubAirlineName: 'Other Air' });
-      h.store.updatePanel(pid, { fshubAutoCompleteAt: NOW - 10 * MIN }); // checked ten minutes ago
+      h.store.updatePanel(pid, { fshubAutoCompleteAt: NOW - 10 * MIN }); // checked ten minutes ago: in the slot before this one
       const ran = await ac.run();
-      assert.equal(ran.length, 1, 'only the one that is due');
+      assert.equal(ran.length, 2, 'both are due, not just the one that waited longest');
       assert.equal(h.store.getPanel(other.id)!.fshubAutoCompleteAt, NOW);
-      assert.equal(panel().fshubAutoCompleteAt, NOW - 10 * MIN);
+      assert.equal(panel().fshubAutoCompleteAt, NOW);
+      h.clock.now = NOW + 40 * MIN;
+      assert.equal((await ac.run()).length, 0, 'checked in this slot already');
     });
   });
 

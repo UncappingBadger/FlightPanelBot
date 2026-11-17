@@ -1080,7 +1080,7 @@ describe('how often a sheet is read', () => {
     assert.equal(refreshIntervalFor({ sheetId: null }), 24 * HOUR);
   });
 
-  it('the scheduler\'s refresher reads a sheet panel after an hour, and a demo panel not until a day', async () => {
+  it('the scheduler\'s refresher reads a sheet panel once in each hourly slot, and a demo panel not until a day', async () => {
     const h = await makeHarness();
     try {
       let reads = 0;
@@ -1096,13 +1096,13 @@ describe('how often a sheet is read', () => {
 
       h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: '1' });
       await refresher.refreshDue();
-      assert.equal(reads, 2, 'a sheet is due after an hour');
-      h.clock.advance(HOUR - 1);
+      assert.equal(reads, 2, 'a sheet is due in a new hourly slot');
+      h.clock.advance(HOUR - 2);
       await refresher.refreshDue();
-      assert.equal(reads, 2, 'but not before');
-      h.clock.advance(2);
+      assert.equal(reads, 2, 'but not twice in one slot');
+      h.clock.advance(1);
       await refresher.refreshDue();
-      assert.equal(reads, 3);
+      assert.equal(reads, 3, 'and again when the next slot begins');
     } finally {
       await h.close();
     }

@@ -785,10 +785,28 @@ reads, and **Complete** on a sheet-fed panel explains that the box has to be tic
 ## The refresh
 
 A linked Google Sheet is re-read **every hour**; any other automatic source (the demo) every 24 hours (a
-failed fetch keeps the existing flights, records the error in `/setup panels`, and retries hourly). Flights keep their IDs and reservations
+failed fetch keeps the existing flights, records the error in `/setup panels`, and retries in the next hourly slot, see below). Flights keep their IDs and reservations
 across refreshes; new flights get the next ID; flights the source drops are closed and their holders told; a
 flight whose route changed loses the reservation on the changed leg. Panels fed by file import don't fetch,
 since an admin decides when the list changes. `/setup refresh` re-reads a sheet on demand.
+
+### The hourly slot: all the hourly checks together
+
+The bot's hourly checks (reading each linked **schedule sheet**, reading each linked airline's **FsHub roster**, **completing the flights
+FsHub shows flown**, and the read of **Aeroconomy's flight numbers**, which is every sixth hour) all happen **together**, at one minute of
+every hour (UTC), instead of each running an hour after its own last run and drifting apart. They run one after another in a single pass, in
+this order: the sheets first (so the flights are current), then the FsHub roster and flights, then the completing of flown flights.
+
+- **The minute is fixed for an install** and shown in `/setup panels` (and in the log when the bot starts). It is picked at random the first
+  time the bot runs (between 3 and 56 past the hour, so not on the hour itself) and kept in the database, so every copy of the bot does not ask
+  FsHub, Google and Aeroconomy at the same instant. It never changes.
+- **A check is due when it has not been done since the slot began.** A restart does not move it, a check missed while the bot was off is done as soon
+  as it is back, and a read somebody asked for (`/setup refresh`) in the middle of a slot is not done again in that slot.
+- **A failure waits for the next slot**: a sheet that could not be read is tried again in the next slot. A FsHub roster or completing check that
+  failed for a reason that may pass by itself (FsHub down or busy) is tried again after ten minutes, and then waits for the next slot.
+- Not hourly, and so not part of this: the FsHub flight read (every five minutes), live tracking (every 45 seconds), expected landing times
+  (every minute), late-departure warnings (every minute), the AeroDAQ market boards (every 15 minutes), the midnight (UTC) list of flights
+  with no pilot, and the daily check for a new version.
 
 ## Demo mode
 
@@ -835,7 +853,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2052 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2067 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

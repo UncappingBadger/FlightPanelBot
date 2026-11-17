@@ -29,6 +29,7 @@ import { HardLandings } from './services/hardLanding.js';
 import { JobService } from './services/jobs.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
 import { AeroNumbers } from './services/aeroNumbers.js';
+import { HourlySlot } from './services/hourlySlot.js';
 import { FlightEtas } from './services/flightEtas.js';
 import { LiveTracker } from './services/liveTracker.js';
 import { SourceRefresher } from './services/refresh.js';
@@ -83,6 +84,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // Aeroconomy publishes no job API, so a panel's flights come from the schedule sheet an admin links
   // with `/setup sheet` (re-read every hour), or from admin file imports. Demo mode also has a
   // fictional source for panels with neither.
+  // All the hourly checks (the schedule sheets, the FsHub rosters, completing flown flights, and the six-hourly read of Aeroconomy) happen
+  // together, at one fixed minute of each hour that is picked for this install the first time it runs, instead of each an hour after its own last run.
+  const slot = HourlySlot.forInstall(store);
+  log.info(`The hourly checks run together at ${String(slot.minute).padStart(2, '0')} minutes past each hour (UTC)`);
   const demoSource = new DemoJobSource();
   // A flight whose row has no flight number can take Aeroconomy's own number for it (read from Aeroconomy's public contracts, no account
   // needed), for a panel that has it switched on (`/setup flight-numbers`) and is linked to its airline's FsHub number. The numbers are
@@ -94,8 +99,9 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
       if (refresher.hasSource(panel)) await refresher.refresh(panel);
     },
     logger: log,
+    slot,
   });
-  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list) => aeroNumbers.enrich(panel, list));
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list) => aeroNumbers.enrich(panel, list), slot);
   const panels = new PanelService(store, jobs, log);
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
@@ -110,7 +116,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // A pilot FsHub shows landing very hard gets a light-hearted message (they can switch it off). It only needs FsHub's flights, so it rides on that read.
   let notifier: Notifier | null = null;
   const hardLandings = new HardLandings(store, async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log });
-  const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId), onFlights: (panel, flights) => hardLandings.check(panel, flights) }) : null;
+  const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId), onFlights: (panel, flights) => hardLandings.check(panel, flights), slot }) : null;
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
   let writeback: SheetWriteBack | null = null;
@@ -126,7 +132,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
 
   // With FsHub, flights it shows flown are completed by themselves once an hour (the pilot is told in a DM).
   const autoComplete = fshubSync
-    ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
+    ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, slot, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
     : null;
   panels.fshubEnabled = fshub !== null;
   // A pilot is warned shortly before the latest take-off that still makes a flight's window. How long the flight takes comes from the
@@ -182,7 +188,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

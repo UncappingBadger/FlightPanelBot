@@ -654,7 +654,10 @@ export const setupCommand: Command = {
           const writes = !p.sheetId ? '' : !ctx.writeback ? ' · sheet write-back: unavailable' : ` · sheet write-back: ${p.writeback ? 'on' : 'off'}`;
           return `• **${airlineLabel({ name: p.airlineName, abbr: p.airlineAbbr })}** in <#${p.channelId}> · \`${p.prefix}-…\` · flights from: ${from} · reserving: ${who} · ${open.length} open flights, ${taken}/${legs} legs reserved${named > 0 ? `, ${named} named in the sheet` : ''} · panel shows the next ${p.showDays} day${p.showDays === 1 ? '' : 's'} · completed flights: ${p.completedChannelId ? `in <#${p.completedChannelId}>` : 'on the panel'} · pilot reminders: ${ping}${writes}${fshubStatus(ctx, p)} · ${updated}${err}${note}`;
         });
-        await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
+        // Say when the hourly checks happen, if it fits in one message (the list can be long).
+        const body = lines.join('\n');
+        const when = ctx.slot ? `\n⏱ The hourly checks (sheets, FsHub roster, completing flown flights) all run together at ${String(ctx.slot.minute).padStart(2, '0')} minutes past each hour, UTC.` : '';
+        await interaction.editReply({ content: body.length + when.length <= 1990 ? body + when : body, allowedMentions: noPings });
         return;
       }
 

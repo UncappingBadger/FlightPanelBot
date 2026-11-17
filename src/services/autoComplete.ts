@@ -2,13 +2,14 @@ import type { FlownFlight, JobView, Panel, Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor } from './flightMatch.js';
 import type { FsHubSync } from './fshubSync.js';
+import { HourlySlot } from './hourlySlot.js';
 import { COMPLETE_AFTER_DEADLINE_MS, JobError, type JobService } from './jobs.js';
 import { nameKey } from './pilotNames.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
 
-/** How often a FsHub-linked panel's flights are checked for ones that have been flown. */
+/** How often a FsHub-linked panel's flights are checked for ones that have been flown: once an hour, in the slot all the hourly checks share. */
 export const AUTO_COMPLETE_MS = 60 * 60_000;
-/** After a check that could not read FsHub, try again after this long rather than waiting the whole hour. */
+/** After a check that could not read FsHub, try again after this long rather than waiting for the next slot. */
 const RETRY_MS = 10 * 60_000;
 /** The flights are brought up to date before a check unless they were read this recently. */
 const FRESH_FLIGHTS_MS = 60_000;
@@ -65,6 +66,8 @@ export interface AutoCompleteDeps {
   onCompleted?: (discordId: string, done: AutoCompleted[]) => Promise<void>;
   logger?: Logger;
   now?: () => number;
+  /** The moment each hour at which the hourly checks happen together. */
+  slot?: HourlySlot;
 }
 
 /**
@@ -83,6 +86,14 @@ export interface AutoCompleteDeps {
 export class AutoCompleter {
   constructor(private readonly d: AutoCompleteDeps) {}
 
+  /** The moment each hour at which the hourly checks happen together: a panel is checked once in each slot. */
+  private get slot(): HourlySlot {
+    return (this.d.slot ??= new HourlySlot(0));
+  }
+
+  /** Panels whose check could not read FsHub, and when to try them again (sooner than the next slot). */
+  private readonly retryAt = new Map<number, number>();
+
   private get now(): number {
     return (this.d.now ?? Date.now)();
   }
@@ -100,7 +111,7 @@ export class AutoCompleter {
     // The flights must be current: a landing from a few minutes ago has to be there.
     const refreshed = await this.d.sync.refreshFlights(panel, scope.maxAgeMs ?? FRESH_FLIGHTS_MS);
     if (refreshed && !refreshed.ok) {
-      if (!scope.only) store.updatePanel(panel.id, { fshubAutoCompleteAt: now - (AUTO_COMPLETE_MS - RETRY_MS) });
+      if (!scope.only) this.retryAt.set(panel.id, now + RETRY_MS);
       return { ok: false, note: refreshed.note, checked: 0, completed: [] };
     }
 
@@ -156,7 +167,10 @@ export class AutoCompleter {
       completed.push(done);
       this.log.info(`Auto-completed ${view.job.code} for ${current.airlineName} from FsHub`);
     }
-    if (!scope.only) store.updatePanel(current.id, { fshubAutoCompleteAt: now });
+    if (!scope.only) {
+      this.retryAt.delete(current.id);
+      store.updatePanel(current.id, { fshubAutoCompleteAt: now });
+    }
 
     // One message per pilot, however many of their flights were completed. A pilot who has turned these messages off still has
     // their flights completed (that is the point of it); they are only not told.
@@ -173,12 +187,12 @@ export class AutoCompleter {
     return { ok: true, note: null, checked: candidates.length, completed };
   }
 
-  /** Check every FsHub-linked panel that is due (once an hour, and not at all where an admin switched it off). */
+  /** Check every FsHub-linked panel that is due (once in each hourly slot, and not at all where an admin switched it off). */
   async run(): Promise<AutoCompleteResult[]> {
     const out: AutoCompleteResult[] = [];
     for (const panel of this.d.store.listFshubPanels()) {
       if (!panel.fshubAutoComplete || !panel.fshubConfirm) continue;
-      if (panel.fshubAutoCompleteAt !== null && this.now - panel.fshubAutoCompleteAt < AUTO_COMPLETE_MS) continue;
+      if (!this.slot.due(panel.fshubAutoCompleteAt, this.now) || this.now < (this.retryAt.get(panel.id) ?? 0)) continue;
       out.push(await this.runPanel(panel));
     }
     return out;

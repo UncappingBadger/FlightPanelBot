@@ -1,6 +1,7 @@
 import type { AeroContract, AeroFlight, AeroconomyClient } from '../aeroconomy/client.js';
 import type { JobView, Panel, Store } from '../db/store.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
+import { HourlySlot } from './hourlySlot.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
 /**
@@ -11,8 +12,8 @@ import { silentLogger, type Logger } from '../util/log.js';
  * that flight's number as its ID. See `aeroconomy/client.ts` for what is read, and how slowly.
  */
 
-/** How long what was read is used before the contracts are read again. */
-const REFRESH_MS = 6 * 3_600_000;
+/** How many hourly slots what was read is used before the contracts are read again (so the read starts at the same moment as the hourly checks). */
+const REFRESH_SLOTS = 6;
 /** After a failed read, the next try is no sooner than this. */
 const RETRY_MS = 30 * 60_000;
 /** A sheet row's landing window is the flight's, give or take this (a sheet says 23:59:00, Aeroconomy 23:59:59). */
@@ -115,11 +116,14 @@ export interface AeroNumbersDeps {
   apply?: (panel: Panel) => Promise<unknown>;
   logger?: Logger;
   now?: () => number;
+  /** The moment each hour at which the hourly checks happen together; the read of Aeroconomy starts in every sixth slot. */
+  slot?: HourlySlot;
 }
 
 export class AeroNumbers {
   private readonly now: () => number;
   private readonly log: Logger;
+  private readonly slot: HourlySlot;
   private readonly caches = new Map<number, NumbersCache | null>();
   private readonly failedAt = new Map<number, number>();
   private busy: Promise<void> | null = null;
@@ -127,6 +131,7 @@ export class AeroNumbers {
   constructor(private readonly d: AeroNumbersDeps) {
     this.now = d.now ?? Date.now;
     this.log = d.logger ?? silentLogger;
+    this.slot = d.slot ?? new HourlySlot(0);
   }
 
   /** The panels that take Aeroconomy's flight numbers: switched on, and linked to an airline's FsHub number (which the contracts name). */
@@ -201,7 +206,7 @@ export class AeroNumbers {
       const cache = this.cacheFor(p.fshubAirlineId);
       const failed = this.failedAt.get(p.fshubAirlineId);
       if (failed !== undefined && now - failed < RETRY_MS) continue;
-      if (!cache || now - cache.at >= REFRESH_MS) due.add(p.fshubAirlineId);
+      if (!cache || this.slot.slotsSince(cache.at, now) >= REFRESH_SLOTS) due.add(p.fshubAirlineId);
     }
     if (due.size === 0) return;
     this.busy = this.readAll([...due]).finally(() => {
