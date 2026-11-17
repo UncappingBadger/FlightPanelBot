@@ -12,6 +12,7 @@ import type { Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
 import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
+import type { AeroNumbers } from '../services/aeroNumbers.js';
 import type { DailyNote } from '../services/dailyNote.js';
 import type { FlightEtas } from '../services/flightEtas.js';
 import type { FsHubSync } from '../services/fshubSync.js';
@@ -47,6 +48,8 @@ export interface BotContext {
   dailyNote?: DailyNote | null;
   /** When each flight that is in the air is expected to land, from FsHub's live feed; absent or null when it is not followed. */
   etas?: FlightEtas | null;
+  /** Aeroconomy's own flight numbers for flights whose sheet row has none; absent or null in tests that do not use it. */
+  numbers?: AeroNumbers | null;
   log: Logger;
   now: () => number;
   /** For downloading admin-uploaded files; replaceable in tests. */

@@ -66,6 +66,8 @@ export interface Panel {
   departWarningMinutes: number;
   /** Whether pilots' flights are followed live (FsHub's public live feed) to know who is already flying and to complete a flight soon after it lands. */
   liveTracking: boolean;
+  /** Whether the flights take Aeroconomy's own flight numbers as their IDs (read from its public contracts; needs `fshubAirlineId`). Off by default. */
+  flightNumbers: boolean;
   /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
   layout: 'cards' | 'grid';
   /** The order of day and month in the short dates on a grid panel's buttons: day first (16/11/26) or month first (11/16/26). */
@@ -311,6 +313,7 @@ const toPanel = (r: Row): Panel => ({
   completedMessageIds: parseJsonArray<string>(r.completed_message_ids, []).map(String),
   departWarningMinutes: r.depart_warning_minutes === undefined || r.depart_warning_minutes === null ? 30 : Math.min(180, Math.max(0, Math.round(n(r.depart_warning_minutes)))),
   liveTracking: r.live_tracking === undefined || r.live_tracking === null ? true : n(r.live_tracking) !== 0,
+  flightNumbers: r.flight_numbers !== undefined && r.flight_numbers !== null && n(r.flight_numbers) !== 0,
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
   createdAt: n(r.created_at),
@@ -512,12 +515,14 @@ export class Store {
       showDays: number;
       departWarningMinutes: number;
       liveTracking: boolean;
+      flightNumbers: boolean;
       layout: 'cards' | 'grid';
       gridDates: 'dmy' | 'mdy';
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.flightNumbers !== undefined) (sets.push('flight_numbers = ?'), params.push(patch.flightNumbers ? 1 : 0));
     if (patch.gridDates !== undefined) {
       if (patch.gridDates !== 'dmy' && patch.gridDates !== 'mdy') throw new Error(`Dates are day first or month first, not ${String(patch.gridDates)}`);
       sets.push('grid_dates = ?');

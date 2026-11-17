@@ -27,6 +27,8 @@ import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { HardLandings } from './services/hardLanding.js';
 import { JobService } from './services/jobs.js';
+import { AeroconomyClient } from './aeroconomy/client.js';
+import { AeroNumbers } from './services/aeroNumbers.js';
 import { FlightEtas } from './services/flightEtas.js';
 import { LiveTracker } from './services/liveTracker.js';
 import { SourceRefresher } from './services/refresh.js';
@@ -82,7 +84,18 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // with `/setup sheet` (re-read every hour), or from admin file imports. Demo mode also has a
   // fictional source for panels with neither.
   const demoSource = new DemoJobSource();
-  const refresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log);
+  // A flight whose row has no flight number can take Aeroconomy's own number for it (read from Aeroconomy's public contracts, no account
+  // needed), for a panel that has it switched on (`/setup flight-numbers`) and is linked to its airline's FsHub number. The numbers are
+  // read slowly in the background, and applied by the same refresh that reads the sheet.
+  const aeroNumbers = new AeroNumbers({
+    store,
+    client: new AeroconomyClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }),
+    apply: async (panel) => {
+      if (refresher.hasSource(panel)) await refresher.refresh(panel);
+    },
+    logger: log,
+  });
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list) => aeroNumbers.enrich(panel, list));
   const panels = new PanelService(store, jobs, log);
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
@@ -162,13 +175,14 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     cleanup: { run: () => panels.cleanReminders() },
     live,
     etas,
+    numbers: aeroNumbers,
     departures,
     ...(dailyNote ? { daily: dailyNote } : {}),
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

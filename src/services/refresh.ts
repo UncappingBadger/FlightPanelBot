@@ -1,5 +1,5 @@
 import type { Panel, Store } from '../db/store.js';
-import { normalizeFetched, type JobSource } from '../jobs/types.js';
+import { normalizeFetched, type JobSource, type SourceJob } from '../jobs/types.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { JobError, type JobService, type SyncResult } from './jobs.js';
@@ -31,6 +31,8 @@ export class SourceRefresher {
     private readonly sourceFor: (panel: Panel) => JobSource | null,
     private readonly log: Logger = silentLogger,
     private readonly now: () => number = Date.now,
+    /** Adds what the source does not say to the flights it listed (the airline's flight numbers, from Aeroconomy). */
+    private readonly enrich: ((panel: Panel, jobs: SourceJob[]) => SourceJob[]) | null = null,
   ) {}
 
   hasSource(panel: Panel): boolean {
@@ -46,7 +48,7 @@ export class SourceRefresher {
     if (DEBUG_BUILD) dbg(this.log, `refresh START ${panel.airlineName} (panel ${panel.id}), source ${source.kind}, last refresh ${panel.lastRefreshAt === null ? 'never' : new Date(panel.lastRefreshAt).toISOString()}, asked by ${callerPath(1, 5)}`);
     try {
       const fetched = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
-      const { jobs } = fetched;
+      const jobs = this.enrich ? this.enrich(panel, fetched.jobs) : fetched.jobs;
       if (DEBUG_BUILD) dbg(this.log, `refresh: the source returned ${jobs.length} flight(s) and ${fetched.warnings.length} warning(s)${fetched.warnings.length > 0 ? `: ${fetched.warnings.join(' | ')}` : ''}`);
       const result = this.jobs.sync(panel.id, jobs);
       const clashes = [...new Set(result.numberClashes ?? [])];

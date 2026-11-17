@@ -81,8 +81,12 @@ export function matchFlight(f: AirlineFlight, views: JobView[], now: number): Ma
   }
   if (route.length <= 1) return route[0] ?? null;
 
-  const numbered = route.filter((m) => f.callsign !== null && normalizeFlightNumber(f.callsign) === m.view.job.code);
+  // The callsign being the flight's number settles it: either as the flight's whole ID, or with the day on the end (`SKY330-17NOV`),
+  // in which case the days that share the number are still told apart below.
+  const number = f.callsign === null ? null : normalizeFlightNumber(f.callsign);
+  const numbered = route.filter((m) => number !== null && (m.view.job.code === number || (m.view.job.code.startsWith(`${number}-`) && /^\d{2}[A-Z]{3}$/.test(m.view.job.code.slice(number.length + 1)))));
   if (numbered.length === 1) return numbered[0] as Match;
+  if (numbered.length > 1) route.splice(0, route.length, ...numbered);
 
   const landing = now + (f.etaMinutes ?? 0) * 60_000;
   const fits = (m: Match) => (m.view.job.availableFrom === null || landing >= m.view.job.availableFrom - EARLY_MS) && (m.view.job.deadline === null || landing <= m.view.job.deadline + LATE_MS);

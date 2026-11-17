@@ -370,12 +370,19 @@ export class JobService {
     // in its shorter forms (`dmo7`, `7`). A flight number is tried first: it is exactly what is on the panel.
     const typed = input.trim().toUpperCase().replace(/\s+/g, '');
     const code = (typed && this.store.getJobByCode(panel.id, typed) ? typed : null) ?? normalizeCode(panel.prefix, input);
-    if (!code) return null;
-    const job = this.store.getJobByCode(panel.id, code);
+    // A flight number flown on several days carries the day in its ID (`SKY330-17NOV`). Just the number finds it when only one such flight is open.
+    const job = (code ? this.store.getJobByCode(panel.id, code) : null) ?? this.datedFlight(panel.id, typed);
     if (!job || job.status !== 'open') return null;
     // A deadline that has just passed counts as closed even if the sweep hasn't run yet.
     if (job.deadline !== null && job.deadline <= this.now()) return null;
     return this.store.getJobView(job.id);
+  }
+
+  /** The one open flight whose ID is this flight number with a day on the end (`SKY330` for `SKY330-17NOV`), or null when none or several are. */
+  private datedFlight(panelId: number, typed: string): Job | null {
+    if (!/^[A-Z][A-Z0-9]{1,15}$/.test(typed)) return null;
+    const hits = this.store.listJobs(panelId, 'open').filter((j) => j.code.startsWith(`${typed}-`) && /^\d{2}[A-Z]{3}$/.test(j.code.slice(typed.length + 1)));
+    return hits.length === 1 ? (hits[0] as Job) : null;
   }
 
   /**

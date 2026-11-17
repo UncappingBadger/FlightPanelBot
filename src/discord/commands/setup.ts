@@ -445,6 +445,18 @@ export const setupCommand: Command = {
     )
     .addSubcommand((s) =>
       s
+        .setName('flight-numbers')
+        .setDescription("Use Aeroconomy's own flight numbers as the flights' IDs (empty: show)")
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Turn it on or off')
+            .addChoices({ name: "On: take Aeroconomy's flight numbers as IDs", value: 'on' }, { name: 'Off: keep the IDs as they are', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
         .setName('layout')
         .setDescription('Choose how the panel looks: a card for each flight (default) or a grid of buttons (empty: show)')
         .addStringOption((o) =>
@@ -892,6 +904,41 @@ export const setupCommand: Command = {
           ].join('\n'),
           allowedMentions: noPings,
         });
+        return;
+      }
+
+      case 'flight-numbers': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const mode = interaction.options.getString('mode');
+        if (mode === 'on' && panel.fshubAirlineId === null) {
+          throw new UserError("I need to know which airline's contracts to read. Link this panel to your airline's FsHub roster first with `/setup fshub link:` (the airline's short name or FsHub number), then switch this on.");
+        }
+        if (mode === 'on' && !ctx.numbers) throw new UserError("Flight numbers from Aeroconomy aren't available in this copy of the bot.");
+        let changed = false;
+        if ((mode === 'on' && !panel.flightNumbers) || (mode === 'off' && panel.flightNumbers)) {
+          ctx.store.updatePanel(panel.id, { flightNumbers: mode === 'on' });
+          changed = true;
+        }
+        const current = ctx.store.getPanel(panel.id) as Panel;
+        const done = changed ? 'Done. ' : '';
+        if (!current.flightNumbers) {
+          await interaction.editReply({
+            content: `${done}Flight numbers from Aeroconomy are **off** for **${plainText(current.airlineName)}**. Flights keep the IDs they have; an ID that was already changed to a flight number is not changed back. \`/setup flight-numbers mode:on\` takes them (the panel must be linked to the airline's FsHub roster with \`/setup fshub\`).`,
+            allowedMentions: noPings,
+          });
+          return;
+        }
+        if (changed && current.fshubAirlineId !== null) ctx.numbers?.request(current.fshubAirlineId);
+        const cover = ctx.numbers?.coverage(current) ?? null;
+        const lines = [
+          `${done}For **${plainText(current.airlineName)}** (FsHub airline number ${current.fshubAirlineId ?? 'unknown'}), a flight whose sheet row has no flight number of its own takes Aeroconomy's number for it, when exactly one Aeroconomy flight has the same two airports and landing window. A row's own flight number is never replaced.`,
+          cover === null || cover.readAt === null
+            ? "I haven't read Aeroconomy yet. The first read takes a few minutes (it goes slowly on purpose, so Aeroconomy is not hammered), and the flights are renamed as soon as it is done."
+            : `Last read ${ts(cover.readAt, 'R')}: ${cover.flights} flights from ${cover.contracts} contract${cover.contracts === 1 ? '' : 's'}. Of the ${cover.open} open flights, ${cover.numbered} ${cover.numbered === 1 ? 'has' : 'have'} a number, ${cover.ambiguous} could be more than one Aeroconomy flight (left alone) and ${cover.none} match none.`,
+          'A number that is flown on several days carries the day (`SKY330-17NOV`); pilots can type just the number when only one such flight is open. A flight with a number has its ID changed on the panel, once.',
+          "Only Aeroconomy's public pages are read: no account or token, and nothing about anyone is sent. Switch it off with `/setup flight-numbers mode:off`.",
+        ];
+        await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
         return;
       }
 

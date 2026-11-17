@@ -530,6 +530,12 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN reminded_day INTEGER;
   `,
+
+  /* v31: whether a panel takes Aeroconomy's own flight numbers as its flights' IDs (read from Aeroconomy's public contracts, for a panel
+     linked to its airline's FsHub number). Off until an admin turns it on, since it changes the IDs people know. */
+  `
+  ALTER TABLE panels ADD COLUMN flight_numbers INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

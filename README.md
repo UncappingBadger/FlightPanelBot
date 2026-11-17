@@ -282,6 +282,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
 | `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
+| `/setup flight-numbers [mode] [airline]` | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (`/setup fshub`). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. |
 | `/setup layout [mode] [dates] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
@@ -674,6 +675,28 @@ Good to know:
   warnings use the live feed.
 - `/setup live-tracking [mode] [airline]` shows the setting or switches it (`mode:off`, `mode:on`). It is **on** for every panel.
 
+### Flight numbers from Aeroconomy
+
+Aeroconomy publishes every contract and its flights without any account or token (`https://aeroconomy.com/api/v1/contracts` and
+`/contracts/{id}/manifests`, documented at `aeroconomy.com/docs/api-v1`). Each flight there has the airline's own **flight number**
+(`SKY290`), the two airports and the landing window, which is what a schedule sheet row has too. `/setup flight-numbers mode:on` makes a
+flight whose sheet row has **no flight number of its own** take that number as its ID, when exactly one Aeroconomy flight has the same
+two airports and landing window (the end of a window may differ by up to two minutes: a sheet says 23:59:00, Aeroconomy 23:59:59).
+
+- **It is off by default**, because it changes the IDs people know (`SKY-091` becomes `SKY290`). Switching it on starts a first read; the
+  flights are renamed when that finishes, once. An ID that was changed is never changed back, so switching it off leaves them as they are.
+- **The panel has to be linked to its airline's FsHub roster** (`/setup fshub`), since Aeroconomy's contracts name the airline by its
+  FsHub number. The bot reads the contracts awarded to that airline that are still running.
+- **A number flown on several days carries the day**: `SKY330-17NOV`. A number flown only once is plain. Pilots can type just
+  `SKY330` when only one such flight is open.
+- **It never guesses.** A flight of several legs, a row with no landing window, a flight that two Aeroconomy flights could be, or two rows
+  that want the same flight keep their automatic ID. A number the sheet gives itself (a *Flight Number* column) is never replaced.
+- **It goes slowly, in the background.** Aeroconomy limits how fast it can be asked, so the bot reads one page every two and a half
+  seconds (a first read takes a few minutes), waits as long as a "slow down" says, and reads again every six hours. What it read is kept
+  in the bot's database, so a restart does not start over. Nothing else the bot does waits for it.
+- **Only public pages are read**, with plain requests that carry no account, token or name: nothing about any person is sent.
+- With flight numbers as IDs, the landing-time matching (see *Live tracking*) knows exactly which flight a live callsign is.
+
 ### Remarks about very hard landings
 
 The airline's FsHub flights the bot reads (see *FsHub (optional)*) carry the **landing rate** FsHub recorded: the vertical speed at
@@ -799,7 +822,7 @@ account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no t
 server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on.
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
-the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board);
+the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
@@ -812,7 +835,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2008 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2052 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 
