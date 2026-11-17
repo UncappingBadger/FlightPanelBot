@@ -27,6 +27,7 @@ import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { HardLandings } from './services/hardLanding.js';
 import { JobService } from './services/jobs.js';
+import { FlightEtas } from './services/flightEtas.js';
 import { LiveTracker } from './services/liveTracker.js';
 import { SourceRefresher } from './services/refresh.js';
 import { ReminderService } from './services/reminders.js';
@@ -121,12 +122,16 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   // FsHub's public live feed (no token): who is flying now, so a warning skips a pilot already in the air, and a flight is looked for in
   // FsHub's own record the minute its pilot lands (it is only completed when FsHub shows it flown).
+  const liveFeed = new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   const live = new LiveTracker({
     store,
-    feed: new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }),
+    feed: liveFeed,
     complete: autoComplete ? (panel, scope) => autoComplete.runPanel(panel, scope) : null,
     logger: log,
   });
+  // The same feed says when each of the airline's flights in the air is expected to land: on the flight's card, and for `/eta`.
+  const etas = new FlightEtas({ store, feed: liveFeed, panels, logger: log });
+  panels.etas = etas;
   const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log, live });
   // A short note once a day to one person, when a host has named them (nothing is sent otherwise).
   let airlineSeen: { at: number; name: string | null } | null = null;
@@ -156,13 +161,14 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     panels,
     cleanup: { run: () => panels.cleanReminders() },
     live,
+    etas,
     departures,
     ...(dailyNote ? { daily: dailyNote } : {}),
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

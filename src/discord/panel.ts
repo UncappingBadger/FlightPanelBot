@@ -2,6 +2,7 @@ import { MessageFlags, PermissionFlagsBits, type ActionRowBuilder, type Client, 
 import type { Panel, PanelFollower, Store } from '../db/store.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import type { FlightEta } from '../services/flightEtas.js';
 import { confirmationsFor } from '../services/flightMatch.js';
 import { COMPLETED_SHOW_MS, panelHorizonMs, type JobService } from '../services/jobs.js';
 import { CLEANUP_BEFORE_MIDNIGHT_MS, DAY_MS, startOfUtcDay, type Reminder } from '../services/reminders.js';
@@ -78,6 +79,8 @@ export class PanelService {
   private readonly changeAt = new Map<number, number>();
   /** Whether the bot has a FsHub token, so the panel can say flights are completed from FsHub automatically. Set at start-up. */
   fshubEnabled = false;
+  /** Where each flight in the air is expected to land, for the cards. Set at start-up; null (nothing is shown) until then. */
+  etas: { forPanel(panelId: number): ReadonlyMap<number, FlightEta> } | null = null;
   /** The work of keeping people's lists up to date, one panel at a time (a list's messages are changed by one task at once). */
   private readonly followChains = new Map<number, Promise<unknown>>();
   /** An update of a panel's lists that is queued but has not started: requests made meanwhile share it. */
@@ -206,7 +209,7 @@ export class PanelService {
   private render(panel: Panel, l: ReturnType<PanelService['listing']>, avatars: ReadonlyMap<string, Avatar>) {
     // Completed flights show what FsHub recorded for them, where the panel is linked to its airline's FsHub flights.
     const autoCompletes = this.fshubEnabled && panel.fshubAirlineId !== null && panel.fshubConfirm && panel.fshubAutoComplete;
-    return renderPanelParts(panel, l.shown, l.now, l.completed, confirmationsFor(this.store, panel, l.completed, l.now), autoCompletes, l.later, avatars);
+    return renderPanelParts(panel, l.shown, l.now, l.completed, confirmationsFor(this.store, panel, l.completed, l.now), autoCompletes, l.later, avatars, this.etas?.forPanel(panel.id));
   }
 
   /**

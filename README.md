@@ -434,6 +434,7 @@ and fuel prices at airports. **None of it is real money or real stocks**, and ev
 says so. The bot reads AeroDAQ's public API (`https://aerodaq.com/api/v1`, no account or key) and sends nothing
 about pilots, servers or airlines.
 
+- **`/eta [flight]`** (anyone): when the airline's flights in the air are expected to land, or when one flight is (see *Live tracking*).
 - **`/fuel airport:EGLL`** (anyone): the current fuel prices at an airport, jet fuel first, as price per kg, lb,
   US gallon and litre, how far above or below the airport's usual price it is, how full its tanks are, and when
   it last changed. The answer is private to whoever asked; add `share:True` to post it in the channel. The ICAO
@@ -640,6 +641,26 @@ pilot's current flight). It uses what it learns for two things:
 **The Complete button stays** exactly as it is: it is the way to finish a flight when a pilot's FsHub ID does not match, or when
 live tracking is off or has missed a landing.
 
+#### When a flight in the air will land
+
+The same feed says when each of the airline's flights in the air is expected to land (FsHub works out the estimate from the
+flight plan and the aircraft's position). It is shown on the flight's card as a **LANDS** box (the time in your own timezone, and
+how long from now), and `/eta` (anyone) lists every flight in the air, or answers for one (`/eta flight:DMO-004`). Only flights the
+airline itself flies are followed:
+
+- the **callsign** starts with the airline's code and a number (`SKY290` for an airline whose flight IDs start `SKY`; the code is the
+  panel's short name when it has one, otherwise the prefix of its flight IDs),
+- a **flight plan** is filed, and its two airports are the two ends of a leg of a flight on the panel (when several flights of the
+  panel have that route, the callsign being the flight's number, the landing falling inside the window, or the pilot holding it
+  decides; if that still does not settle it, none is shown rather than a guess),
+- the aircraft is **in the air** and FsHub gives an estimate.
+
+A pilot of the airline flying under another callsign, or without a flight plan, is ignored: they are not flying one of its flights.
+The bot asks the feed once a minute for each airline, in one request (`movements.fshub.io/airline/SKY`), and the panel is only
+redrawn when a time first appears, goes, or has moved by about three minutes (at most every five minutes), so the card does not
+change every minute; the "in 37 minutes" beside the time counts down by itself. A time is dropped after the feed stops showing the
+flight for two looks, and none is trusted after four minutes without a good read. It follows the panel's live-tracking setting.
+
 Good to know:
 
 - Which pilots are followed: those who hold a flight in Discord and whose FsHub ID the bot knows (and trusts: an ID somebody typed
@@ -791,7 +812,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 1965 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2008 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

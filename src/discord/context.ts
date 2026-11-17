@@ -13,6 +13,7 @@ import type { FsHubApi } from '../fshub/client.js';
 import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
 import type { DailyNote } from '../services/dailyNote.js';
+import type { FlightEtas } from '../services/flightEtas.js';
 import type { FsHubSync } from '../services/fshubSync.js';
 import type { JobService } from '../services/jobs.js';
 import type { SourceRefresher } from '../services/refresh.js';
@@ -44,6 +45,8 @@ export interface BotContext {
   autoComplete: AutoCompleter | null;
   /** The once-a-day note to one configured person; absent or null when none is set up. */
   dailyNote?: DailyNote | null;
+  /** When each flight that is in the air is expected to land, from FsHub's live feed; absent or null when it is not followed. */
+  etas?: FlightEtas | null;
   log: Logger;
   now: () => number;
   /** For downloading admin-uploaded files; replaceable in tests. */

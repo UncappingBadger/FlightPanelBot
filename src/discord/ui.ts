@@ -11,6 +11,7 @@ import {
 import type { FlownFlight, Holder, JobView, LegView, Panel } from '../db/store.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
 import { isAliasUse } from '../services/aircraftAliases.js';
+import type { FlightEta } from '../services/flightEtas.js';
 import { sameAircraft, type Confirmations } from '../services/flightMatch.js';
 import { NOTICE_HINT } from '../services/notices.js';
 import { MAX_SEARCH_RESULTS, type SearchDay } from '../services/search.js';
@@ -241,7 +242,7 @@ const box = (name: string, value: string): APIEmbedField => ({ name, value: valu
 const SCHEDULE_WORD: Record<string, string> = { 'ON-TIME': 'on time', DELAYED: 'delayed', LATE: 'late' };
 
 /** A flight that can be reserved (or already has been), as a card. */
-export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { showOpened?: boolean } = {}): EmbedBuilder {
+export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { showOpened?: boolean; eta?: FlightEta | null } = {}): EmbedBuilder {
   const { job, legs } = view;
   const taken = isTaken(view);
   const title = [job.code, legs.length > 1 ? `${legs.length} legs` : '', job.aircraft ? plainText(truncate(job.aircraft, 20)) : ''].filter(Boolean).join(' · ');
@@ -269,6 +270,8 @@ export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { 
   // The private details of a grid panel say when the flight opened too (the cards of the default layout never did).
   else if (opts.showOpened && job.availableFrom !== null) fields.push(box('OPENED', `${ts(job.availableFrom, 'F')}\n${ts(job.availableFrom, 'R')}`));
   if (job.deadline !== null) fields.push(box('COMPLETE BY', `${ts(job.deadline, 'F')}\n${ts(job.deadline, 'R')}`));
+  // A flight that is in the air now says when it is expected to land (from FsHub's live feed; the panel only redraws when that moves by a few minutes).
+  if (opts.eta) fields.push(box(opts.eta.legs > 1 ? `LANDS · LEG ${opts.eta.legNo}` : 'LANDS', `${ts(opts.eta.etaAt, 't')}\n${ts(opts.eta.etaAt, 'R')}`));
   if (job.pay) fields.push(box('PAY', plainText(truncate(job.pay, 40))));
   const who = legs.length === 1 ? holderText(legs[0] as LegView) : legs.map((l) => `\`${l.legNo}\` ${legText(l)} — ${holderText(l)}`).join('\n');
   fields.push({ name: legs.length > 1 ? 'PILOTS' : 'PILOT', value: truncate(who, 1000) || '*open*', inline: false });
@@ -393,7 +396,7 @@ export interface PanelParts {
  * `later` is how many flights were left out because they start beyond the panel's period (`panel.showDays`); a note after the
  * open flights says so. The disclaimer is on the very last card.
  */
-export function renderPanelParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0, avatars?: Avatars): PanelParts {
+export function renderPanelParts(panel: Panel, views: JobView[], now: number, completed: JobView[] = [], confirmations?: Confirmations, autoCompletes = false, later = 0, avatars?: Avatars, etas?: ReadonlyMap<number, FlightEta>): PanelParts {
   const intro = [
     ...panelIntro(panel, views, now, autoCompletes),
     ...(panel.completedChannelId ? [`Completed flights are in <#${panel.completedChannelId}>.`] : []),
@@ -409,7 +412,7 @@ export function renderPanelParts(panel: Panel, views: JobView[], now: number, co
     .setDescription(views.length === 0 ? `${intro}\n\nNo flights are listed right now.` : intro);
   const open = layout(
     openHead,
-    views.map((v) => openCard(v, now, avatars)),
+    views.map((v) => openCard(v, now, avatars, { eta: etas?.get(v.job.id) ?? null })),
     (notShown) => [...laterNote, ...(notShown > 0 ? [noteCard(`…and ${notShown} more flight${notShown === 1 ? '' : 's'} not shown.`)] : [])],
     MAX_OPEN_MESSAGES,
   );

@@ -7,8 +7,8 @@ import { silentLogger, type Logger } from '../util/log.js';
  * and what phase of the flight they are in. It needs no account or token. It only ever sends GET requests, only to that host, and
  * the only thing in a request is a pilot's FsHub ID (a public number, the one in their FsHub profile address).
  *
- * Two calls are used: the list of pilots online (small), and one pilot's current flight. A pilot with no flight is a 404, which is
- * "not flying", not an error.
+ * Three calls are used: the list of pilots online (small), one pilot's current flight, and the flights of one airline (also small).
+ * A pilot with no flight is a 404, which is "not flying", not an error.
  */
 export const LIVE_FEED = 'https://movements.fshub.io';
 
@@ -43,8 +43,36 @@ export interface LivePilot {
   flight: LiveFlight | null;
 }
 
-/** Phases that mean the aircraft is flying, for when the feed does not say outright. */
-const AIRBORNE_PHASES = new Set(['climbing', 'level_flight', 'cruise', 'descending', 'approach']);
+/**
+ * Phases that mean the aircraft is flying, for when the feed does not say outright. (FsHub's list, from its November 2026 announcement:
+ * calculating, awaiting_departure, taxiing_to_runway, take_off, climbing, cruise, level_flight, descending, on_approach, landed,
+ * taxiing_to_gate, arrived. `approach` is an older spelling of `on_approach`.)
+ */
+const AIRBORNE_PHASES = new Set(['take_off', 'climbing', 'level_flight', 'cruise', 'descending', 'on_approach', 'approach']);
+
+/** Whether a FsHub flight phase means the aircraft is flying. */
+export const isAirbornePhase = (phase: string | null | undefined): boolean => phase != null && AIRBORNE_PHASES.has(phase);
+
+/** One flight in the list of an airline's flights, as far as the bot reads it. */
+export interface AirlineFlight {
+  flightId: string;
+  /** The FsHub pilot flying it. */
+  pilotId: number | null;
+  /** The callsign of the flight plan (upper case), or null when the pilot filed no plan. */
+  callsign: string | null;
+  dep: string | null;
+  arr: string | null;
+  phase: string | null;
+  onGround: boolean | null;
+  /** FsHub's own estimate of the minutes until it lands. Only meaningful while the aircraft is flying. */
+  etaMinutes: number | null;
+}
+
+/**
+ * A part of a flight that is not an object counts as missing. FsHub sends `false`, not null, for a part a flight does not have: `plan`
+ * when no flight plan was filed (most flights), `airline` for a pilot flying for none. Without this, those pilots failed to read at all.
+ */
+const objectOrMissing = (v: unknown): unknown => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : undefined);
 
 const airport = z
   .string()
@@ -60,17 +88,44 @@ const PilotSchema = z
   .object({
     pilot_id: z.number().int(),
     is_airborne: z.boolean().nullish(),
-    active_flight: z
-      .object({
-        id: z.union([z.string(), z.number()]).transform(String),
-        phase: z.string().nullish(),
-        position: z.object({ on_ground: z.boolean().nullish() }).passthrough().nullish(),
-        plan: z.object({ departure: airport, arrival: airport }).passthrough().nullish(),
-      })
-      .passthrough()
-      .nullish(),
+    active_flight: z.preprocess(
+      objectOrMissing,
+      z
+        .object({
+          id: z.union([z.string(), z.number()]).transform(String),
+          phase: z.string().nullish(),
+          position: z.preprocess(objectOrMissing, z.object({ on_ground: z.boolean().nullish() }).passthrough().optional()),
+          plan: z.preprocess(objectOrMissing, z.object({ departure: airport, arrival: airport }).passthrough().optional()),
+        })
+        .passthrough()
+        .optional(),
+    ),
   })
   .passthrough();
+
+const callsign = z
+  .string()
+  .nullish()
+  .transform((v) => {
+    const code = (v ?? '').trim().toUpperCase();
+    return /^[A-Z0-9-]{1,12}$/.test(code) ? code : null;
+  });
+
+const AirlineSchema = z.object({ flights: z.array(z.unknown()).default([]) }).passthrough();
+
+const AirlineFlightSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).transform(String),
+    phase: z.string().nullish(),
+    position: z.preprocess(objectOrMissing, z.object({ on_ground: z.boolean().nullish() }).passthrough().optional()),
+    pilot: z.preprocess(objectOrMissing, z.object({ id: z.number().int().nullish() }).passthrough().optional()),
+    plan: z.preprocess(objectOrMissing, z.object({ callsign, flight_no: callsign, departure: airport, arrival: airport }).passthrough().optional()),
+    eta_minutes: z.number().finite().nullish(),
+  })
+  .passthrough();
+
+/** A short airline code as FsHub's feed takes it (the airline's abbreviation, such as `SKY`), or null when it is not one. */
+const airlineCode = (raw: string): string | null => (/^[A-Za-z0-9]{2,6}$/.test(raw.trim()) ? raw.trim().toUpperCase() : null);
 
 export interface LiveFeedOptions {
   fetchFn?: typeof fetch;
@@ -118,6 +173,36 @@ export class LiveFeed {
       : null;
     const airborne = parsed.data.is_airborne ?? (flight !== null && flight.onGround === false && flight.phase !== null && AIRBORNE_PHASES.has(flight.phase));
     return { pilotId: parsed.data.pilot_id, airborne: airborne === true && flight !== null, flight };
+  }
+
+  /**
+   * Every flight FsHub's live feed shows for an airline, in one request. A flight that cannot be read is left out (the others still are),
+   * and an airline with nothing flying (or one the feed does not know) is an empty list.
+   */
+  async airlineFlights(abbr: string): Promise<AirlineFlight[]> {
+    const code = airlineCode(abbr);
+    if (code === null) return [];
+    const body = await this.get(`/airline/${code}`);
+    if (body === null) return [];
+    const list = AirlineSchema.safeParse(body);
+    if (!list.success) throw new LiveFeedError('The live feed sent an airline in a form I do not understand.');
+    const out: AirlineFlight[] = [];
+    for (const raw of list.data.flights) {
+      const f = AirlineFlightSchema.safeParse(raw);
+      if (!f.success) continue;
+      const plan = f.data.plan;
+      out.push({
+        flightId: f.data.id,
+        pilotId: f.data.pilot?.id ?? null,
+        callsign: plan?.callsign ?? plan?.flight_no ?? null,
+        dep: plan?.departure ?? null,
+        arr: plan?.arrival ?? null,
+        phase: f.data.phase ?? null,
+        onGround: f.data.position?.on_ground ?? null,
+        etaMinutes: f.data.eta_minutes ?? null,
+      });
+    }
+    return out;
   }
 
   /** The JSON at a path, or null for a 404. Anything else that is not a good answer throws. */

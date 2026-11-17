@@ -66,6 +66,50 @@ describe('the live feed client', () => {
     assert.deepEqual(await feed.pilot(7), { pilotId: 7, airborne: false, flight: { flightId: '9', phase: 'taxiing_to_runway', onGround: true, dep: null, arr: null } });
   });
 
+  it('reads a flight whose plan and airline are `false`, which is how FsHub says a flight has none (most flights)', async () => {
+    // The shape FsHub's live service sends (made-up pilot): `plan: false`, `airline: false`, no flight plan filed.
+    reply = () =>
+      json({
+        pilot_id: 5,
+        pilot: { id: 5, name: 'Made Up', avatar_url: 'https://example.invalid/a.png', profile_url: 'https://example.invalid/p' },
+        is_airborne: true,
+        active_flight: {
+          id: 'f5',
+          phase: 'level_flight',
+          joinfs: false,
+          position: { lat: 1, lng: 2, altitude_ft: 30000, heading: 90, speed_tas_kts: 450, on_ground: false, squawk: '0000' },
+          aircraft: { icao: 'B738' },
+          pilot: { id: 5, name: 'Made Up' },
+          airline: false,
+          plan: false,
+          last_seen: '2026-11-17T04:30:05Z',
+        },
+      });
+    assert.deepEqual(await feed.pilot(5), { pilotId: 5, airborne: true, flight: { flightId: 'f5', phase: 'level_flight', onGround: false, dep: null, arr: null } });
+  });
+
+  it('is not thrown by any other part of a flight being false, or the flight itself being false', async () => {
+    reply = () => json({ pilot_id: 5, is_airborne: false, active_flight: { id: 'f', phase: 'arrived', position: false, plan: false } });
+    assert.deepEqual(await feed.pilot(5), { pilotId: 5, airborne: false, flight: { flightId: 'f', phase: 'arrived', onGround: null, dep: null, arr: null } });
+    reply = () => json({ pilot_id: 5, is_airborne: false, active_flight: { id: 'g', phase: 'arrived', plan: [] } });
+    assert.deepEqual((await feed.pilot(5))!.flight, { flightId: 'g', phase: 'arrived', onGround: null, dep: null, arr: null }, 'an empty list is no plan either');
+    reply = () => json({ pilot_id: 5, is_airborne: false, active_flight: false });
+    assert.deepEqual(await feed.pilot(5), { pilotId: 5, airborne: false, flight: null });
+    reply = () => json({ pilot_id: 5, is_airborne: false, active_flight: { phase: 'arrived' } });
+    await assert.rejects(feed.pilot(5), (e: unknown) => e instanceof LiveFeedError, 'a flight with no ID is still nonsense');
+  });
+
+  it('counts the take-off and the approach as the air, in FsHub\'s newer phase names, when it does not say outright', async () => {
+    for (const phase of ['take_off', 'on_approach']) {
+      reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase, position: { on_ground: false } } });
+      assert.equal((await feed.pilot(7))!.airborne, true, phase);
+    }
+    for (const phase of ['calculating', 'awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']) {
+      reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase, position: { on_ground: false } } });
+      assert.equal((await feed.pilot(7))!.airborne, false, phase);
+    }
+  });
+
   it('works out the air from the phase when the feed does not say, and never calls a flight on the ground airborne', async () => {
     reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'climbing', position: { on_ground: false } } });
     assert.equal((await feed.pilot(7))!.airborne, true);

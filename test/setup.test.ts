@@ -65,7 +65,7 @@ describe('/setup (admins only)', () => {
       const json = setup.data.toJSON();
       assert.equal(json.default_member_permissions, '32'); // ManageGuild
       assert.deepEqual(json.contexts, [0]);
-      assert.deepEqual(commands.map((c) => c.data.name).sort(), ['fuel', 'help', 'hideunavailable', 'setup'], 'no user-facing command picks an airline');
+      assert.deepEqual(commands.map((c) => c.data.name).sort(), ['eta', 'fuel', 'help', 'hideunavailable', 'setup'], 'no user-facing command picks an airline');
     });
 
     it('no longer has anything to do with FsHub: no verify step, and the airline is just typed', () => {

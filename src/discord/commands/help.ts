@@ -30,7 +30,7 @@ export const helpCommand: Command = {
             {
               name: 'A list instead of cards',
               value:
-                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. Use the panel's buttons to reserve and the rest; **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes what you see.",
+                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes what you see.",
             },
             {
               name: 'If your server uses the button grid',
@@ -52,9 +52,13 @@ export const helpCommand: Command = {
                 "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. If FsHub's live feed shows you already flying it, I don't send it; otherwise ignore it if you are flying. DM me `notifications` to switch it, or the completed-flight DM, off.",
             },
             {
+              name: 'Landing times',
+              value: "A flight in the air shows its expected landing time on its card. `/eta` lists them all, or one flight (`/eta flight:DMO-004`).",
+            },
+            {
               name: 'When you have flown it',
               value:
-                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights get a panel of their own below the open ones. On a FsHub panel I also complete the flights FsHub shows you flew, within minutes of landing and again every hour, and DM you.",
+                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights get a panel of their own below the open ones.",
             },
             {
               name: 'Weather reports (METAR)',

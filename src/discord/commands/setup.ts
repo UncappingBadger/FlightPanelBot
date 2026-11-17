@@ -16,6 +16,7 @@ import { MAX_IMPORT_BYTES, parseJobsFile, sampleCsv } from '../../jobs/import.js
 import { parseSheetUrl, SheetJobSource } from '../../jobs/sheet.js';
 import type { AutoCompleteResult } from '../../services/autoComplete.js';
 import { DEPART_WARNING_DEFAULT_MINUTES, DEPART_WARNING_MAX_MINUTES, DEPART_WARNING_MIN_MINUTES } from '../../services/departureWarnings.js';
+import { callsignCode } from '../../services/flightEtas.js';
 import { parsePilotId } from '../../services/pilotId.js';
 import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
 import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '../../services/jobs.js';
@@ -883,6 +884,7 @@ export const setupCommand: Command = {
           content: [
             `${done}For **${panel.airlineName}**, I follow your pilots' flights live, using FsHub's public live feed (no account needed; the only thing it is asked is a pilot's public FsHub ID).`,
             `• A late-departure warning is not sent to a pilot who is already in the air on that flight.`,
+            `• A flight flown with the airline's own callsign (\`${callsignCode(current)}\` and a number, the start of its flight IDs) and a flight plan between the flight's airports shows when it is expected to land on its card while it is in the air, and \`/eta\` lists them. Flights flown any other way are ignored.`,
             completes
               ? "• The minute a pilot lands, I look for their flight in FsHub's own record (again every minute for a few minutes) and complete it only once FsHub shows it flown, by the same rules as the hourly check. Pilots can still press **Complete**, which stays the way to finish a flight when their FsHub ID does not match."
               : '• Completing a flight when its pilot lands needs this panel linked to FsHub with automatic completion on (`/setup fshub`); until then only the warnings use the live feed.',
