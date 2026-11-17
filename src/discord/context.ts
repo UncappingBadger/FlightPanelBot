@@ -13,6 +13,7 @@ import type { FsHubApi } from '../fshub/client.js';
 import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
 import type { AeroNumbers } from '../services/aeroNumbers.js';
+import type { AirlineProfits } from '../services/airlineProfits.js';
 import type { DailyNote } from '../services/dailyNote.js';
 import type { HourlySlot } from '../services/hourlySlot.js';
 import type { FlightEtas } from '../services/flightEtas.js';
@@ -51,6 +52,8 @@ export interface BotContext {
   etas?: FlightEtas | null;
   /** Aeroconomy's own flight numbers for flights whose sheet row has none; absent or null in tests that do not use it. */
   numbers?: AeroNumbers | null;
+  /** Compares Aeroconomy's profit per flight with the sheet's Profit Made, for `/setup profit`; null when the bot has no FsHub token. */
+  profits?: AirlineProfits | null;
   /** The one moment each hour at which all the hourly checks happen; absent in tests that do not use it. */
   slot?: HourlySlot;
   log: Logger;

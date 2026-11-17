@@ -33,6 +33,27 @@ export class WriteBackError extends Error {
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/** A profit to write into a blank Profit Made cell, and what the row looked like when the profit was worked out. */
+export interface ProfitFill {
+  sourceKey: string;
+  /** Whole dollars, as the sheet is kept. */
+  value: number;
+  /** The row and the pilot's name it had a moment ago: if either has changed since, nothing is written to it. */
+  row: number;
+  pilot: string;
+  /** What the pilot is paid for the flight, in whole dollars, for the row's Pilot Pay cell; written only if that cell is empty too. Null or missing: none. */
+  pay?: number | null;
+}
+
+export interface ProfitFillResult {
+  written: Array<{ sourceKey: string; cell: string; value: number }>;
+  /** Pilot Pay cells written beside the profits, and how many were asked for but left alone because the cell has something in it (or there is no such column). */
+  paid: Array<{ sourceKey: string; cell: string; value: number }>;
+  payLeft: number;
+  /** Fills not written, and why: the row is gone or has moved, its pilot changed, it is not ticked as completed, or the cell is no longer blank. */
+  skipped: Array<{ sourceKey: string; reason: 'gone' | 'moved' | 'changed' | 'not-completed' | 'filled' }>;
+}
+
 interface Located {
   ref: SheetRef;
   title: string;
@@ -48,6 +69,9 @@ interface Located {
  * of a flight's own row: the Pilot cell and the Flight Completed box. Before every write it reads
  * the tab afresh and finds the row again by the flight's route and date, so a sheet that has been
  * edited or re-sorted in the meantime is never written to blindly.
+ *
+ * The one other thing it can write is a blank Profit Made cell, and the pilot's pay in a blank Pilot Pay cell beside it, and only when an
+ * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`). It never changes a cell that has anything in it.
  */
 export class SheetWriteBack {
   private readonly now: () => number;
@@ -124,6 +148,72 @@ export class SheetWriteBack {
       else if (!same(at.pilot, name)) throw new WriteBackError('CONFLICT', `The sheet names **${at.pilot}** for that flight, so I haven't ticked it.`, at.pilot);
       if (!at.ticked) cells.push({ a1: at.doneCell, value: true });
       await this.write(at, cells);
+    });
+  }
+
+  /**
+   * Write profits into Profit Made cells, but only the blank ones. The tab is read afresh, and each flight is found again by its key; a
+   * profit is written only if its row is where it was, still names the same pilot, is ticked as completed, and the cell is still empty.
+   * Anything else is left alone and said so in the result. Nothing that is already in a cell is ever replaced.
+   */
+  fillProfits(panel: Panel, fills: ProfitFill[]): Promise<ProfitFillResult> {
+    return this.serial(async () => {
+      const ref = this.refOf(panel);
+      const result: ProfitFillResult = { written: [], paid: [], payLeft: 0, skipped: [] };
+      try {
+        const tab = await this.api.readTab(ref);
+        // What is really in the cells as well as what they show: a cell with a formula that shows nothing is still filled in.
+        const stored = await this.api.readTab(ref, 'FORMULA');
+        const parsed = parseScheduleValues(tab.values, this.now());
+        if (!parsed || parsed.cols.pilot < 0 || parsed.cols.done < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find the Pilot and Flight Completed columns in that sheet.");
+        if (parsed.cols.profit < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find a Profit Made column in that sheet.");
+        const cells: Cell[] = [];
+        for (const fill of fills) {
+          const row = parsed.rowOf.get(fill.sourceKey);
+          if (row === undefined) {
+            result.skipped.push({ sourceKey: fill.sourceKey, reason: 'gone' });
+            continue;
+          }
+          if (row !== fill.row) {
+            result.skipped.push({ sourceKey: fill.sourceKey, reason: 'moved' });
+            continue;
+          }
+          const values = tab.values[row - 1] ?? [];
+          const pilot = (values[parsed.cols.pilot] ?? '').trim();
+          if (!same(pilot, fill.pilot)) {
+            result.skipped.push({ sourceKey: fill.sourceKey, reason: 'changed' });
+            continue;
+          }
+          if (!isTicked(values[parsed.cols.done] ?? '') || isCancelled(pilot)) {
+            result.skipped.push({ sourceKey: fill.sourceKey, reason: 'not-completed' });
+            continue;
+          }
+          // Empty means empty: not a space, not a note, not a formula, not a zero. Anything at all in the cell, and it is left exactly as it is.
+          if ((values[parsed.cols.profit] ?? '') !== '' || (stored.values[row - 1]?.[parsed.cols.profit] ?? '') !== '') {
+            result.skipped.push({ sourceKey: fill.sourceKey, reason: 'filled' });
+            continue;
+          }
+          const a1 = `${colLetter(parsed.cols.profit)}${row}`;
+          cells.push({ a1, value: fill.value });
+          result.written.push({ sourceKey: fill.sourceKey, cell: a1, value: fill.value });
+          // The pilot's pay goes in beside it, on the same terms: only into a Pilot Pay cell with nothing in it at all.
+          if (fill.pay !== undefined && fill.pay !== null) {
+            const empty = parsed.cols.pay >= 0 && (values[parsed.cols.pay] ?? '') === '' && (stored.values[row - 1]?.[parsed.cols.pay] ?? '') === '';
+            if (empty) {
+              const payCell = `${colLetter(parsed.cols.pay)}${row}`;
+              cells.push({ a1: payCell, value: fill.pay });
+              result.paid.push({ sourceKey: fill.sourceKey, cell: payCell, value: fill.pay });
+            } else result.payLeft++;
+          }
+        }
+        if (cells.length > 0) {
+          await this.api.update(ref, tab.title, cells);
+          this.log.info(`Wrote ${result.written.length} blank Profit Made cell${result.written.length === 1 ? '' : 's'} and ${result.paid.length} blank Pilot Pay cell${result.paid.length === 1 ? '' : 's'} in the airline's sheet (asked for by an admin): ${cells.map((c) => c.a1).join(', ')}`);
+        }
+        return result;
+      } catch (e) {
+        throw this.wrap(e);
+      }
     });
   }
 

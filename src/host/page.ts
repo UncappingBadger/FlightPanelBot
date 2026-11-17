@@ -84,7 +84,7 @@ export function renderPage(version: string): string {
 
   <section id="s-fshub">
     <h2>4. Optional: connect the bot to FsHub</h2>
-    <p class="muted">With a FsHub token the bot checks the pilot IDs people type and shows the name FsHub has for each, and <code>/setup fshub</code> can read your airline's roster so pilots are matched to their Discord accounts without being asked. It only reads from FsHub and never changes anything there. Without a token the bot never contacts FsHub.</p>
+    <p class="muted">With a FsHub token the bot checks the pilot IDs people type and shows the name FsHub has for each, and <code>/setup fshub</code> can read your airline's roster so pilots are matched to their Discord accounts without being asked. It only reads from FsHub and never changes anything there. Without a token the bot never contacts FsHub. Aeroconomy accepts the same token: only if an admin runs <code>/setup profit</code> does the bot send it to Aeroconomy, and then only to read the airline's aircraft logbooks. It never writes anything to Aeroconomy.</p>
     <p class="muted">Create a personal access token at <a href="https://fshub.io/settings/integrations" target="_blank" rel="noopener">fshub.io/settings/integrations</a>. FsHub only shows an airline's roster to its members, so use an account that belongs to your airline. The token acts as that account, so keep it private; you can delete it on that page at any time.</p>
     <label for="fshub">FsHub access token</label>
     <input type="password" id="fshub" autocomplete="off" spellcheck="false" placeholder="Paste the token here">

@@ -193,8 +193,14 @@ export interface ParsedSchedule extends FetchedJobs {
   /** The sheet row (1 = the first row) each flight's key was read from. */
   rowOf: Map<string, number>;
   /** Zero-based column positions, or -1 if the tab has no such column. */
-  cols: { pilot: number; done: number };
+  cols: { pilot: number; done: number; profit: number; pay: number };
 }
+
+/** Column titles (as `canon` writes them) that hold a flight's profit: the airline's own, not a pilot's pay. */
+export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofit'];
+
+/** Column titles that hold what the pilot is paid for the flight (not `Pilot Paid`, which is a box ticked once they have been). */
+export const PAY_COLUMNS = ['pilotpay'];
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -225,6 +231,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iBackup = at((n) => n === 'backuppilot');
   const iAircraft = at((n) => n === 'aircraft' || n === 'aircrafttype');
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
+  const iProfit = at((n) => PROFIT_COLUMNS.includes(n));
+  const iPay = at((n) => PAY_COLUMNS.includes(n));
   // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
   const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
 
@@ -328,7 +336,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     warnings.push(`the sheet has ${jobs.length} flights; only the last ${MAX_JOBS} are used`);
     jobs.splice(0, jobs.length - MAX_JOBS);
   }
-  return { jobs, warnings: capWarnings(warnings), rowOf, cols: { pilot: iPilot, done: iDone } };
+  return { jobs, warnings: capWarnings(warnings), rowOf, cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay } };
 }
 
 /** A schedule tab given as rows of cells (as the Sheets API returns it). Null if it isn't a schedule layout. */

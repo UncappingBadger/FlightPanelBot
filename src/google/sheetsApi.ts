@@ -25,8 +25,8 @@ export class SheetsError extends Error {
 export interface Cell {
   /** A1 notation within the tab, such as `E57`. */
   a1: string;
-  /** Text goes in as text (never read as a formula); `true` ticks a checkbox. */
-  value: string | boolean;
+  /** Text goes in as text (never read as a formula); `true` ticks a checkbox; a number goes in as a number (the cell keeps its own format). */
+  value: string | boolean | number;
 }
 
 const BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -82,11 +82,14 @@ export class SheetsApi {
     return title;
   }
 
-  /** Every cell of the tab as displayed, row by row. Rows and trailing cells that are empty may be short or missing. */
-  async readTab(ref: SheetRef): Promise<{ title: string; values: string[][] }> {
+  /**
+   * Every cell of the tab, row by row: as displayed by default, or (`FORMULA`) as it is stored, which shows the formula of a cell that is
+   * computed and the plain content of any other. Rows and trailing cells that are empty may be short or missing.
+   */
+  async readTab(ref: SheetRef, render: 'FORMATTED_VALUE' | 'FORMULA' = 'FORMATTED_VALUE'): Promise<{ title: string; values: string[][] }> {
     const title = await this.tabTitle(ref);
     const range = encodeURIComponent(quoteTab(title));
-    const data = await this.call('GET', `${BASE}/${ref.id}/values/${range}?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`);
+    const data = await this.call('GET', `${BASE}/${ref.id}/values/${range}?majorDimension=ROWS&valueRenderOption=${render}`);
     const rows: unknown[] = Array.isArray(data?.values) ? data.values : [];
     return { title, values: rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [])) };
   }

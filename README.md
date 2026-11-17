@@ -283,6 +283,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
 | `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
 | `/setup flight-numbers [mode] [airline]` | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (`/setup fshub`). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. |
+| `/setup profit [action] [airline] [business]` | Compare what Aeroconomy says each flight **made** (its aircraft logbooks) with the sheet's **Profit Made** column. By default it only **reports** (what agrees, what differs, what is blank) and changes nothing. `action:fill` shows the blank cells it would fill in and writes them only after you press **Write** on that preview. Needs the bot's FsHub token, the panel linked to FsHub, and (to write) write-back on. Admins only. |
 | `/setup layout [mode] [dates] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
 | `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **Always sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. The bot also redraws every panel each time it starts. |
@@ -697,6 +698,43 @@ two airports and landing window (the end of a window may differ by up to two min
 - **Only public pages are read**, with plain requests that carry no account, token or name: nothing about any person is sent.
 - With flight numbers as IDs, the landing-time matching (see *Live tracking*) knows exactly which flight a live callsign is.
 
+### Profit and loss from Aeroconomy (optional)
+
+Aeroconomy works out what every flight made or lost and records it in the logbook of the aircraft that flew it, together with the callsign, the
+FsHub flight and the pilot. `/setup profit` reads the airline's aircraft and their logbooks and compares that with the **Profit Made** your managers
+type into the schedule sheet. **It is a command an admin runs; nothing happens by itself.** The bot never reads these logbooks, and never touches the
+sheet's numbers, unless an admin asks.
+
+- **`/setup profit`** (the default, `action:check`) **only reports**: how many completed flights agree with Aeroconomy (within a dollar, since the sheet
+  is kept in whole dollars), which have a Profit Made that **differs** (listed by row, with the sheet's figure and Aeroconomy's, for a manager to look at:
+  typing slips show up here), which have a **blank** Profit Made that Aeroconomy could fill, and how many it could not match. Nothing is changed.
+- **`/setup profit action:fill`** shows **exactly** the blank cells it would fill (row, flight, the amount in whole dollars, and Aeroconomy's figure to
+  the cent) and waits. **Nothing is written until the admin who asked presses *Write*** (the preview expires after ten minutes, and only that admin can
+  press it). It then reads the sheet afresh and writes a profit only where the row is where it was, still names the same pilot, is still ticked as
+  completed and the cell is **still empty**; anything else is skipped and reported. It writes **only blank Profit Made cells, as numbers**, in one
+  request, and **never changes a cell that has anything in it**: a difference is shown, not corrected. *Empty means empty*: a note such as `TBD`, a
+  stray space, a zero, an error, or a formula that happens to show nothing all count as filled, and are left exactly as they are (the bot reads what is really
+  stored in the cell, not just what it displays, and the report counts those cells as left alone).
+- **The pilot's pay, beside the profit.** If the sheet has a **Pilot Pay** column (not the *Pilot Paid* box), `fill` also offers the pay for each flight it
+  fills, worked out by the airline's rule: a flight that made a profit pays the pilot **15% of the profit, and never less than $2,000**; a flight that made
+  a **loss** still pays **$2,000, plus $1,000 for every further 500 nautical miles beyond the first 1,000** (a started 500 counts, so 1,001 nm pays $3,000
+  and 1,502 nm pays $4,000). The distance is **FsHub's**: the bot asks FsHub for each such flight (one request each, at most 25 a run, and it stops if FsHub
+  says it is busy), and the logbook's own distance has to agree with it to within a mile. If FsHub gives none, or the two disagree, **no pay is worked out for
+  that flight** and the preview says why: it never guesses. The pay goes in on the very same terms as the profit: **only into a Pilot Pay cell with nothing
+  in it at all** (a formula, a zero, a note or a stray space all count as something), checked again when *Write* is pressed, as a number. A sheet whose Pilot
+  Pay cells already hold formulas or amounts therefore gets only its profits; the preview says how many Pilot Pay cells were left as they are. A pay is only
+  ever written beside a profit the bot is writing in the same row.
+- **What counts as the same flight.** A completed row is matched to the logbook flight with the same two airports that landed in the row's day (a little
+  before it, or up to a day and a half after it begins), flown under the airline's own callsign (the code and a number, as for landing times); if
+  several flights could be it, the pilot's name decides, and if that does not, the row is left alone. A flight cannot belong to two rows, and a flight of
+  several legs is never matched.
+- **What it needs.** The bot's FsHub token (Aeroconomy accepts it), the panel linked to its airline's FsHub roster (`/setup fshub`), a sheet with a
+  *Profit Made* column, and, to write, the Google key and `/setup writeback` on. The airline's Aeroconomy business is found from the aircraft some of its
+  recent pilots fly and remembered; if it cannot be found, `business:` takes its number (the aircraft it lists must belong to this airline).
+- **What it costs.** About 25 requests, spread out one every couple of seconds (about 30 seconds in all), when an admin runs it, plus one FsHub request for
+  each blank-pay flight that lost money. The token is only ever sent to Aeroconomy and FsHub, only in plain read requests (`GET`), without following a
+  redirect, and the bot never writes anything to Aeroconomy.
+
 ### Remarks about very hard landings
 
 The airline's FsHub flights the bot reads (see *FsHub (optional)*) carry the **landing rate** FsHub recorded: the vertical speed at
@@ -772,7 +810,9 @@ A-1002,EGLL-EGCC-EGPH,A320,2026-11-12 08:00,2026-11-15 20:00,"28,000","Two legs,
 Optional. With a Google service account the sheet's owner shares the sheet with, the bot also writes: a pilot's
 name into the **Pilot** cell when they reserve, cleared when they give the flight back, and the **Flight
 Completed** box ticked when they press **Complete**. It touches only those two cells of that flight's row, and
-re-reads the tab and finds the row by route and date before every write. It refuses rather than overwrite if the
+re-reads the tab and finds the row by route and date before every write. The one other thing it can write is a *blank*
+**Profit Made** cell (and the pilot's pay in a blank **Pilot Pay** cell beside it), and only when an admin asks for exactly that and confirms it (see
+[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)); it never changes a cell that has anything in it. It refuses rather than overwrite if the
 sheet already names someone else or shows the flight finished, and a *completion* is never recorded if the sheet
 can't be updated, so the two never disagree. Names are written as plain text, never as formulas.
 
@@ -840,7 +880,7 @@ account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no t
 server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on.
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
-the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on);
+the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning needs an airport's position and again at most twice a day, only for airports it does not know yet; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
@@ -853,7 +893,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2067 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2153 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

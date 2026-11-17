@@ -66,6 +66,8 @@ export class FakeGoogle {
   readonly calls: Array<{ method: string; url: string; body: any; auth: string | null }> = [];
   /** Every batchUpdate payload, in order. */
   readonly writes: Array<{ valueInputOption: string; data: Array<{ range: string; values: unknown[][] }> }> = [];
+  /** Cells that hold a formula, by A1 address (a read that asks for formulas shows these; `values` is what the cells show). */
+  readonly formulas = new Map<string, string>();
   /** Runs once, just before the next values read answers (to simulate the sheet changing under the bot). */
   beforeNextRead: (() => void) | null = null;
 
@@ -128,8 +130,19 @@ export class FakeGoogle {
       if (range !== `'${TAB_TITLE}'`) return this.json(400, { error: { message: 'Unable to parse range' } });
       this.beforeNextRead?.();
       this.beforeNextRead = null;
-      // The real API leaves off empty trailing cells and rows.
-      const rows = this.values.map((r) => {
+      // The real API leaves off empty trailing cells and rows. A FORMULA read shows a cell's formula where it has one (its shown value may be empty).
+      const stored = rest.includes('valueRenderOption=FORMULA');
+      const source = this.values.map((r) => [...r]);
+      if (stored) {
+        for (const [a1, formula] of this.formulas) {
+          const m = /^([A-Z]+)(\d+)$/.exec(a1)!;
+          const row = Number(m[2]) - 1;
+          while (source.length <= row) source.push([]);
+          while (source[row]!.length <= colIndex(m[1] as string)) source[row]!.push('');
+          source[row]![colIndex(m[1] as string)] = formula;
+        }
+      }
+      const rows = source.map((r) => {
         const out = [...r];
         while (out.length > 0 && out.at(-1) === '') out.pop();
         return out;

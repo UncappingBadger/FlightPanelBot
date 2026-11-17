@@ -16,6 +16,8 @@ import { MAX_IMPORT_BYTES, parseJobsFile, sampleCsv } from '../../jobs/import.js
 import { parseSheetUrl, SheetJobSource } from '../../jobs/sheet.js';
 import type { AutoCompleteResult } from '../../services/autoComplete.js';
 import { DEPART_WARNING_DEFAULT_MINUTES, DEPART_WARNING_MAX_MINUTES, DEPART_WARNING_MIN_MINUTES } from '../../services/departureWarnings.js';
+import { AeroconomyError } from '../../aeroconomy/http.js';
+import { ProfitError } from '../../services/airlineProfits.js';
 import { callsignCode } from '../../services/flightEtas.js';
 import { parsePilotId } from '../../services/pilotId.js';
 import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
@@ -27,6 +29,7 @@ import { checkPilotId, pilotLabel, rememberPilotId } from '../dm.js';
 import { isDmClosed, UserError } from '../errors.js';
 import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
 import type { PanelRefreshResult } from '../panel.js';
+import { previewText, profitButtons, profitReport, rememberFills } from '../profitUi.js';
 import { noPings, reminderTarget } from '../ui.js';
 
 const REQUIRED_CHANNEL_PERMS = [
@@ -454,6 +457,19 @@ export const setupCommand: Command = {
             .addChoices({ name: "On: take Aeroconomy's flight numbers as IDs", value: 'on' }, { name: 'Off: keep the IDs as they are', value: 'off' }),
         )
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('profit')
+        .setDescription("Compare Aeroconomy's profit with the sheet's Profit Made (check), or fill the blank cells (fill)")
+        .addStringOption((o) =>
+          o
+            .setName('action')
+            .setDescription('What to do (the default only reads and reports)')
+            .addChoices({ name: 'Check: compare, and change nothing (the default)', value: 'check' }, { name: 'Fill: show the blank cells I would fill, then ask you to confirm', value: 'fill' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true))
+        .addIntegerOption((o) => o.setName('business').setDescription("The airline's Aeroconomy business number, only if I cannot find it myself").setMinValue(1)),
     )
     .addSubcommand((s) =>
       s
@@ -942,6 +958,36 @@ export const setupCommand: Command = {
           "Only Aeroconomy's public pages are read: no account or token, and nothing about anyone is sent. Switch it off with `/setup flight-numbers mode:off`.",
         ];
         await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
+        return;
+      }
+
+      case 'profit': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const action = interaction.options.getString('action') ?? 'check';
+        const business = interaction.options.getInteger('business') ?? undefined;
+        if (!ctx.profits) throw new UserError("This copy of the bot has no FsHub token, which is what I read Aeroconomy's aircraft logbooks with. Whoever runs the bot can add one on its setup page.");
+        let found;
+        try {
+          found = await ctx.profits.analyse(panel, business);
+        } catch (e) {
+          if (e instanceof ProfitError || e instanceof AeroconomyError) throw new UserError(e.message);
+          throw e;
+        }
+        const report = profitReport(panel.airlineName, found);
+        if (action !== 'fill') {
+          await interaction.editReply({ content: `${report}\n\nNothing was changed. \`/setup profit action:fill\` shows the blank cells I would fill and asks you to confirm before anything is written.`, allowedMentions: noPings });
+          return;
+        }
+        if (!ctx.writeback || !ctx.writeback.enabledFor(panel)) {
+          await interaction.editReply({ content: `${report}\n\nNothing was changed: writing to the sheet isn't switched on for this panel (it needs the Google key and \`/setup writeback\`), so I can only show you the numbers.`, allowedMentions: noPings });
+          return;
+        }
+        if (found.fills.length === 0) {
+          await interaction.editReply({ content: `${report}\n\nThere are no blank Profit Made cells I can fill, so nothing was changed.`, allowedMentions: noPings });
+          return;
+        }
+        const token = rememberFills({ userId: interaction.user.id, guildId, panelId: panel.id, fills: found.fills }, ctx.now());
+        await interaction.editReply({ content: previewText(panel.airlineName, found.fills), components: profitButtons(token, found.fills.length + found.fills.filter((f) => f.pay !== null && f.pay !== undefined).length), allowedMentions: noPings });
         return;
       }
 

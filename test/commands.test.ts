@@ -49,7 +49,7 @@ describe('command definitions', () => {
   });
 
   it('every component prefix used in custom IDs has a handler', () => {
-    assert.deepEqual(componentHandlers.map((h) => h.prefix).sort(), ['dm', 'notices', 'panel']);
+    assert.deepEqual(componentHandlers.map((h) => h.prefix).sort(), ['dm', 'notices', 'panel', 'profit']);
   });
 });
 

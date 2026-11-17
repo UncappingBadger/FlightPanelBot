@@ -27,7 +27,9 @@ import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { HardLandings } from './services/hardLanding.js';
 import { JobService } from './services/jobs.js';
+import { AeroconomyAccountClient } from './aeroconomy/account.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
+import { AirlineProfits } from './services/airlineProfits.js';
 import { AeroNumbers } from './services/aeroNumbers.js';
 import { HourlySlot } from './services/hourlySlot.js';
 import { FlightEtas } from './services/flightEtas.js';
@@ -92,9 +94,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // A flight whose row has no flight number can take Aeroconomy's own number for it (read from Aeroconomy's public contracts, no account
   // needed), for a panel that has it switched on (`/setup flight-numbers`) and is linked to its airline's FsHub number. The numbers are
   // read slowly in the background, and applied by the same refresh that reads the sheet.
+  const aeroPublic = new AeroconomyClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   const aeroNumbers = new AeroNumbers({
     store,
-    client: new AeroconomyClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }),
+    client: aeroPublic,
     apply: async (panel) => {
       if (refresher.hasSource(panel)) await refresher.refresh(panel);
     },
@@ -188,7 +191,13 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ...(autoComplete ? { autoComplete } : {}),
   });
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, log, now: Date.now, fetchFn: fetch };
+  // `/setup profit`: reads the airline's aircraft logbooks on Aeroconomy with the host's FsHub token, which Aeroconomy accepts too. It is only
+  // ever used when an admin runs that command (nothing is read, and nothing is written, by itself), and only for reading.
+  const profits = config.fshubToken
+    ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), logger: log })
+    : null;
+
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

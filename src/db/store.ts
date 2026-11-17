@@ -1060,6 +1060,11 @@ export class Store {
     this.run('INSERT OR IGNORE INTO departure_warnings(job_id, discord_id, sent_at) VALUES (?,?,?)', jobId, discordId, now);
   }
 
+  /** The FsHub pilots who flew the airline's flights most recently (each once), newest first. */
+  recentFshubPilotIds(panelId: number, limit: number): number[] {
+    return this.all('SELECT pilot_id FROM fshub_flights WHERE panel_id = ? GROUP BY pilot_id ORDER BY MAX(arrived_at) DESC LIMIT ?', panelId, limit).map((r) => n(r.pilot_id));
+  }
+
   /** The airline's FsHub flights from `dep` to `arr` that landed between `from` and `to` (epoch ms), earliest first. */
   listFshubFlights(panelId: number, dep: string, arr: string, from: number, to: number): FlownFlight[] {
     return this.all(

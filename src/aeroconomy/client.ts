@@ -1,33 +1,14 @@
 import { z } from 'zod';
-import { readTextCapped } from '../util/http.js';
-import { silentLogger, type Logger } from '../util/log.js';
+import { AeroHttp, AEROCONOMY_API, AeroconomyError, type AeroHttpOptions } from './http.js';
 
-/**
- * A small, read-only client for the PUBLIC parts of Aeroconomy's API (https://aeroconomy.com/docs/api-v1): the list of published
- * contracts, and one contract's manifests (its flights, each with the airline's own flight number). Neither needs an account or a token,
- * and nothing about any person is sent: the requests are plain GETs of public pages. It never sends a credential of any kind.
- *
- * Aeroconomy limits how fast it can be asked (a few dozen quick requests get a 429), so this client goes slowly on purpose: one request
- * every couple of seconds, and a wait for as long as a 429 says before trying again.
- */
-export const AEROCONOMY_API = 'https://aeroconomy.com/api/v1';
+export { AEROCONOMY_API, AeroconomyError };
 
-const TIMEOUT_MS = 30_000;
-const MAX_BODY_BYTES = 4_000_000;
 /** Pages read at most for one list, so a server that never says "that was the last" cannot keep the bot reading. */
 const MAX_PAGES = 20;
 /** The contract list is filtered to these, since a finished or breached contract has no flights left to number. */
 const LIVE_CONTRACT_STATUSES = ['active', 'awarded'] as const;
 /** Contracts read for one airline, at most. */
 export const MAX_CONTRACTS = 150;
-
-/** Aeroconomy could not be asked, or answered in a way that makes no sense. `message` is safe to show. */
-export class AeroconomyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AeroconomyError';
-  }
-}
 
 /** A contract awarded to an airline. */
 export interface AeroContract {
@@ -75,6 +56,15 @@ const ManifestsPage = z
   })
   .passthrough();
 
+const PilotPage = z
+  .object({
+    data: z
+      .object({ aircraft: z.preprocess(objectOrMissing, z.object({ owner: z.preprocess(objectOrMissing, z.object({ type: z.string().nullish(), fshub_airline_id: z.number().nullish(), business_id: z.number().nullish() }).passthrough().optional()) }).passthrough().optional()) })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 const iso = z.string().transform((v, ctx) => {
   const ms = Date.parse(v);
   if (!Number.isFinite(ms)) ctx.addIssue({ code: 'custom', message: 'not a date' });
@@ -91,35 +81,19 @@ const ManifestRow = z
   })
   .passthrough();
 
-export interface AeroconomyOptions {
-  fetchFn?: typeof fetch;
-  logger?: Logger;
-  userAgent?: string;
-  baseUrl?: string;
-  /** The least time between two requests. Tests set it to 0. */
-  gapMs?: number;
-  sleep?: (ms: number) => Promise<void>;
-  now?: () => number;
-}
+export type AeroconomyOptions = AeroHttpOptions;
 
-export class AeroconomyClient {
-  private readonly fetchFn: typeof fetch;
-  private readonly log: Logger;
-  private readonly userAgent: string;
-  private readonly base: string;
-  private readonly gapMs: number;
-  private readonly sleep: (ms: number) => Promise<void>;
-  private readonly now: () => number;
-  private lastAt = 0;
-
+/**
+ * A small, read-only client for the PUBLIC parts of Aeroconomy's API (https://aeroconomy.com/docs/api-v1): the list of published
+ * contracts, and one contract's manifests (its flights, each with the airline's own flight number). Neither needs an account or a token,
+ * and nothing about any person is sent: the requests are plain GETs of public pages. It never sends a credential of any kind.
+ *
+ * Aeroconomy limits how fast it can be asked (a few dozen quick requests get a 429), so this client goes slowly on purpose: one request
+ * every couple of seconds, and a wait for as long as a 429 says before trying again.
+ */
+export class AeroconomyClient extends AeroHttp {
   constructor(opts: AeroconomyOptions = {}) {
-    this.fetchFn = opts.fetchFn ?? fetch;
-    this.log = opts.logger ?? silentLogger;
-    this.userAgent = opts.userAgent ?? 'FlightPanelBot';
-    this.base = (opts.baseUrl ?? AEROCONOMY_API).replace(/\/+$/, '');
-    this.gapMs = opts.gapMs ?? 2500;
-    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.now = opts.now ?? Date.now;
+    super(opts);
   }
 
   /**
@@ -132,7 +106,7 @@ export class AeroconomyClient {
     for (const status of LIVE_CONTRACT_STATUSES) {
       let cursor: string | null = null;
       for (let page = 1; page <= MAX_PAGES; page++) {
-        const body = await this.get(`/contracts?status=${status}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        const body = await this.fetchJson(`/contracts?status=${status}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
         const parsed = ContractsPage.safeParse(body);
         if (!parsed.success) throw new AeroconomyError('Aeroconomy sent a list of contracts in a form I do not understand.');
         for (const raw of parsed.data.data) {
@@ -150,13 +124,26 @@ export class AeroconomyClient {
     return out.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true))).slice(0, MAX_CONTRACTS);
   }
 
+  /**
+   * The airline (and its backing business) that owns the aircraft a pilot is flying, from Aeroconomy's PUBLIC page for that pilot (nothing
+   * but the pilot's public FsHub number is sent). Null when the page does not exist, or the pilot has no aircraft locked.
+   */
+  async pilotAircraftOwner(fshubPilotId: number): Promise<{ airlineId: number; businessId: number } | null> {
+    if (!Number.isSafeInteger(fshubPilotId) || fshubPilotId <= 0) return null;
+    const body = await this.fetchJson(`/pilots/${fshubPilotId}`);
+    const parsed = PilotPage.safeParse(body);
+    const owner = parsed.success ? parsed.data.data?.aircraft?.owner : undefined;
+    if (!owner || owner.type !== 'airline' || typeof owner.fshub_airline_id !== 'number' || typeof owner.business_id !== 'number') return null;
+    return { airlineId: owner.fshub_airline_id, businessId: owner.business_id };
+  }
+
   /** Every flight of one contract. A flight that cannot be read is left out; a contract that is gone is an empty list. */
   async manifests(contractId: number): Promise<AeroFlight[]> {
     if (!Number.isSafeInteger(contractId) || contractId <= 0) return [];
     const out: AeroFlight[] = [];
     let last = 1;
     for (let page = 1; page <= Math.min(last, MAX_PAGES); page++) {
-      const body = await this.get(`/contracts/${contractId}/manifests?page=${page}`);
+      const body = await this.fetchJson(`/contracts/${contractId}/manifests?page=${page}`);
       if (body === null) return out;
       const parsed = ManifestsPage.safeParse(body);
       if (!parsed.success) throw new AeroconomyError('Aeroconomy sent a contract in a form I do not understand.');
@@ -175,51 +162,5 @@ export class AeroconomyClient {
       }
     }
     return out;
-  }
-
-  /** The JSON at a path, or null for a 404. Anything else that is not a good answer throws. Waits its turn, and out a 429. */
-  private async get(path: string): Promise<unknown | null> {
-    for (let attempt = 1; ; attempt++) {
-      const wait = this.lastAt + this.gapMs - this.now();
-      if (wait > 0) await this.sleep(wait);
-      this.lastAt = this.now();
-
-      let res: Response;
-      try {
-        res = await this.fetchFn(`${this.base}${path}`, {
-          method: 'GET',
-          redirect: 'manual',
-          headers: { accept: 'application/json', 'user-agent': this.userAgent },
-          signal: AbortSignal.timeout(TIMEOUT_MS),
-        });
-      } catch (e) {
-        throw new AeroconomyError(`Aeroconomy could not be reached (${e instanceof Error ? e.name : 'error'}).`);
-      }
-      if (res.status === 429) {
-        await res.body?.cancel().catch(() => undefined);
-        const asked = Number(res.headers.get('retry-after'));
-        const seconds = Math.min(60, Number.isFinite(asked) && asked > 0 ? asked : 20 * attempt);
-        if (attempt >= 3) throw new AeroconomyError('Aeroconomy asked me to slow down, and still did after waiting.');
-        this.log.debug(`Aeroconomy said slow down; waiting ${seconds} seconds`);
-        await this.sleep(seconds * 1000);
-        this.lastAt = this.now();
-        continue;
-      }
-      if (res.status === 404) {
-        await res.body?.cancel().catch(() => undefined);
-        return null;
-      }
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => undefined);
-        throw new AeroconomyError(`Aeroconomy answered ${res.status}.`);
-      }
-      const text = await readTextCapped(res, MAX_BODY_BYTES);
-      if (text === null) throw new AeroconomyError('Aeroconomy sent far more than expected.');
-      try {
-        return JSON.parse(text) as unknown;
-      } catch {
-        throw new AeroconomyError('Aeroconomy did not send JSON.');
-      }
-    }
   }
 }

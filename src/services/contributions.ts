@@ -1,5 +1,5 @@
 import { parseCsv, parseLegChain } from '../jobs/import.js';
-import { findHeader, isCancelled, isTicked, parseSheetDate } from '../jobs/sheet.js';
+import { findHeader, isCancelled, isTicked, parseSheetDate, PAY_COLUMNS, PROFIT_COLUMNS } from '../jobs/sheet.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 
 /**
@@ -12,9 +12,6 @@ const DAY = 86_400_000;
 
 /** The period a pilot's contributions are added up over: today and the days before it, this many in all. */
 export const CONTRIBUTION_DAYS = 7;
-
-/** Column titles (as `canon` writes them) that hold a flight's profit: the airline's own, not a pilot's pay. */
-const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofit'];
 
 /** One row of the schedule, as far as contributions are concerned. */
 export interface SheetFlight {
@@ -32,12 +29,18 @@ export interface SheetFlight {
   completed: boolean;
   /** The profit a manager entered, which may be negative; null while the cell is empty or isn't a number. */
   profit: number | null;
+  /** What is in the Profit Made cell, exactly as it is (not trimmed): empty only if the cell is. Null when the sheet has no such column. */
+  profitRaw: string | null;
+  /** What is in the Pilot Pay cell, exactly as it is (not trimmed): empty only if the cell is. Null when the sheet has no such column. */
+  payRaw: string | null;
 }
 
 export interface SheetFlights {
   flights: SheetFlight[];
   /** Does the sheet have a profit column at all? */
   hasProfit: boolean;
+  /** Does it have a Pilot Pay column? */
+  hasPay: boolean;
 }
 
 /**
@@ -85,6 +88,7 @@ export function readSheetFlights(csv: string): SheetFlights | null {
   const iPilot = at((n) => n === 'pilot');
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
   const iProfit = at((n) => PROFIT_COLUMNS.includes(n));
+  const iPay = at((n) => PAY_COLUMNS.includes(n));
   const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
   if (iRoute < 0 || iDate < 0 || iPilot < 0 || iDone < 0) return null;
 
@@ -117,9 +121,11 @@ export function readSheetFlights(csv: string): SheetFlights | null {
       // A cancelled flight often has the box ticked to settle the books, but nobody flew it.
       completed: !isCancelled(pilot) && isTicked(cell(iDone)),
       profit: iProfit >= 0 ? parseMoney(cell(iProfit)) : null,
+      profitRaw: iProfit >= 0 ? (r[iProfit] ?? '') : null,
+      payRaw: iPay >= 0 ? (r[iPay] ?? '') : null,
     });
   }
-  return { flights, hasProfit: iProfit >= 0 };
+  return { flights, hasProfit: iProfit >= 0, hasPay: iPay >= 0 };
 }
 
 /** The days a pilot's contributions cover as of `now`: from the first midnight (Zulu) up to the end of today. */

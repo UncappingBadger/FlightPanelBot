@@ -76,6 +76,8 @@ export interface FsHubFlight {
   scheduleStatus: 'ON-TIME' | 'DELAYED' | 'LATE' | null;
   /** The vertical speed at touchdown FsHub recorded, in feet per minute (negative for a descent), or null/missing when it gave none. */
   landingRate?: number | null;
+  /** The distance FsHub says the flight was flown, in nautical miles, or null/missing when it gave none. */
+  distanceNm?: number | null;
 }
 
 /** One page of an airline's flights, oldest first. */
@@ -165,7 +167,18 @@ const FlightSchema = z.object({
   schedule_status: text(16).nullish(),
   // Whatever FsHub puts here is read leniently (and below): an odd value must never cost the whole flight.
   landing_rate: z.unknown().optional(),
+  distance: z.unknown().optional(),
 });
+
+/**
+ * The distance FsHub recorded for a flight, in nautical miles (`distance: { nm, km }`). Anything that is not a plain, sensible
+ * number counts as none: a pay is never worked out from a guess.
+ */
+export function distanceNmOf(value: unknown): number | null {
+  const nm = (value as { nm?: unknown } | null | undefined)?.nm;
+  const n = typeof nm === 'number' ? nm : typeof nm === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(nm) ? Number(nm) : NaN;
+  return Number.isFinite(n) && n >= 0 && n <= 100_000 ? n : null;
+}
 
 /**
  * The vertical speed at touchdown FsHub recorded, in feet per minute with a descent negative (`landing_rate`, an integer at the top of a
@@ -229,6 +242,7 @@ export function parseFlightPage(items: unknown[]): FlightPage {
       aircraftName: f.aircraft?.icao_name || null,
       scheduleStatus: status === 'ON-TIME' || status === 'DELAYED' || status === 'LATE' ? status : null,
       landingRate: landingRateOf(f.landing_rate),
+      distanceNm: distanceNmOf(f.distance),
     });
   });
   return { flights, count: items.length, lastId, firstAt, lastAt };
