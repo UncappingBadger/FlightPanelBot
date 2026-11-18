@@ -114,7 +114,7 @@ export function previewText(airline: string, fills: ProfitFillPlan[]): string {
   const closing = 'Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, or the cell is no longer empty. Nothing is written unless you press **Write**.';
   const lines = [
     `✍️ **Fill blank Profit Made cells: ${plainText(airline)}**`,
-    `I would write the profit Aeroconomy gives, in whole dollars as your sheet is kept, into **${fills.length}** Profit Made cell${fills.length === 1 ? '' : 's'} that ${fills.length === 1 ? 'is' : 'are'} empty today${payIntro(fills)}`,
+    `I would write the profit Aeroconomy gives, rounded up to a whole dollar (Aeroconomy has no cents), into **${fills.length}** Profit Made cell${fills.length === 1 ? '' : 's'} that ${fills.length === 1 ? 'is' : 'are'} empty today${payIntro(fills)}`,
     '',
   ];
   const shown = fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)} (Aeroconomy: ${formatMoney(f.exact)})${payText(f.payPlan)}`)}`);

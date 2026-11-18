@@ -139,7 +139,7 @@ const lf = (over: Partial<LogFlight> = {}): LogFlight => ({
 });
 
 describe('planning the pilot pay beside a blank profit', () => {
-  const plan = (row: SheetFlight, flight: LogFlight, distances: Array<[number, number]> = []) => planPay(Math.round(flight.profit), row, flight.flightId, flight.distanceNm, new Map(distances));
+  const plan = (row: SheetFlight, flight: LogFlight, distances: Array<[number, number]> = []) => planPay(Math.ceil(flight.profit), row, flight.flightId, flight.distanceNm, new Map(distances));
 
   it('works a loss out from FsHub\'s distance when the logbook agrees with it', () => {
     assert.deepEqual(plan(sheetRow(), lf(), [[5000, 1502]]), { amount: 4000, basis: 'distance', distanceNm: 1502, problem: null, cell: 'empty' });

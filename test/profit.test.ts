@@ -271,11 +271,11 @@ describe('comparing profits', () => {
     assert.deepEqual(r.different[0], { row: 5, route: 'KMIA → KORD', day: D12, callsign: 'TST101', sheet: 10000, aeroconomy: 12345.67 });
   });
 
-  it('offers a blank cell the profit in whole dollars, a loss included, and never a zero with a minus sign', () => {
+  it('offers a blank cell the profit rounded UP to a whole dollar, a loss included, and never a zero with a minus sign', () => {
     const rows = [sheetRow({ row: 3 }), sheetRow({ row: 4, sourceKey: 'x@y', pilot: 'B', route: 'EGCC → EGLL' }), sheetRow({ row: 5, sourceKey: 'z@w', pilot: 'C', route: 'KMIA → KORD' })];
     const flights = [lf({ profit: 12345.67 }), lf({ entryId: 2, dep: 'EGCC', arr: 'EGLL', pilotName: 'B', profit: -8093.66, flightId: 1 }), lf({ entryId: 3, dep: 'KMIA', arr: 'KORD', pilotName: 'C', profit: -0.3, flightId: 2 })];
     const r = only(rows, flights);
-    assert.deepEqual(r.fills.map((f) => [f.row, f.value, f.exact]), [[3, 12346, 12345.67], [4, -8094, -8093.66], [5, 0, -0.3]]);
+    assert.deepEqual(r.fills.map((f) => [f.row, f.value, f.exact]), [[3, 12346, 12345.67], [4, -8093, -8093.66], [5, 0, -0.3]]);
     assert.ok(Object.is(r.fills[2]!.value, 0), 'plain zero');
     assert.deepEqual(r.fills[0], {
       sourceKey: 'EGLL-EGCC@2026-11-12',
@@ -291,6 +291,26 @@ describe('comparing profits', () => {
       logbookNm: 500,
       payPlan: { amount: 2000, basis: 'minimum', distanceNm: null, problem: null, cell: 'missing' },
     });
+  });
+
+  it('rounds every profit up, never to the nearest: a few cents are a whole dollar more, and an even amount is left alone', () => {
+    const cases: Array<[number, number]> = [
+      [54203.58, 54204],
+      [12345.2, 12346],
+      [12345.01, 12346],
+      [54204, 54204],
+      [54204.0, 54204],
+      [100.5, 101],
+      [-3292.5, -3292],
+      [-4000.4, -4000],
+      [-8093.99, -8093],
+      [-0.01, 0],
+    ];
+    const rows = cases.map((_, i) => sheetRow({ row: 3 + i, sourceKey: `k${i}@y`, pilot: `P${i}`, route: `AA${i}A → BB${i}B` }));
+    const flights = cases.map(([profit], i) => lf({ entryId: i + 1, dep: `AA${i}A`, arr: `BB${i}B`, pilotName: `P${i}`, profit, flightId: 100 + i }));
+    const r = only(rows, flights);
+    assert.deepEqual(r.fills.map((f) => f.value), cases.map(([, up]) => up));
+    assert.ok(r.fills.every((f) => !Object.is(f.value, -0)), 'never a zero with a minus sign');
   });
 
   it('leaves out rows that are not ticked as completed, and flights that were not flown under the airline\'s own callsign', () => {

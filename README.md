@@ -748,7 +748,7 @@ sheet's numbers, unless an admin asks.
 - **`/setup profit`** (the default, `action:check`) **only reports**: how many completed flights agree with Aeroconomy (within a dollar, since the sheet
   is kept in whole dollars), which have a Profit Made that **differs** (listed by row, with the sheet's figure and Aeroconomy's, for a manager to look at:
   typing slips show up here), which have a **blank** Profit Made that Aeroconomy could fill, and how many it could not match. Nothing is changed.
-- **`/setup profit action:fill`** shows **exactly** the blank cells it would fill (row, flight, the amount in whole dollars, and Aeroconomy's figure to
+- **`/setup profit action:fill`** shows **exactly** the blank cells it would fill (row, flight, the amount rounded **up** to a whole dollar, as Aeroconomy has no cents, and Aeroconomy's figure to
   the cent) and waits. **Nothing is written until the admin who asked presses *Write*** (the preview expires after ten minutes, and only that admin can
   press it). It then reads the sheet afresh and writes a profit only where the row is where it was, still names the same pilot, is still ticked as
   completed and the cell is **still empty**; anything else is skipped and reported. It writes **only blank Profit Made cells, as numbers**, in one
@@ -938,7 +938,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2277 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2278 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

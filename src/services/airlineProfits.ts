@@ -64,7 +64,7 @@ export interface ProfitFillPlan extends ProfitFill {
   /** Midnight (Zulu) of the sheet row's day. */
   day: number;
   callsign: string;
-  /** The profit to the cent, as Aeroconomy has it (the cell gets it in whole dollars). */
+  /** The profit to the cent, as Aeroconomy has it (the cell gets it rounded up to a whole dollar). */
   exact: number;
   /** The FsHub flight the logbook entry is for, and the distance the logbook logged for it. */
   flightId: number | null;
@@ -179,7 +179,8 @@ export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: 
         unreadable++;
         continue;
       }
-      const value = Math.round(flight.profit) + 0;
+      // Up, not to the nearest (Aeroconomy has no cents): $54,203.58 is $54,204, and a loss of $8,093.66 is -$8,093. The + 0 turns a -0 into 0.
+      const value = Math.ceil(flight.profit) + 0;
       const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances);
       fills.push({
         sourceKey: row.sourceKey,
