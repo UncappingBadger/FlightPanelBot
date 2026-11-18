@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AeroconomyAccountClient } from '../src/aeroconomy/account.js';
-import { AeroconomyClient, AEROCONOMY_API } from '../src/aeroconomy/client.js';
+import { AeroconomyClient, AEROCONOMY_API, type AeroContract, type AeroFlight } from '../src/aeroconomy/client.js';
 import { AeroconomyError } from '../src/aeroconomy/http.js';
 import { commands, componentHandlers } from '../src/discord/commands/index.js';
 import { previewText, profitReport } from '../src/discord/profitUi.js';
@@ -344,6 +344,14 @@ describe('checking an airline\'s profits against its sheet', () => {
   let owners: Map<number, { airlineId: number; businessId: number } | null>;
   let pilotCalls: number[];
   let fleetOwner: { type: string | null; airlineId: number | null };
+  /** What the airline's contracts and their flights say, and what was asked of Aeroconomy to find the business that way. */
+  let contracts: AeroContract[];
+  let contractFlights: Map<number, AeroFlight[]>;
+  let contractCalls: number;
+  let manifestCalls: number[];
+  let aircraftAsked: number[];
+  let aircraftOwners: Map<number, { type: string | null; airlineId: number | null; businessId?: number | null }>;
+  let contractsFail: boolean;
   let profits: AirlineProfits;
   const pid = () => h.panel.id;
   const panel = () => h.store.getPanel(pid())!;
@@ -357,7 +365,9 @@ describe('checking an airline\'s profits against its sheet', () => {
           return [151, 287].map((serial) => ({ serial, registration: null, type: 'B738', ownerType: fleetOwner.type, ownerAirlineId: fleetOwner.airlineId, businessId: business }));
         },
         async aircraft(serial: number) {
-          return { serial, registration: null, type: 'B738', ownerType: fleetOwner.type, ownerAirlineId: fleetOwner.airlineId, businessId: BUSINESS };
+          aircraftAsked.push(serial);
+          const owner: { type: string | null; airlineId: number | null; businessId?: number | null } = aircraftOwners.get(serial) ?? fleetOwner;
+          return { serial, registration: null, type: 'B738', ownerType: owner.type, ownerAirlineId: owner.airlineId, businessId: owner.businessId === undefined ? BUSINESS : owner.businessId };
         },
         async logbook(serial: number) {
           return logbooks.get(serial) ?? [];
@@ -367,6 +377,15 @@ describe('checking an airline\'s profits against its sheet', () => {
         async pilotAircraftOwner(id: number) {
           pilotCalls.push(id);
           return owners.get(id) ?? null;
+        },
+        async airlineContracts() {
+          contractCalls++;
+          if (contractsFail) throw new AeroconomyError('Aeroconomy asked the bot to slow down.');
+          return contracts;
+        },
+        async manifests(id: number) {
+          manifestCalls.push(id);
+          return contractFlights.get(id) ?? [];
         },
       },
       fetchFn: (async () => (sheetCalls++, new Response(sheetCsv, { status: 200, headers: { 'content-type': 'text/csv' } }))) as typeof fetch,
@@ -382,6 +401,13 @@ describe('checking an airline\'s profits against its sheet', () => {
     fleetCalls = [];
     pilotCalls = [];
     fleetOwner = { type: 'airline', airlineId: AIRLINE };
+    contracts = [];
+    contractFlights = new Map();
+    contractCalls = 0;
+    manifestCalls = [];
+    aircraftAsked = [];
+    aircraftOwners = new Map();
+    contractsFail = false;
     owners = new Map([
       [7001, null],
       [7002, { airlineId: 9999, businessId: 11 }],
@@ -426,6 +452,117 @@ describe('checking an airline\'s profits against its sheet', () => {
     owners.clear();
     await assert.rejects(profits.analyse(panel()), (e: unknown) => /couldn't find the airline's aircraft on Aeroconomy/.test((e as Error).message) && /business:/.test((e as Error).message));
     assert.deepEqual(fleetCalls, []);
+  });
+
+  it('tells an admin where the business number is and that it is remembered, when nothing shows it', async () => {
+    owners.clear();
+    await assert.rejects(profits.analyse(panel()), (e: unknown) => /aeroconomy\.com\/businesses\//.test((e as Error).message) && /remember/.test((e as Error).message) && /contract flights or recent pilots/.test((e as Error).message));
+  });
+
+  describe('finding the business from the aircraft on the airline\'s own flights', () => {
+    const flight = (number: string, status: string, serial?: number): AeroFlight => ({ number, dep: 'EGLL', arr: 'EGKK', start: T0, end: T0 + HOUR, status, ...(serial !== undefined ? { aircraftSerial: serial } : {}) });
+
+    it('asks who owns the aircraft on a flight that has been taken, before asking any pilot, and remembers the business', async () => {
+      contracts = [{ id: 10, status: 'awarded', total: 40 }, { id: 11, status: 'active', total: 20 }];
+      contractFlights.set(11, [flight('TST1', 'completed'), flight('TST2', 'assigned', 151)]);
+      const a = await profits.analyse(panel());
+      assert.equal(a.business, BUSINESS);
+      assert.deepEqual(aircraftAsked, [151]);
+      assert.deepEqual(manifestCalls, [11], 'the contract with flights under way first, and no more once one aircraft showed it');
+      assert.deepEqual(pilotCalls, []);
+      assert.equal(h.store.getKv(`aero.business.${AIRLINE}`), String(BUSINESS));
+      contractCalls = 0;
+      manifestCalls.length = 0;
+      await profits.analyse(panel());
+      assert.equal(contractCalls, 0, 'not looked for again');
+      assert.deepEqual(manifestCalls, []);
+    });
+
+    it('reads the newer contract first when two are alike', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }, { id: 11, status: 'active', total: 30 }, { id: 9, status: 'active', total: 30 }];
+      owners.clear();
+      await assert.rejects(profits.analyse(panel()), /couldn't find/);
+      assert.deepEqual(manifestCalls, [11, 10, 9]);
+    });
+
+    it('reads the contracts with flights under way first, then the bigger ones, and no more than a dozen of them', async () => {
+      contracts = Array.from({ length: 20 }, (_, i) => ({ id: 100 + i, status: i < 3 ? 'awarded' : 'active', total: i }));
+      owners.clear();
+      await assert.rejects(profits.analyse(panel()), /couldn't find/);
+      assert.equal(manifestCalls.length, 12);
+      assert.equal(manifestCalls[0], 119, 'active, and the biggest');
+      assert.ok(manifestCalls.every((id) => id >= 108), 'the three awarded ones and the smallest active ones are not reached');
+    });
+
+    it('goes past an aircraft that is not the airline\'s, and past a contract with none, to one that is', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }, { id: 11, status: 'active', total: 20 }, { id: 12, status: 'active', total: 10 }];
+      contractFlights.set(10, [flight('TST1', 'planned')]);
+      contractFlights.set(11, [flight('TST2', 'assigned', 901), flight('TST3', 'assigned', 902)]);
+      contractFlights.set(12, [flight('TST4', 'assigned', 151)]);
+      aircraftOwners.set(901, { type: 'business', airlineId: null });
+      aircraftOwners.set(902, { type: 'airline', airlineId: 9999 });
+      assert.equal((await profits.analyse(panel())).business, BUSINESS);
+      assert.deepEqual(aircraftAsked, [901, 902, 151]);
+      assert.deepEqual(manifestCalls, [10, 11, 12]);
+    });
+
+    it('only takes the business of an aircraft that belongs to the airline itself and names its business', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }];
+      contractFlights.set(10, [flight('A', 'assigned', 901), flight('B', 'assigned', 902), flight('C', 'assigned', 151)]);
+      aircraftOwners.set(901, { type: 'business', airlineId: AIRLINE }); // a business's aircraft that merely carries the airline's number
+      aircraftOwners.set(902, { type: 'airline', airlineId: AIRLINE, businessId: null }); // the airline's, but no business to read the fleet from
+      assert.equal((await profits.analyse(panel())).business, BUSINESS);
+      assert.deepEqual(aircraftAsked, [901, 902, 151]);
+    });
+
+    it('asks about an aircraft only once, however many flights carry it, and about no more than four', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }];
+      contractFlights.set(10, [flight('A', 'assigned', 901), flight('B', 'assigned', 901), ...[902, 903, 904, 905, 906].map((s) => flight(`S${s}`, 'assigned', s))]);
+      for (const s of [901, 902, 903, 904, 905, 906]) aircraftOwners.set(s, { type: 'business', airlineId: null });
+      owners.clear();
+      await assert.rejects(profits.analyse(panel()), /couldn't find/);
+      assert.deepEqual(aircraftAsked, [901, 902, 903, 904]);
+    });
+
+    it('goes on to the pilots when no flight has an aircraft, and the pilots still work as before', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }];
+      contractFlights.set(10, [flight('TST1', 'planned'), flight('TST2', 'completed')]);
+      h.store.upsertFshubFlights(pid(), [7001, 7002, 7003].map((pilotId, i) => ({ flightId: i + 1, pilotId, pilotName: null, dep: 'EGLL', arr: 'EGCC', departedAt: null, arrivedAt: T0 - i * HOUR - 5 * HOUR, aircraftIcao: null, aircraftName: null, scheduleStatus: null })));
+      assert.equal((await profits.analyse(panel())).business, BUSINESS);
+      assert.deepEqual(aircraftAsked, []);
+      assert.deepEqual(pilotCalls, [7001, 7002, 7003]);
+    });
+
+    it('is not stopped by Aeroconomy refusing to list the contracts, or to show one aircraft: it goes on to the next way', async () => {
+      contractsFail = true;
+      h.store.upsertFshubFlights(pid(), [{ flightId: 1, pilotId: 7003, pilotName: null, dep: 'EGLL', arr: 'EGCC', departedAt: null, arrivedAt: T0 - 5 * HOUR, aircraftIcao: null, aircraftName: null, scheduleStatus: null }]);
+      assert.equal((await profits.analyse(panel())).business, BUSINESS, 'found from the pilot');
+      h.store.setKv(`aero.business.${AIRLINE}`, '');
+      contractsFail = false;
+      contracts = [{ id: 10, status: 'active', total: 30 }];
+      contractFlights.set(10, [flight('TST1', 'assigned', 901), flight('TST2', 'assigned', 151)]);
+      const brokenAircraft = new AirlineProfits({
+        store: h.store,
+        account: {
+          async ownedAircraft(b: number) { return [{ serial: 151, registration: null, type: 'B738', ownerType: 'airline', ownerAirlineId: AIRLINE, businessId: b }]; },
+          async aircraft(serial: number) { if (serial === 901) throw new AeroconomyError("Aeroconomy won't show that."); return { serial, registration: null, type: 'B738', ownerType: 'airline', ownerAirlineId: AIRLINE, businessId: BUSINESS }; },
+          async logbook() { return []; },
+        },
+        publicClient: { async pilotAircraftOwner() { return null; }, async airlineContracts() { return contracts; }, async manifests(id: number) { return contractFlights.get(id) ?? []; } },
+        fetchFn: (async () => new Response(sheetCsv, { status: 200, headers: { 'content-type': 'text/csv' } })) as typeof fetch,
+        now: () => h.clock.now,
+      });
+      assert.equal((await brokenAircraft.analyse(panel())).business, BUSINESS, 'the second aircraft showed it');
+    });
+
+    it('does not look at the flights at all when the number is given or already remembered', async () => {
+      contracts = [{ id: 10, status: 'active', total: 30 }];
+      contractFlights.set(10, [flight('TST1', 'assigned', 151)]);
+      await profits.analyse(panel(), 88);
+      assert.equal(contractCalls, 0);
+      await profits.analyse(panel());
+      assert.equal(contractCalls, 0, 'remembered from the number that was given');
+    });
   });
 
   it('uses a business number an admin gave when it is the airline\'s, and remembers it', async () => {

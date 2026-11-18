@@ -127,6 +127,28 @@ describe('the Aeroconomy client', () => {
       assert.deepEqual(calls.map((c) => c.url.replace(AEROCONOMY_API, '')), ['/contracts/55/manifests?page=1', '/contracts/55/manifests?page=2']);
     });
 
+    it('carries the serial of the aircraft attached to a flight that has been taken, and nothing for a flight that has none or one it cannot read', async () => {
+      const w = ['2026-11-17T06:00:00Z', '2026-11-17T23:59:59Z'] as const;
+      reply = () =>
+        json({
+          data: [
+            manifest('TST290', 'EGLL', 'EGKK', ...w, { status: 'assigned', aircraft_serial: '00000618' }),
+            manifest('TST291', 'EGLL', 'EGKK', ...w, { status: 'assigned', aircraft_serial: 557 }),
+            manifest('TST292', 'EGLL', 'EGKK', ...w, { aircraft_serial: null }),
+            manifest('TST293', 'EGLL', 'EGKK', ...w, { aircraft_serial: 'N738PM' }),
+            manifest('TST294', 'EGLL', 'EGKK', ...w, { aircraft_serial: '00000000' }),
+            manifest('TST295', 'EGLL', 'EGKK', ...w, { aircraft_serial: '-5' }),
+            manifest('TST296', 'EGLL', 'EGKK', ...w, { aircraft_serial: '1e3' }),
+            manifest('TST297', 'EGLL', 'EGKK', ...w, { aircraft_serial: '0x10' }),
+            manifest('TST298', 'EGLL', 'EGKK', ...w, { aircraft_serial: ' 00000042 ' }),
+          ],
+          meta: { last_page: 1 },
+        });
+      const got = await client.manifests(55);
+      assert.deepEqual(got.map((f) => [f.number, f.aircraftSerial]), [['TST290', 618], ['TST291', 557], ['TST292', undefined], ['TST293', undefined], ['TST294', undefined], ['TST295', undefined], ['TST296', undefined], ['TST297', undefined], ['TST298', 42]]);
+      assert.ok(got.slice(2, 8).every((f) => !('aircraftSerial' in f)), 'no empty field on a flight without an aircraft');
+    });
+
     it('says a contract that is gone has no flights, and does not ask for a bad number', async () => {
       assert.deepEqual(await client.manifests(55), []);
       assert.deepEqual(await client.manifests(0), []);

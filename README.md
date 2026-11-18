@@ -769,10 +769,14 @@ sheet's numbers, unless an admin asks.
   several flights could be it, the pilot's name decides, and if that does not, the row is left alone. A flight cannot belong to two rows, and a flight of
   several legs is never matched.
 - **What it needs.** The bot's FsHub token (Aeroconomy accepts it), the panel linked to its airline's FsHub roster (`/setup fshub`), a sheet with a
-  *Profit Made* column, and, to write, the Google key and `/setup writeback` on. The airline's Aeroconomy business is found from the aircraft some of its
-  recent pilots fly and remembered; if it cannot be found, `business:` takes its number (the aircraft it lists must belong to this airline).
+  *Profit Made* column, and, to write, the Google key and `/setup writeback` on. The airline's Aeroconomy business is found the first time from an aircraft
+  that is out right now, either attached to a flight of the airline's contracts or flown by one of its recent pilots (public Aeroconomy pages, plus a read
+  of that one aircraft with the token), and remembered, so it is only ever looked for once. When no aircraft of the airline is out the bot says so: try
+  again later, or give `business:` its number, the number in the web address of the airline's business page on Aeroconomy
+  (aeroconomy.com/businesses/…); the aircraft it lists must belong to this airline.
 - **What it costs.** About 25 requests, spread out one every couple of seconds (about 30 seconds in all), when an admin runs it, plus one FsHub request for
-  each blank-pay flight that lost money. The token is only ever sent to Aeroconomy and FsHub, only in plain read requests (`GET`), without following a
+  each blank-pay flight that lost money, and, the first time only, about 5 more to find the airline's business (at most about 20, when it has to look
+  through several contracts). The token is only ever sent to Aeroconomy and FsHub, only in plain read requests (`GET`), without following a
   redirect, and the bot never writes anything to Aeroconomy.
 
 ### Remarks about very hard landings
@@ -934,7 +938,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2265 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2276 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

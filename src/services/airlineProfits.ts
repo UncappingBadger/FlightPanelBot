@@ -25,6 +25,9 @@ const LATE_MS = 36 * HOUR;
 const SAME_WITHIN = 1;
 /** The pilots asked about when the airline's business has to be found from the aircraft they fly. */
 const PILOTS_TO_TRY = 12;
+/** When it is found from the airline's contract flights instead: the most contracts whose flights are read, and the most aircraft asked about. */
+const CONTRACTS_TO_TRY = 12;
+const AIRCRAFT_TO_TRY = 4;
 /** FsHub and Aeroconomy give the same distance for a flight; if they differ by more than this many nautical miles, no pay is worked out from either. */
 const DISTANCE_AGREES_WITHIN_NM = 1;
 /** The most FsHub lookups (one per flight that lost money) one run makes: FsHub's request budget is shared with the rest of the bot. */
@@ -213,8 +216,8 @@ export interface AirlineProfitsDeps {
   store: Store;
   /** Reads with the FsHub token (aircraft and logbooks). */
   account: Pick<AeroconomyAccountClient, 'aircraft' | 'ownedAircraft' | 'logbook'>;
-  /** Reads Aeroconomy's public pages (a pilot's aircraft). */
-  publicClient: Pick<AeroconomyClient, 'pilotAircraftOwner'>;
+  /** Reads Aeroconomy's public pages: a pilot's aircraft, and (to find the business from the aircraft on its flights) the airline's contracts and their flights. */
+  publicClient: Pick<AeroconomyClient, 'pilotAircraftOwner'> & Partial<Pick<AeroconomyClient, 'airlineContracts' | 'manifests'>>;
   /** Reads FsHub, for the distance of a flight that lost money (the pilot's pay for it depends on that). Without it, such pay is not worked out. */
   fshub?: Pick<FsHubApi, 'airlineFlights'>;
   fetchFn?: typeof fetch;
@@ -291,11 +294,19 @@ export class AirlineProfits {
     return out;
   }
 
-  /** The airline's backing business: given, remembered, or found from the aircraft its recent pilots fly. */
+  /**
+   * The airline's backing business: given, remembered, or found from an aircraft that is out right now, either attached to one of the
+   * airline's contract flights or flown by one of its recent pilots. Once found it is remembered, so this is only ever asked once.
+   */
   private async businessOf(panel: Panel, airlineId: number, given: number | undefined): Promise<number> {
     if (given !== undefined) return given;
     const saved = Number(this.d.store.getKv(businessKey(airlineId)));
     if (Number.isSafeInteger(saved) && saved > 0) return saved;
+    const fromFlights = await this.businessFromFlights(airlineId);
+    if (fromFlights !== null) {
+      this.d.store.setKv(businessKey(airlineId), String(fromFlights));
+      return fromFlights;
+    }
     for (const pilotId of this.d.store.recentFshubPilotIds(panel.id, PILOTS_TO_TRY)) {
       const owner = await this.d.publicClient.pilotAircraftOwner(pilotId);
       if (owner && owner.airlineId === airlineId) {
@@ -303,7 +314,43 @@ export class AirlineProfits {
         return owner.businessId;
       }
     }
-    throw new ProfitError("I couldn't find the airline's aircraft on Aeroconomy: none of the pilots who flew for it lately has one of its aircraft out. Try again when one has, or give its Aeroconomy business number with `business:`.");
+    throw new ProfitError(
+      "I couldn't find the airline's aircraft on Aeroconomy: none of its contract flights or recent pilots has one of its aircraft out right now. Try again later, or give its Aeroconomy business number with `business:` (the number in the web address of the airline's business page on Aeroconomy, aeroconomy.com/businesses/…). I remember it after that.",
+    );
+  }
+
+  /**
+   * The business behind an airline's aircraft, from its contracts' flights: a flight that has been taken has the serial of the aircraft
+   * attached to it, so such an aircraft is asked who owns it. Public pages, and one aircraft read (with the FsHub token) per aircraft tried.
+   * Contracts with flights under way come first, and only a few contracts and aircraft are tried. Null when nothing here shows it, or when
+   * Aeroconomy cannot be read just now: the caller goes on to the pilots, and a failure here is not something an admin can act on.
+   */
+  private async businessFromFlights(airlineId: number): Promise<number | null> {
+    const client = this.d.publicClient;
+    if (!client.airlineContracts || !client.manifests) return null;
+    const asked = new Set<number>();
+    try {
+      const contracts = [...(await client.airlineContracts(airlineId))]
+        .sort((a, b) => Number(b.status === 'active') - Number(a.status === 'active') || (b.total ?? 0) - (a.total ?? 0) || b.id - a.id)
+        .slice(0, CONTRACTS_TO_TRY);
+      for (const contract of contracts) {
+        for (const flight of await client.manifests(contract.id)) {
+          const serial = flight.aircraftSerial;
+          if (serial === undefined || asked.has(serial)) continue;
+          if (asked.size >= AIRCRAFT_TO_TRY) return null;
+          asked.add(serial);
+          try {
+            const aircraft = await this.d.account.aircraft(serial);
+            if (aircraft?.ownerType === 'airline' && aircraft.ownerAirlineId === airlineId && aircraft.businessId !== null) return aircraft.businessId;
+          } catch (e) {
+            this.log.debug(`Aeroconomy would not show aircraft ${serial}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      }
+    } catch (e) {
+      this.log.debug(`Could not look through the airline's contract flights for its aircraft: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return null;
   }
 
   /** A business number an admin typed has to be the airline's own: its first aircraft must say so. */

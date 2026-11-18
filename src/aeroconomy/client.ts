@@ -29,6 +29,8 @@ export interface AeroFlight {
   end: number;
   /** `planned`, `available`, `assigned`, `completed`, `failed` or `cancelled`. */
   status: string;
+  /** The serial of the aircraft attached to the flight (a flight that has been taken has one), when Aeroconomy says. */
+  aircraftSerial?: number;
 }
 
 const ContractsPage = z
@@ -71,12 +73,19 @@ const iso = z.string().transform((v, ctx) => {
   return ms;
 });
 
+/** An aircraft serial as Aeroconomy writes it (`00000618`, or a plain number): the number, or null for anything else. */
+function serialOf(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,10}$/.test(v.trim()) ? Number(v.trim()) : Number.NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 const ManifestRow = z
   .object({
     flight_number: z.string(),
     origin_icao: z.string(),
     destination_icao: z.string(),
     status: z.string().nullish(),
+    aircraft_serial: z.union([z.string(), z.number()]).nullish(),
     arrival_window: z.object({ starts_at: iso, ends_at: iso }).passthrough(),
   })
   .passthrough();
@@ -158,6 +167,7 @@ export class AeroconomyClient extends AeroHttp {
           start: m.data.arrival_window.starts_at,
           end: m.data.arrival_window.ends_at,
           status: (m.data.status ?? '').toLowerCase(),
+          ...(serialOf(m.data.aircraft_serial) !== null ? { aircraftSerial: serialOf(m.data.aircraft_serial) as number } : {}),
         });
       }
     }
