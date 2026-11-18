@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path';
 import { Client, Events, GatewayIntentBits, Partials, Routes } from 'discord.js';
 import { AeroDaqClient } from './aerodaq/client.js';
 import { MetarClient } from './metar/client.js';
@@ -35,11 +36,12 @@ import { AeroNumbers } from './services/aeroNumbers.js';
 import { HourlySlot } from './services/hourlySlot.js';
 import { FlightEtas } from './services/flightEtas.js';
 import { LiveTracker } from './services/liveTracker.js';
-import { SourceRefresher } from './services/refresh.js';
+import { DEBUG_SHEET_INTERVAL_MS, SourceRefresher } from './services/refresh.js';
 import { ReminderService } from './services/reminders.js';
 import { Scheduler } from './services/scheduler.js';
 import { SheetWriteBack } from './services/writeback.js';
 import { DEBUG_BUILD, dbg } from './util/debugBuild.js';
+import { LocalSheet, localSheetFetch } from './google/localSheet.js';
 import { createLogger, type Logger } from './util/log.js';
 
 /** A Discord server the bot is in. */
@@ -79,6 +81,8 @@ export interface BotHandle {
 export async function startBot(config: Config, opts: StartOptions = {}): Promise<BotHandle> {
   const log = opts.log ?? createLogger(config.logLevel);
 
+  // The diagnostic build keeps its sheets in local files here, and never writes to Google.
+  const debugSheets = join(dirname(config.databasePath), 'debug-sheets');
   const store = new Store(openDatabase(config.databasePath));
   if (DEBUG_BUILD) store.enableAudit(log); // every reservation row that appears, changes or goes is logged, with who did it
   const events = new JobEvents(log);
@@ -91,6 +95,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // together, at one fixed minute of each hour that is picked for this install the first time it runs, instead of each an hour after its own last run.
   const slot = HourlySlot.forInstall(store);
   log.info(`The hourly checks run together at ${String(slot.minute).padStart(2, '0')} minutes past each hour (UTC)`);
+  if (DEBUG_BUILD) dbg(log, `DEBUG BUILD: a linked sheet is read every ${DEBUG_SHEET_INTERVAL_MS / 60_000} minutes (within a minute after that: the scheduler ticks once a minute), not once an hour, so the Distance fill can be watched; the other hourly checks are unchanged`);
   const demoSource = new DemoJobSource();
   // A flight whose row has no flight number can take Aeroconomy's own number for it (read from Aeroconomy's public contracts, no account
   // needed), for a panel that has it switched on (`/setup flight-numbers`) and is linked to its airline's FsHub number. The numbers are
@@ -108,7 +113,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // A schedule sheet with a Distance column gets the distance of each flight filled in as the schedule is read (set up once the sheet
   // write-back and the airport positions exist, below).
   let distances: DistanceFiller | null = null;
-  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, (panel, fetched) => distances?.run(panel, fetched));
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null, ...(DEBUG_BUILD ? { fetchFn: localSheetFetch(debugSheets, fetch, log) } : {}) }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, (panel, fetched) => distances?.run(panel, fetched));
   const panels = new PanelService(store, jobs, log);
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
@@ -127,7 +132,11 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
   let writeback: SheetWriteBack | null = null;
-  if (config.googleServiceAccountFile) {
+  if (DEBUG_BUILD) {
+    // The diagnostic build has no write access to anything of Google's: its sheet is a local file (see src/google/localSheet.ts).
+    writeback = new SheetWriteBack(new LocalSheet(debugSheets, log), 'the local debug sheet', { logger: log });
+    log.info(`DEBUG BUILD: nothing is written to Google, and the Google key is not used. The schedule is read from, and written to, a local copy in ${debugSheets}`);
+  } else if (config.googleServiceAccountFile) {
     if (DEMO && process.env.AEROBOT_DEMO_WRITEBACK !== '1') {
       log.info('Demo mode: not writing to Google Sheets (set AEROBOT_DEMO_WRITEBACK=1 to allow it, ideally against a copy of the sheet).');
     } else {
@@ -146,7 +155,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // airline's own FsHub flights of the route when there are some, and from the distance between the airports (their positions read
   // from the public OurAirports list) otherwise.
   const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
-  distances = new DistanceFiller({ writeback, airports, positions: (codes) => store.getAirportCoords(codes), logger: log });
+  distances = new DistanceFiller({ writeback, airports, positions: (codes) => store.getAirportCoords(codes), getPanel: (id) => store.getPanel(id), logger: log });
   // FsHub's public live feed (no token): who is flying now, so a warning skips a pilot already in the air, and a flight is looked for in
   // FsHub's own record the minute its pilot lands (it is only completed when FsHub shows it flown).
   const liveFeed = new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });

@@ -265,6 +265,18 @@ const debugReadme = (v) => `Flight Panel Bot ${v}  -  DIAGNOSTIC BUILD (not a re
 This is a special build of the bot made only to find out what is going wrong. It does the same job as the normal
 program, with the same settings and data, but it writes a very detailed log of its own.
 
+IN THIS BUILD a linked sheet is read every 2 minutes (within a minute after that, as the bot checks once a minute), not once
+an hour, so the Distance fill can be watched without waiting. The other hourly checks are unchanged.
+
+THIS BUILD NEVER WRITES TO GOOGLE, and the Google key is not used. The airline's schedule is copied once from the
+sheet's public link into a file on this computer, and from then on the bot reads that file and writes into it: pilot
+names, ticks and the Distance column all go there, so nothing in the real sheet can change. The files are in
+        %APPDATA%\\FlightPanelBot\\data\\debug-sheets
+(one .csv for each sheet and tab: open it in Excel or Google Sheets to see what the bot wrote). Delete a file to take
+a fresh copy of the schedule from Google the next time the bot reads it. A number format cannot be kept in a .csv, so
+the formats of cells are in a small file beside it, <the .csv's name>.formats.json. Write a cell into it by hand to see
+how the bot treats a Distance cell formatted as a date, for example   { "B5": { "type": "DATE" } }
+
 What to do:
  1. Right-click the Flight Panel Bot icon near the clock and choose Quit, so the normal bot is not running.
     (Only one copy can run at a time.)
@@ -272,13 +284,17 @@ What to do:
     Its icon's tooltip says "Flight Panel Bot DEBUG".
  3. Use the bot for about an hour as you normally would, and also try the things you have had trouble with
     (for example /setup refresh, and /setup refresh-roles with a member who has the role). Write down roughly
-    what time you tried each one.
+    what time you tried each one. To follow the log as it is written, run this in PowerShell:
+        Get-Content -Wait -Tail 50 "$env:APPDATA\\FlightPanelBot\\logs\\bot-debug.log"
+    The lines that begin [dbg] distances: and [dbg] airports: say what the bot decided about each Distance cell
+    and why it did or did not read the airport list.
  4. Right-click the icon, choose Quit, and send us the file  bot-debug.log  from the folder
-        %APPDATA%\FlightPanelBot\logs
+        %APPDATA%\\FlightPanelBot\\logs
     (the icon's menu item "Open the log" opens it). Then start the normal FlightPanelBot.exe again.
 
 The log holds Discord user and server IDs, flight codes and the pilot names in your airline's sheet. It does not
-hold your bot token, your Google key or a FsHub token. The normal bot.log is left alone.
+hold your bot token, your Google key or a FsHub token. The normal bot.log is left alone. The local copy of the
+schedule in debug-sheets holds the same pilot names.
 
 This build never checks for updates. Please do not enable "Start with Windows" while using it.
 `;

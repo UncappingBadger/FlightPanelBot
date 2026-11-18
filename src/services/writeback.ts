@@ -1,5 +1,5 @@
 import type { Panel } from '../db/store.js';
-import { SheetsError, type Cell, type SheetsApi } from '../google/sheetsApi.js';
+import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js';
 import { colLetter, isCancelled, isTicked, parseScheduleValues, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
@@ -88,7 +88,7 @@ export class SheetWriteBack {
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
-    private readonly api: SheetsApi,
+    private readonly api: SheetsPort,
     /** The service account's address: what a sheet owner shares the sheet with. */
     readonly accountEmail: string,
     opts: { now?: () => number; logger?: Logger } = {},
@@ -243,18 +243,28 @@ export class SheetWriteBack {
         const col = parsed.cols.distance;
         const cells: Cell[] = [];
         const rows: number[] = [];
+        let gone = 0;
+        let filled = 0;
         for (const item of plan) {
           const row = parsed.rowOf.get(item.sourceKey);
-          if (row === undefined) continue;
-          if ((tab.values[row - 1]?.[col] ?? '') !== '' || (stored.values[row - 1]?.[col] ?? '') !== '') continue;
+          if (row === undefined) {
+            gone++;
+            continue;
+          }
+          if ((tab.values[row - 1]?.[col] ?? '') !== '' || (stored.values[row - 1]?.[col] ?? '') !== '') {
+            filled++;
+            continue;
+          }
           cells.push({ a1: `${colLetter(col)}${row}`, value: item.nm });
           rows.push(row);
         }
+        if (DEBUG_BUILD) dbg(this.log, `distances: ${plan.length} planned; ${cells.length} cell(s) to write${gone > 0 ? `; ${gone} no longer in the sheet` : ''}${filled > 0 ? `; ${filled} already have something in the cell` : ''}`);
         if (cells.length > 0) {
           // What a number looks like is up to the cell's format, so look at it first. This comes before the write: if it fails, nothing has been
           // written, and a distance never lands in a cell that would show it as a date.
           const formats = await this.api.columnNumberFormats(ref, tab.title, col, Math.min(...rows), Math.max(...rows));
           const misleading = rows.filter((r) => MISLEADING_FORMATS.has(formats.types.get(r) ?? ''));
+          if (DEBUG_BUILD) dbg(this.log, `distances: number formats of the cells to write: ${[...new Set(rows.map((r) => formats.types.get(r) ?? 'none'))].join(', ')}; ${misleading.length} would show a distance as something else${misleading.length > 0 ? ' and get a plain number format' : ''}`);
           if (misleading.length > 0) await this.api.setNumberFormat(ref, formats.sheetId, col, misleading, DISTANCE_FORMAT);
           await this.api.update(ref, tab.title, cells);
           this.log.info(`Wrote ${cells.length} blank Distance cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}${misleading.length > 0 ? ` (${misleading.length} of them were formatted as dates, money or the like, and were given a plain number format)` : ''}`);

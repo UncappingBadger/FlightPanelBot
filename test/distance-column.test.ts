@@ -580,3 +580,162 @@ describe('filling in distances when the bot only knows some of the airports so f
     assert.equal(downloads, 1);
   });
 });
+
+describe('the late-departure warnings read the airport list a moment before the schedule is read', () => {
+  let h: Harness;
+  let downloads: number;
+  const LIST = [
+    'id,ident,type,name,latitude_deg,longitude_deg,gps_code,icao_code',
+    ...Object.entries(POS).map(([code, p], i) => `${i + 1},${code},large_airport,${p.name},${p.lat},${p.lon},${code},${code}`),
+  ].join('\n');
+  const job = (key: string, dep: string, arr: string) => ({ key, title: null, legs: [{ dep, arr }], aircraft: null, availableFrom: null, deadline: null, pay: null, notes: null });
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    h.clock.now = T0;
+    downloads = 0;
+    h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: String(TAB_GID) });
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  const setup = (): { directory: AirportDirectory; filler: DistanceFiller; plans: Array<Array<{ sourceKey: string; nm: number }>> } => {
+    const plans: Array<Array<{ sourceKey: string; nm: number }>> = [];
+    const directory = new AirportDirectory(h.store, { fetchFn: async () => (downloads++, new Response(LIST)), now: () => h.clock.now });
+    const filler = new DistanceFiller({
+      writeback: { enabledFor: () => true, fillDistances: async (_p, plan) => (plans.push(plan), { written: plan.length }) },
+      airports: directory,
+      positions: (codes) => h.store.getAirportCoords(codes),
+    });
+    return { directory, filler, plans };
+  };
+  const jobs = [job('a', 'EGLL', 'KJFK'), job('b', 'EGLL', 'EGKK'), job('c', 'KJFK', 'KBOS'), job('d', 'KBOS', 'EGKK')];
+  const fetched = (): FetchedJobs => ({ jobs, warnings: [], blankDistances: jobs.map((j) => j.key) });
+
+  it('leaves nothing for the distance fill to wait for: the warnings\' read kept every airport, so all four flights are filled 33 seconds later', async () => {
+    const { directory, filler, plans } = setup();
+    await directory.coords(['EGLL']); // a late-departure warning wanted one airport
+    h.clock.advance(33_000);
+    assert.equal(await filler.run(h.store.getPanel(h.panel.id)!, fetched()), 4);
+    assert.deepEqual(plans[0]!.map((p) => p.sourceKey), ['a', 'b', 'c', 'd']);
+    assert.equal(downloads, 1, 'one read of the list in all');
+  });
+
+  it('is the same when the two ask at the same moment: one read, and each gets everything it asked for', async () => {
+    const { directory, filler, plans } = setup();
+    const [warned, filled] = await Promise.all([directory.coords(['EGLL']), filler.run(h.store.getPanel(h.panel.id)!, fetched())]);
+    assert.deepEqual([...warned.keys()], ['EGLL']);
+    assert.equal(filled, 4);
+    assert.equal(plans[0]!.length, 4);
+    assert.equal(downloads, 1);
+  });
+
+  it('is the same when the warnings ask just before the check, in the other order', async () => {
+    const { directory, filler, plans } = setup();
+    const filling = filler.run(h.store.getPanel(h.panel.id)!, fetched());
+    const warned = directory.coords(['KBOS']);
+    assert.equal(await filling, 4);
+    assert.deepEqual([...(await warned).keys()], ['KBOS']);
+    assert.equal(plans[0]!.length, 4);
+    assert.equal(downloads, 1);
+  });
+});
+
+/* ------------------------------------------------------------------ some airport positions are not there yet */
+
+describe('trying again later for flights whose airports are not known yet', () => {
+  let h: Harness;
+  let known: Map<string, AirportCoord>;
+  let timers: Array<{ run: () => void; ms: number }>;
+  let plans: Array<Array<{ sourceKey: string; nm: number }>>;
+  let filler: DistanceFiller;
+  const panel = () => h.store.getPanel(h.panel.id)!;
+  const job = (key: string, dep: string, arr: string) => ({ key, title: null, legs: [{ dep, arr }], aircraft: null, availableFrom: null, deadline: null, pay: null, notes: null });
+  const jobs = [job('a', 'EGLL', 'KJFK'), job('b', 'EGLL', 'EGKK'), job('c', 'KJFK', 'KBOS')];
+  const fetched = (): FetchedJobs => ({ jobs, warnings: [], blankDistances: jobs.map((j) => j.key) });
+  const knowing = (...codes: string[]) => (known = new Map(codes.map((c) => [c, POS[c]!])));
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    h.clock.now = T0;
+    timers = [];
+    plans = [];
+    knowing('EGLL');
+    h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: String(TAB_GID) });
+    filler = new DistanceFiller({
+      writeback: { enabledFor: (p) => p.writeback, fillDistances: async (_p, plan) => (plans.push(plan), { written: plan.length }) },
+      airports: { coords: async (codes: string[]) => new Map(codes.filter((c) => known.has(c)).map((c) => [c, known.get(c)!])) },
+      positions: (codes) => new Map(codes.filter((c) => known.has(c)).map((c) => [c, known.get(c)!])),
+      later: (run, ms) => timers.push({ run, ms }),
+      getPanel: (id) => h.store.getPanel(id),
+    });
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  it('fills what it can at once, and the rest when it tries again eleven minutes later, not at the next hourly read', async () => {
+    assert.equal(await filler.run(panel(), fetched()), 0, 'none of the three flights has both its airports known yet');
+    assert.deepEqual(timers.map((t) => t.ms), [11 * 60_000], 'it is tried again shortly');
+    knowing('EGLL', 'EGKK', 'KJFK', 'KBOS'); // the positions arrive meanwhile
+    timers[0]!.run();
+    await settle(40);
+    assert.deepEqual(plans.at(-1)!.map((p) => p.sourceKey), ['a', 'b', 'c']);
+  });
+
+  it('writes the flights it can work out straight away, and tries again for the others', async () => {
+    knowing('EGLL', 'EGKK');
+    assert.equal(await filler.run(panel(), fetched()), 1);
+    assert.deepEqual(plans.map((p) => p.map((x) => x.sourceKey)), [['b']]);
+    assert.equal(timers.length, 1);
+    knowing('EGLL', 'EGKK', 'KJFK', 'KBOS');
+    timers[0]!.run();
+    await settle(40);
+    assert.deepEqual(plans.at(-1)!.map((p) => p.sourceKey), ['a', 'b', 'c'], 'the retry offers every flight; the sheet is read afresh and a filled cell is left');
+  });
+
+  it('does not try again when everything was worked out the first time', async () => {
+    knowing('EGLL', 'EGKK', 'KJFK', 'KBOS');
+    assert.equal(await filler.run(panel(), fetched()), 3);
+    assert.deepEqual(timers, []);
+  });
+
+  it('gives up after three more attempts for an airport that never turns up', async () => {
+    const odd = [job('x', 'EGLL', 'ZZZZ')];
+    const f: FetchedJobs = { jobs: odd, warnings: [], blankDistances: ['x'] };
+    await filler.run(panel(), f);
+    let attempts = 0;
+    for (let i = 0; i < 8 && timers.length > 0; i++) {
+      timers.shift()!.run();
+      attempts++;
+      await settle(40);
+    }
+    assert.equal(attempts, 3, 'three more attempts, and then no more');
+    assert.equal(timers.length, 0, 'no more timers');
+  });
+
+  /** Let the first attempt come up short, change the panel, and fire the timer. */
+  const waitThenChange = async (change: { sheetId?: string | null; sheetGid?: string; writeback?: boolean }) => {
+    await filler.run(panel(), fetched());
+    h.store.updatePanel(h.panel.id, change);
+    knowing('EGLL', 'EGKK', 'KJFK', 'KBOS');
+    timers[0]!.run();
+    await settle(40);
+  };
+
+  it('does not write after the panel was pointed at another tab while it waited', async () => {
+    await waitThenChange({ sheetGid: '42' });
+    assert.deepEqual(plans, []);
+  });
+
+  it('does not write after write-back was switched off while it waited', async () => {
+    await waitThenChange({ writeback: false });
+    assert.deepEqual(plans, []);
+  });
+
+  it('does not write for a panel whose sheet was changed while it waited', async () => {
+    await waitThenChange({ sheetId: 'another-sheet' });
+    assert.deepEqual(plans, []);
+  });
+});

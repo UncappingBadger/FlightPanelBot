@@ -1,5 +1,6 @@
 import type { AirportCoord, Panel } from '../db/store.js';
 import type { FetchedJobs, SourceJob, SourceLeg } from '../jobs/types.js';
+import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { greatCircleNm, type AirportDirectory } from './airports.js';
 import type { SheetWriteBack } from './writeback.js';
@@ -24,8 +25,24 @@ export interface DistanceFillDeps {
   airports: Pick<AirportDirectory, 'coords'>;
   /** The positions of the airports the bot already has, at once. Without it a flight's distance is not worked out for the card. */
   positions?: (codes: string[]) => Map<string, AirportCoord>;
+  /** Runs something a while from now (a timer that does not keep the program alive). Tests supply their own. */
+  later?: (run: () => void, ms: number) => void;
+  /** The panel as it is now, so a later attempt does not write to a sheet that has since been changed or unlinked. */
+  getPanel?: (id: number) => Panel | null;
   logger?: Logger;
 }
+
+/**
+ * The airport list is never read twice within ten minutes, so a flight whose airports were not known when the schedule was read (another part
+ * of the bot read the list a moment before, for an airport of its own) is tried again a little after that, rather than at the next hourly read.
+ */
+const RETRY_AFTER_MS = 11 * 60_000;
+const MAX_RETRIES = 3;
+
+const defaultLater = (run: () => void, ms: number): void => {
+  const timer = setTimeout(run, ms);
+  timer.unref?.();
+};
 
 /** An airport code as the position tables have it. */
 const tidy = (code: string): string => code.trim().toUpperCase();
@@ -63,18 +80,35 @@ export class DistanceFiller {
     const lacking = jobs.filter((j) => j.distanceNm === null || j.distanceNm === undefined);
     if (lacking.length === 0) return jobs;
     const coords = this.d.positions(airportsOf(lacking));
-    return jobs.map((j) => {
+    let worked = 0;
+    const out = jobs.map((j) => {
       if (j.distanceNm !== null && j.distanceNm !== undefined) return j;
       const nm = routeDistanceNm(j.legs, coords);
+      if (nm !== null) worked++;
       return nm === null ? j : { ...j, distanceNm: nm };
     });
+    if (DEBUG_BUILD) dbg(this.log, `distances (for the cards): ${jobs.length - lacking.length} flight(s) have the sheet's own distance; of ${lacking.length} without one, ${worked} worked out from known airports and ${lacking.length - worked} still have none`);
+    return out;
+  }
+
+  private tryAgainLater(panel: Panel, fetched: FetchedJobs, attempt: number): void {
+    if (DEBUG_BUILD) dbg(this.log, `distances: some flights still lack an airport position; trying again in ${RETRY_AFTER_MS / 60_000} minutes (attempt ${attempt} of ${MAX_RETRIES} more)`);
+    (this.d.later ?? defaultLater)(() => {
+      const current = this.d.getPanel ? this.d.getPanel(panel.id) : panel;
+      if (!current || current.sheetId !== panel.sheetId || current.sheetGid !== panel.sheetGid) return;
+      void this.run(current, fetched, attempt);
+    }, RETRY_AFTER_MS);
   }
 
   /** Work out and write the distances the schedule just read is missing. Returns how many cells were written; never throws. */
-  async run(panel: Panel, fetched: FetchedJobs): Promise<number> {
+  async run(panel: Panel, fetched: FetchedJobs, attempt = 0): Promise<number> {
     const blank = fetched.blankDistances ?? [];
+    if (DEBUG_BUILD) dbg(this.log, `distances: ${panel.airlineName}: the schedule has ${fetched.jobs.length} flight(s); ${fetched.blankDistances === undefined ? 'the sheet has no Distance column' : `${blank.length} have a blank Distance cell`}; sheet ${panel.sheetId ? 'linked' : 'not linked'}; write-back ${this.d.writeback?.enabledFor(panel) ? 'on' : 'off'}; attempt ${attempt}`);
     if (blank.length === 0 || !panel.sheetId || !this.d.writeback?.enabledFor(panel)) return 0;
-    if (this.running.has(panel.id)) return 0;
+    if (this.running.has(panel.id)) {
+      if (DEBUG_BUILD) dbg(this.log, 'distances: another fill of this panel is still going, so this one stands aside');
+      return 0;
+    }
     this.running.add(panel.id);
     try {
       const wanted = new Set(blank);
@@ -85,8 +119,16 @@ export class DistanceFiller {
         const nm = routeDistanceNm(job.legs, coords);
         if (nm !== null) plan.push({ sourceKey: job.key, nm });
       }
+      if (DEBUG_BUILD) {
+        const unknown = [...new Set(airportsOf(jobs).filter((c) => !coords.has(c)))];
+        dbg(this.log, `distances: ${plan.length} of ${jobs.length} flight(s) can be worked out now${unknown.length > 0 ? `; no position yet for ${unknown.length} airport(s): ${unknown.slice(0, 30).join(' ')}${unknown.length > 30 ? ' ...' : ''}` : ''}`);
+      }
+      // Flights whose airports are still not known are tried again shortly, a few times (an airport that is not in the list at all gives up).
+      if (plan.length < jobs.length && attempt < MAX_RETRIES) this.tryAgainLater(panel, fetched, attempt + 1);
       if (plan.length === 0) return 0;
-      return (await this.d.writeback.fillDistances(panel, plan)).written;
+      const written = (await this.d.writeback.fillDistances(panel, plan)).written;
+      if (DEBUG_BUILD) dbg(this.log, `distances: ${written} cell(s) written of ${plan.length} planned`);
+      return written;
     } catch (e) {
       this.log.warn(`Could not fill in the distances of ${panel.airlineName}: ${e instanceof Error ? e.message : String(e)}`);
       return 0;

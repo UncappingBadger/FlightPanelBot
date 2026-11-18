@@ -230,6 +230,14 @@ without the menu entry if there is none. The exe is **not code-signed**, which i
 why Windows shows a warning; signing needs a certificate. `FPB_HOME` moves the data folder, and `FPB_NO_BROWSER=1`
 stops the tray program opening the browser (used by tests).
 
+**Diagnostic build:** `npm run build:host -- --debug` makes `release-debug/FlightPanelBot-DEBUG.exe` for chasing a problem on a real
+install. It is not part of the release cycle and is never published. It logs everything it decides to its own `bot-debug.log`
+(the `[dbg]` lines, for example why the airport list was or was not read and what the Distance fill found), and **it never writes
+to Google and never uses the Google key**, and it reads a linked sheet every two minutes instead of once an hour so the Distance fill can be watched: the schedule is copied once from the sheet's public link into a local file in
+`debug-sheets` (beside the database), and from then on the bot reads that file and writes into it, so pilots' names, ticks and
+distances can all be watched without touching the real sheet. Delete the file to take a fresh copy. A cell's number format is kept
+in `<file>.formats.json`, which can be written by hand to try how a cell formatted as a date is handled.
+
 ## Setup from source (developers)
 
 You need Node.js 22.13 or newer.
@@ -535,8 +543,11 @@ the schedule** (every hour, and with `/setup refresh`). Nothing is asked of any 
 
 - **How it is worked out.** The great-circle distance between the airports of the flight, in whole nautical miles, added up for a flight of
   several legs. The airports' positions are the ones the bot keeps for the late-departure warnings (OurAirports' public list), so no
-  new service is involved. An airport the bot has not looked up yet is read from the list within ten minutes, so a schedule full of airports it has never
-  seen is filled in at the next read, not half a day later. It is the straight-line distance between the airports, not the distance a pilot ends up flying: FsHub's own
+  new service is involved. Whenever the list is read, **every** airport in it that has an airline-style code is kept (about 35,000 large, medium and small
+  airports, 2 to 3 MB in the database), not only the ones a flight asked about, so a schedule full of airports the bot has never seen is filled in at the
+  next read, and a read made a moment earlier for something else (a late-departure warning, say) can never leave half of them unknown. The list is read at most once
+  every ten minutes, and again after twelve hours so new airports arrive. A flight still waiting for an airport (one the list does not have, or a
+  read that failed) is tried again about eleven minutes later, up to three times, rather than at the next hourly read. It is the straight-line distance between the airports, not the distance a pilot ends up flying: FsHub's own
   record of a flown flight can be longer, and is not used here.
 - **Only empty cells.** A Distance cell with anything in it (a number you typed, a zero, a note, a stray space, a formula) is never changed. The sheet is
   read afresh just before writing, each flight is found again by its route and date, and a cancelled flight is skipped. Values go in as numbers, in one request.
@@ -912,7 +923,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
-`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes, and an airport it has looked for and not found is looked for again at most twice a day; only the positions of airports the airline's flights use are kept; nothing is sent but the request itself);
+`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and
@@ -923,7 +934,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2227 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2265 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

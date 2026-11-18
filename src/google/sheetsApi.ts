@@ -35,12 +35,21 @@ const TIMEOUT_MS = 20_000;
 /** `'My Tab'` with any quote inside doubled, as A1 ranges need. */
 const quoteTab = (title: string) => `'${title.replace(/'/g, "''")}'`;
 
+/** What the write-back needs from a sheet. Google Sheets is one; the diagnostic build's local file is the other. */
+export interface SheetsPort {
+  tabTitle(ref: SheetRef): Promise<string>;
+  readTab(ref: SheetRef, render?: 'FORMATTED_VALUE' | 'FORMULA'): Promise<{ title: string; values: string[][] }>;
+  columnNumberFormats(ref: SheetRef, title: string, col: number, firstRow: number, lastRow: number): Promise<{ sheetId: number; types: Map<number, string> }>;
+  setNumberFormat(ref: SheetRef, sheetId: number, col: number, rows: number[], format: { type: string; pattern: string }): Promise<void>;
+  update(ref: SheetRef, title: string, cells: Cell[]): Promise<void>;
+}
+
 /**
  * The few Google Sheets calls the bot makes: find a tab's name, read it, and write single cells.
  * Everything goes to sheets.googleapis.com; the sheet's ID is checked by the caller, never taken
  * from a person's free text.
  */
-export class SheetsApi {
+export class SheetsApi implements SheetsPort {
   constructor(
     private readonly token: TokenProvider,
     private readonly fetchFn: typeof fetch = fetch,

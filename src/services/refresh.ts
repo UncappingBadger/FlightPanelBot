@@ -10,6 +10,12 @@ export const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** A linked Google Sheet changes all day (sign-ups, ticked boxes), so it is re-read more often. */
 export const SHEET_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+/**
+ * The diagnostic build only: a linked Google Sheet is read this often instead of once in each hourly slot, so a test (the Distance fill, for
+ * one) can be watched without waiting an hour. Every other build, and every test, reads it by the slot as before. The scheduler ticks once a
+ * minute, so a read comes within a minute after this.
+ */
+export const DEBUG_SHEET_INTERVAL_MS = 2 * 60_000;
 
 export function refreshIntervalFor(panel: Pick<Panel, 'sheetId'>): number {
   return panel.sheetId ? SHEET_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS;
@@ -94,9 +100,10 @@ export class SourceRefresher {
     for (const panel of this.store.listAllPanels()) {
       if (!this.sourceFor(panel)) continue;
       const hourly = panel.sheetId !== null;
-      const due = panel.lastRefreshAt === null || (hourly ? this.slot.due(panel.lastRefreshAt, now) : now - panel.lastRefreshAt >= REFRESH_INTERVAL_MS);
+      const quick = DEBUG_BUILD && hourly;
+      const due = panel.lastRefreshAt === null || (quick ? now - panel.lastRefreshAt >= DEBUG_SHEET_INTERVAL_MS : hourly ? this.slot.due(panel.lastRefreshAt, now) : now - panel.lastRefreshAt >= REFRESH_INTERVAL_MS);
       const last = this.lastAttempt.get(panel.id);
-      const cooling = last !== undefined && (hourly ? last >= this.slot.start(now) : now - last < RETRY_AFTER_FAILURE_MS);
+      const cooling = last !== undefined && (quick ? now - last < DEBUG_SHEET_INTERVAL_MS : hourly ? last >= this.slot.start(now) : now - last < RETRY_AFTER_FAILURE_MS);
       if (!due || cooling) continue;
       try {
         await this.refresh(panel);
