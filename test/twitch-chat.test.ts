@@ -89,6 +89,19 @@ describe('what a viewer is told about the flight', () => {
     assert.equal(landingWord(-90), landingWord(90), 'a descent is negative, the word is the same');
   });
 
+  it('does not call a flight at flight level "getting ready" because FsHub has not worked out the phase yet', () => {
+    assert.match(flightText(live({ phase: 'calculating' }), null, NOW), /· in the air · FL370/);
+    assert.match(flightText(live({ phase: 'calculating', airborne: false, onGround: true }), null, NOW), /· getting ready\./);
+  });
+
+  it('never begins a reply with an exclamation mark, whatever it is asked', () => {
+    const texts = [
+      flightText(live(), last(), NOW), flightText(null, null, NOW), flightText(null, last(), NOW), distanceText(live(), null), distanceText(null, null), landingText(null, null, NOW),
+      landingText(live(), last(), NOW), aircraftText(null, null), aircraftText(live({ aircraftIcao: null }), null), etaText(null, NOW), etaText(live(), NOW), HELP_TEXT,
+    ];
+    for (const t of texts) assert.equal(t.startsWith('!'), false, t);
+  });
+
   it('names the aircraft, and the last one when nothing is flying', () => {
     assert.equal(aircraftText(live(), null), '🛩️ Flying an Airbus A320 (A320).');
     assert.equal(aircraftText(live({ aircraftIcao: 'ZZZZ' }), null), '🛩️ Flying a ZZZZ.');
@@ -182,6 +195,7 @@ describe('the bot\'s lines', () => {
   it('has plenty for every mood, all short, clean and kind', () => {
     for (const m of moods) {
       assert.ok(LINES[m].length >= 4, `${m} has ${LINES[m].length}`);
+      assert.ok(LINES[m].every((l) => !l.startsWith('!')), `${m}: no line begins with ! (the bot must never mistake its own words for a command)`);
       for (const line of LINES[m]) {
         assert.ok(line.length <= 300, `${m}: too long: ${line}`);
         assert.equal(isRude(line), false, `${m}: ${line}`);
@@ -406,8 +420,17 @@ describe('the chat bot', () => {
   });
 
   describe('who and what it leaves alone', () => {
-    it('never answers itself, other bots, anything crude, or a very long message', async () => {
-      assert.equal(await bot.respond(ev('!flight', { chatterId: '555', chatterLogin: 'kevinbot' })), null);
+    it('lets the account it is signed in as ask for a command, and nothing else, so it can never answer its own words', async () => {
+      const own = { chatterId: '555', chatterLogin: 'kevinbot' };
+      assert.match((await bot.respond(ev('!flight', own)))!.text, /^✈️/, 'a streamer using their own account for the bot can ask');
+      clock += 60_000;
+      assert.equal(await bot.respond(ev('kevin you are lazy', own)), null, 'its own chatter is not banter');
+      assert.equal(await bot.respond(ev('hello kevinbot', own)), null);
+      assert.equal(await bot.respond(ev('✈️ VHHH → KORD (TST517) in an Airbus A320 · cruising · FL370, 462 kts', own)), null, 'nor are its own replies');
+      assert.equal(await bot.respond(ev('Kevin from scheduling here. Ask me: !flight', own)), null, 'not even one that mentions a command');
+    });
+
+    it('never answers other bots, anything crude, or a very long message', async () => {
       for (const other of ['nightbot', 'streamelements', 'moobot', 'fossabot']) assert.equal(await bot.respond(ev('!flight', { chatterLogin: other, chatterId: other })), null, other);
       assert.equal(await bot.respond(ev('kevin what the fuck is this')), null);
       assert.equal(await bot.respond(ev('!flight wtf')), null, 'a command with a crude word in it is not answered either');

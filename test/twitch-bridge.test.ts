@@ -114,12 +114,16 @@ describe('the Twitch chat in the running bot', () => {
     assert.match(tw.chat[0]!.message, /Bea/);
   });
 
-  it('never answers its own messages, so it cannot talk to itself', async () => {
+  it('answers a command typed by the account it is signed in as, and never its own replies, so it cannot talk to itself', async () => {
     make();
     await join_();
     net.made[0]!.emit(chatMessage({ id: 'own', text: '!flight', user: 'kevinbot', userId: '555' }));
-    await sleep(30);
-    assert.equal(tw.chat.length, 0);
+    await until(() => tw.chat.length === 1);
+    // Twitch shows the bot its own reply, as it does every message in the chat
+    net.made[0]!.emit(chatMessage({ id: 'echo', text: tw.chat[0]!.message, user: 'kevinbot', userId: '555' }));
+    net.made[0]!.emit(chatMessage({ id: 'own-chat', text: 'kevin you are lazy', user: 'kevinbot', userId: '555' }));
+    await sleep(40);
+    assert.equal(tw.chat.length, 1, 'nothing more was said');
   });
 
   it('keeps to its pace: of a burst of questions, only the first is answered at once', async () => {

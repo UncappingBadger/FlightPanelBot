@@ -9,7 +9,9 @@ import { aircraftText, distanceText, etaText, flightText, landingText, type Flig
  *
  *  - `!flight`, `!distance`, `!landing`, `!aircraft`, `!eta` (and `!kevin` for the list) give the streamer's flight information;
  *  - a message that names the bot (or answers one of its messages) gets banter, or the same information if it asks about the flight in plain words;
- *  - everything else, other bots, the bot's own messages, and anything crude, is left alone.
+ *  - everything else, other bots, the bot's own chatter, and anything crude, is left alone. (The account the bot is signed in as may type a
+ *    `!` command itself, which is how a streamer who uses their own account for the bot can ask; nothing else it types counts, and the bot's
+ *    replies never begin with `!`, so it can never mistake its own words for a question.)
  *
  * It is careful not to flood a chat: a command has a cooldown, a person has a cooldown, and the bot never sends more than a handful of
  * messages in half a minute (Twitch's own limit for an ordinary account is twenty).
@@ -86,11 +88,13 @@ export class ChatBot {
 
   /** What to say back to this message, if anything. */
   async respond(ev: ChatEvent): Promise<Reply | null> {
-    if (ev.chatterId === this.o.botUserId || OTHER_BOTS.has(ev.chatterLogin)) return null;
+    const own = ev.chatterId === this.o.botUserId;
+    if (!own && OTHER_BOTS.has(ev.chatterLogin)) return null;
     const text = ev.text.trim();
     if (text.length > MAX_INPUT_CHARS || isRude(text)) return null;
 
     const command = /^!([a-z]{2,20})\b/i.exec(text);
+    if (own && !command) return null;
     if (command) {
       const what = COMMANDS[(command[1] as string).toLowerCase()];
       return what && this.o.commands ? this.answer(ev, what, `cmd:${what}`) : null;

@@ -142,7 +142,8 @@ export function flightText(live: LiveDetail | null, last: FsHubFlight | null, no
   const name = aircraftName(live.aircraftIcao);
   const bits = [
     `✈️ ${r ?? 'On a flight'}${live.callsign ? ` (${live.callsign})` : ''}${name ? ` in ${withArticle(name)}` : ''}`,
-    phaseText(live.phase),
+    // FsHub's tracker says "calculating" until it has worked the phase out, which can be well into the flight: not "getting ready" at flight level.
+    live.airborne && live.phase === 'calculating' ? 'in the air' : phaseText(live.phase),
     live.airborne ? [height(live.altitudeFt), live.speedKts !== null ? `${thousands(live.speedKts)} kts` : null].filter(Boolean).join(', ') || null : null,
     live.progressPct !== null && live.airborne ? `${Math.round(live.progressPct)}% of the way` : null,
     live.etaMinutes !== null && live.airborne && live.etaMinutes >= 0 ? `about ${duration(live.etaMinutes)} to go` : null,
