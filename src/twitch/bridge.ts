@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { FsHubClient } from '../fshub/client.js';
 import type { LiveFeed } from '../fshub/liveFeed.js';
+import { DEBUG_BUILD } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { ChatBot } from './chatBot.js';
 import { EventSubClient, type EventSubState, type SocketFactory, type Timers } from './eventsub.js';
@@ -57,6 +58,11 @@ export interface BridgeOptions {
   timers?: Timers;
   /** For tests: the flight data, in place of the live feed and FsHub. */
   source?: FlightSource;
+  /**
+   * A test build only: the bot may use the channel's own account, and answers what that account types, so one person can try everything alone.
+   * A release (the default) needs an account of its own for the bot, and will not join a chat as the channel's own account.
+   */
+  ownAccount?: boolean;
   /** How often the sign-in is checked with Twitch (it asks for every hour). */
   validateEveryMs?: number;
 }
@@ -82,7 +88,10 @@ export class TwitchBridge {
   private queue: Promise<void> = Promise.resolve();
   private forbidden = 0;
 
+  private readonly ownAccount: boolean;
+
   constructor(private readonly o: BridgeOptions) {
+    this.ownAccount = o.ownAccount ?? DEBUG_BUILD;
     this.log = o.logger ?? silentLogger;
     this.now = o.now ?? Date.now;
     this.current = { state: 'off', detail: 'Not set up.', login: null, channel: o.channel || null, at: this.now() };
@@ -154,6 +163,12 @@ export class TwitchBridge {
       const missing = CHAT_SCOPES.filter((s) => !info.scopes.includes(s));
       if (missing.length > 0) return this.lost(`The Twitch sign-in lacks permission to ${missing.includes('user:write:chat') ? 'send' : 'read'} chat. Connect to Twitch again on the setup page.`);
       this.selfId = info.userId;
+      if (!this.ownAccount && info.login === this.o.channel.toLowerCase()) {
+        const why = "The bot needs a Twitch account of its own: connect a separate account for it (and make that account a moderator of the channel), not the channel's own account.";
+        this.set('needs-connect', why, info.login);
+        this.log.warn(`Twitch chat: ${why}`);
+        return;
+      }
 
       const api = new TwitchApi({ tokens: manager, ...(this.o.fetchFn ? { fetchFn: this.o.fetchFn } : {}), logger: this.log, now: this.now });
       this.api = api;
@@ -171,6 +186,7 @@ export class TwitchBridge {
         source: this.o.source ?? new StreamerFlights({ feed: this.o.feed, fshub: this.o.fshub, pilotId: this.o.pilotId, now: this.now }),
         commands: this.o.commands,
         banter: this.o.banter,
+        answerOwnAccount: this.ownAccount,
         now: this.now,
         ...(this.o.random ? { random: this.o.random } : {}),
         logger: this.log,

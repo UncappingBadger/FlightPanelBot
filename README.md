@@ -828,10 +828,10 @@ all, and what a viewer typed is never repeated back.
   asks for two permissions only: to read the chat it is in and to write to it (`user:read:chat`, `user:write:chat`). **Disconnect** on the
   page (or Connections in the Twitch settings) takes it away at any time. If Twitch stops accepting it (the host disconnected the app, changed
   their password, or the bot went 30 days without running) the page says so and the host connects again.
-- **Which account.** Make a free Twitch account for the bot and connect that, and make it a moderator of the channel (`/mod name`): the
-  replies then come from the bot and not from the streamer, and a moderator is not held back by slow mode or followers-only chat and may
-  send 100 messages in 30 seconds where an ordinary account may send 20. Connecting the streamer's own account works, but the replies then
-  appear as the streamer's.
+- **Which account.** The bot needs a Twitch account of its own. Make a free account for it, connect that, and make it a moderator of the
+  channel (`/mod name`): the replies then come from the bot and not from the streamer, and a moderator is not held back by slow mode or
+  followers-only chat and may send 100 messages in 30 seconds where an ordinary account may send 20. The bot will not join a chat as that
+  channel's own account (the setup page says to connect a separate one), and it never answers messages from its own account.
 - **Whose flights.** The streamer's FsHub pilot: the owner of the FsHub token saved in step 4, or the pilot number given on the page. The
   current flight comes from FsHub's public live feed (no token); the last landing needs the FsHub token.
 - **The application ID.** Twitch wants to know which application is asking. This is a public number (a Client ID, not a secret), and this
@@ -984,7 +984,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2398 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2408 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

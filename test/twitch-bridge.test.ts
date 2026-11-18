@@ -114,16 +114,53 @@ describe('the Twitch chat in the running bot', () => {
     assert.match(tw.chat[0]!.message, /Bea/);
   });
 
-  it('answers a command typed by the account it is signed in as, and never its own replies, so it cannot talk to itself', async () => {
+  it('never answers the account it is signed in as, so it cannot talk to itself', async () => {
     make();
     await join_();
-    net.made[0]!.emit(chatMessage({ id: 'own', text: '!flight', user: 'kevinbot', userId: '555' }));
-    await until(() => tw.chat.length === 1);
-    // Twitch shows the bot its own reply, as it does every message in the chat
-    net.made[0]!.emit(chatMessage({ id: 'echo', text: tw.chat[0]!.message, user: 'kevinbot', userId: '555' }));
-    net.made[0]!.emit(chatMessage({ id: 'own-chat', text: 'kevin you are lazy', user: 'kevinbot', userId: '555' }));
+    for (const [i, text] of ['!flight', 'kevin you are lazy', '@kevinbot hello'].entries()) net.made[0]!.emit(chatMessage({ id: `own${i}`, text, user: 'kevinbot', userId: '555' }));
     await sleep(40);
-    assert.equal(tw.chat.length, 1, 'nothing more was said');
+    assert.equal(tw.chat.length, 0);
+  });
+
+  it('will not join a chat as the channel\'s own account: a release needs an account of its own for the bot', async () => {
+    writeTokens(tokensFile, tokens({ login: 'testair' }));
+    tw.valid.set('acc-1', { login: 'testair', userId: '100', scopes: SCOPES, expiresIn: 3000 });
+    make();
+    await bridge!.start();
+    assert.equal(bridge!.status().state, 'needs-connect');
+    assert.match(bridge!.status().detail, /needs a Twitch account of its own/);
+    assert.equal(net.made.length, 0, 'it joined nothing');
+    assert.ok(lines.some((l) => l.startsWith('warn Twitch chat: The bot needs a Twitch account of its own')));
+    // another account in the same chat is fine
+    make({ channel: 'someoneelse' });
+    tw.users.someoneelse = { id: '300', login: 'someoneelse', display_name: 'SomeoneElse' };
+    await bridge!.start();
+    await until(() => net.made.length > 0);
+  });
+
+  describe('in a test build, where the bot may use the channel\'s own account', () => {
+    it('joins as the channel\'s own account, answers what that account types, and never its own replies', async () => {
+      writeTokens(tokensFile, tokens({ login: 'testair' }));
+      tw.valid.set('acc-1', { login: 'testair', userId: '100', scopes: SCOPES, expiresIn: 3000 });
+      let clock = Date.now();
+      make({ ownAccount: true, now: () => clock });
+      await join_();
+      net.made[0]!.emit(chatMessage({ id: 'mine', text: '!flight', user: 'testair', userId: '100' }));
+      await until(() => tw.chat.length === 1);
+      assert.equal(tw.chat[0]!.reply_parent_message_id, 'mine');
+      clock += 30_000;
+      net.made[0]!.emit(chatMessage({ id: 'mine2', text: '@testair hello', user: 'testair', userId: '100' }));
+      await until(() => tw.chat.length === 2);
+      assert.equal(tw.chat[1]!.reply_parent_message_id, 'mine2');
+      // Twitch shows the bot its own replies as well, as replies and with the name in front
+      clock += 30_000;
+      for (const [i, c] of tw.chat.entries()) {
+        net.made[0]!.emit(chatMessage({ id: `echo${i}`, text: `@testair ${c.message}`, user: 'testair', userId: '100', replyTo: { id: '100', login: 'testair' } }));
+        net.made[0]!.emit(chatMessage({ id: `bare${i}`, text: c.message, user: 'testair', userId: '100' }));
+      }
+      await sleep(60);
+      assert.equal(tw.chat.length, 2, 'nothing more was said');
+    });
   });
 
   it('keeps to its pace: of a burst of questions, only the first is answered at once', async () => {

@@ -9,9 +9,10 @@ import { aircraftText, distanceText, etaText, flightText, landingText, type Flig
  *
  *  - `!flight`, `!distance`, `!landing`, `!aircraft`, `!eta` (and `!kevin` for the list) give the streamer's flight information;
  *  - a message that names the bot (or answers one of its messages) gets banter, or the same information if it asks about the flight in plain words;
- *  - everything else, other bots, the bot's own chatter, and anything crude, is left alone. (The account the bot is signed in as may type a
- *    `!` command itself, which is how a streamer who uses their own account for the bot can ask; nothing else it types counts, and the bot's
- *    replies never begin with `!`, so it can never mistake its own words for a question.)
+ *  - everything else, other bots, the bot's own account, and anything crude, is left alone. A release needs an account of its own for the bot
+ *    (see `TwitchBridge`), so in a release nothing from that account is ever answered. A test build may let the account it is signed in as talk
+ *    to it, so one person can try everything alone; then what the bot itself said is never mistaken for that (it is only ever sent as a reply,
+ *    and it is remembered), and if it ever seems to be answering itself it stops answering that account.
  *
  * It is careful not to flood a chat: a command has a cooldown, a person has a cooldown, and the bot never sends more than a handful of
  * messages in half a minute (Twitch's own limit for an ordinary account is twenty).
@@ -34,6 +35,8 @@ export interface ChatBotOptions {
   commands: boolean;
   /** Replies to compliments, jokes and insults. */
   banter: boolean;
+  /** A test build only: answer the account the bot is signed in as. In a release that account is never answered. */
+  answerOwnAccount?: boolean;
   now?: () => number;
   random?: () => number;
   logger?: Logger;
@@ -48,6 +51,10 @@ export const SEND_WINDOW_MAX = 10;
 export const SEND_MIN_GAP_MS = 1_500;
 /** A message this long is not a question for the bot. */
 const MAX_INPUT_CHARS = 400;
+/** In a test build: how many times in a minute it will answer its own account before deciding something has gone wrong, and stopping. */
+export const OWN_ANSWERS_PER_MINUTE = 3;
+/** What it has said is remembered this long, to tell its own words from anyone's. */
+const SAID_KEEP_MS = 10 * 60_000;
 
 /** Other bots and services that talk in chat: never answered. */
 const OTHER_BOTS = new Set(['nightbot', 'streamelements', 'streamlabs', 'moobot', 'fossabot', 'wizebot', 'soundalerts', 'pretzelrocks', 'commanderroot', 'botrix', 'sery_bot', 'lurxx']);
@@ -78,6 +85,9 @@ export class ChatBot {
   private readonly cooldowns = new Map<string, number>();
   private readonly recentLines = new Map<Mood, string[]>();
   private readonly sent: number[] = [];
+  private said: Array<{ text: string; at: number }> = [];
+  private readonly ownAnswers: number[] = [];
+  private ownStopped = false;
 
   constructor(private readonly o: ChatBotOptions) {
     this.now = o.now ?? Date.now;
@@ -89,12 +99,41 @@ export class ChatBot {
   /** What to say back to this message, if anything. */
   async respond(ev: ChatEvent): Promise<Reply | null> {
     const own = ev.chatterId === this.o.botUserId;
+    if (own && !this.o.answerOwnAccount) return null;
     if (!own && OTHER_BOTS.has(ev.chatterLogin)) return null;
     const text = ev.text.trim();
     if (text.length > MAX_INPUT_CHARS || isRude(text)) return null;
+    // The bot's own account, in a test build: never a reply (all the bot says is a reply, so a person's own message is not), never what it said.
+    if (own && (this.ownStopped || ev.replyToUserId !== null || this.wasSaid(text) || this.tooManyOwnAnswers())) return null;
 
+    const reply = await this.decide(ev, text);
+    if (reply) {
+      const t = this.now();
+      this.said = this.said.filter((s) => t - s.at < SAID_KEEP_MS).slice(-50);
+      this.said.push({ text: reply.text, at: t });
+      if (own) this.ownAnswers.push(t);
+    }
+    return reply;
+  }
+
+  private wasSaid(text: string): boolean {
+    // Twitch shows a reply with the person it answers at the front (`@name `), so that is taken off before comparing.
+    const bare = text.replace(/^@\S+\s+/, '').trim();
+    return this.said.some((s) => s.text === text || s.text === bare);
+  }
+
+  /** Answering the account the bot speaks as, more than this often, means something is wrong: it stops, and says so. */
+  private tooManyOwnAnswers(): boolean {
+    const t = this.now();
+    while (this.ownAnswers.length > 0 && t - (this.ownAnswers[0] as number) >= 60_000) this.ownAnswers.shift();
+    if (this.ownAnswers.length < OWN_ANSWERS_PER_MINUTE) return false;
+    this.ownStopped = true;
+    this.log.warn('Twitch chat: the bot seems to be answering its own account over and over, so it will not answer that account any more until it is restarted');
+    return true;
+  }
+
+  private async decide(ev: ChatEvent, text: string): Promise<Reply | null> {
     const command = /^!([a-z]{2,20})\b/i.exec(text);
-    if (own && !command) return null;
     if (command) {
       const what = COMMANDS[(command[1] as string).toLowerCase()];
       return what && this.o.commands ? this.answer(ev, what, `cmd:${what}`) : null;

@@ -96,7 +96,7 @@ export function renderPage(version: string): string {
   <section id="s-twitch">
     <h2>5. Optional: answer a Twitch chat about your flight</h2>
     <p class="muted">For streamers. The bot joins one Twitch channel's chat and answers <code>!flight</code>, <code>!distance</code>, <code>!landing</code>, <code>!aircraft</code> and <code>!eta</code> with your current flight from FsHub, and replies to chat's compliments, jokes and insults in a family-friendly way. It only speaks when spoken to, and nothing happens until you connect a Twitch account below. You can disconnect it here at any time, or under Connections in your Twitch settings.</p>
-    <p class="muted">Tip: connect a separate Twitch account made for the bot (and make it a moderator of your channel), so the replies come from it and not from you. It uses your FsHub token above to know whose flights to talk about.</p>
+    <p class="muted">Connect a separate Twitch account made for the bot, and make it a moderator of your channel: the bot will not join your chat as the channel's own account, and its replies come from it and not from you. It uses your FsHub token above to know whose flights to talk about.</p>
     <p id="twitch-state" class="muted">Checking…</p>
     <div class="row"><button id="twitch-connect">Connect to Twitch</button><button class="secondary hidden" id="twitch-disconnect">Disconnect</button></div>
     <div class="msg hidden" id="twitch-code"></div>

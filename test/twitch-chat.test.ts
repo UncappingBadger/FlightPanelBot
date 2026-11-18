@@ -420,14 +420,63 @@ describe('the chat bot', () => {
   });
 
   describe('who and what it leaves alone', () => {
-    it('lets the account it is signed in as ask for a command, and nothing else, so it can never answer its own words', async () => {
+    it('never answers the account it is signed in as: a release needs an account of its own for the bot', async () => {
       const own = { chatterId: '555', chatterLogin: 'kevinbot' };
-      assert.match((await bot.respond(ev('!flight', own)))!.text, /^✈️/, 'a streamer using their own account for the bot can ask');
-      clock += 60_000;
-      assert.equal(await bot.respond(ev('kevin you are lazy', own)), null, 'its own chatter is not banter');
-      assert.equal(await bot.respond(ev('hello kevinbot', own)), null);
-      assert.equal(await bot.respond(ev('✈️ VHHH → KORD (TST517) in an Airbus A320 · cruising · FL370, 462 kts', own)), null, 'nor are its own replies');
-      assert.equal(await bot.respond(ev('Kevin from scheduling here. Ask me: !flight', own)), null, 'not even one that mentions a command');
+      for (const text of ['!flight', '!landing', 'kevin you are lazy', 'hello kevinbot', '@kevinbot how far are we', '✈️ VHHH → KORD (TST517)']) assert.equal(await bot.respond(ev(text, own)), null, text);
+    });
+
+    describe('in a test build, where the account it is signed in as may talk to it', () => {
+      const own = { chatterId: '555', chatterLogin: 'kevinbot', chatterName: 'KevinBot' };
+      let tester: ChatBot;
+      beforeEach(() => {
+        tester = new ChatBot({ botLogin: 'kevinbot', botUserId: '555', source, commands: true, banter: true, answerOwnAccount: true, now: () => clock, random: () => 0.3 });
+      });
+
+      it('answers what that account types, commands and banter alike, as a reply to it', async () => {
+        const a = await tester.respond(ev('!flight', own));
+        assert.match(a!.text, /^✈️/);
+        assert.equal(a!.replyTo, 'm1');
+        clock += 30_000;
+        const b = await tester.respond(ev('@kevinbot hello', own));
+        assert.ok(b && LINES.greeting.some((l) => l.replace('{user}', 'KevinBot') === b.text), b?.text);
+        clock += 30_000;
+        const c = await tester.respond(ev('kevin you are lazy', own));
+        assert.ok(c && LINES.lazy.some((l) => l.replace('{user}', 'KevinBot') === c.text), c?.text);
+      });
+
+      it('never answers what it said itself, however Twitch shows it: with or without the name of the person answered at the front', async () => {
+        const first = (await tester.respond(ev('@kevinbot hello', own)))!;
+        assert.equal(await tester.respond(ev(first.text, own)), null, 'its words as they were sent');
+        assert.equal(await tester.respond(ev(`@KevinBot ${first.text}`, own)), null, 'and with the name Twitch puts in front of a reply');
+        clock += 30_000;
+        const help = (await tester.respond(ev('!kevin', own)))!;
+        assert.equal(await tester.respond(ev(`@KevinBot ${help.text}`, own)), null, 'a reply that has a command in it is not a command');
+      });
+
+      it('never answers one of its own replies, which is always a reply to somebody', async () => {
+        assert.equal(await tester.respond(ev('kevin you are lazy and worse', { ...own, replyToUserId: '555', replyToLogin: 'kevinbot' })), null);
+        assert.equal(await tester.respond(ev('!flight', { ...own, replyToUserId: '900', replyToLogin: 'viewer1' })), null, 'not even a command, in a reply');
+      });
+
+      it('stops answering that account, and says so, if it ever seems to be talking to itself', async () => {
+        const warned: string[] = [];
+        const noisy = new ChatBot({ botLogin: 'kevinbot', botUserId: '555', source, commands: true, banter: true, answerOwnAccount: true, now: () => clock, random: () => 0.3, logger: { debug() {}, info() {}, warn: (m: string) => void warned.push(m), error() {} } });
+        const answered: boolean[] = [];
+        for (const cmd of ['!flight', '!distance', '!landing', '!aircraft', '!eta']) {
+          answered.push((await noisy.respond(ev(cmd, own))) !== null);
+          clock += 5_000;
+        }
+        assert.deepEqual(answered, [true, true, true, false, false], 'three a minute, and then it stops');
+        assert.equal(warned.length, 1, 'and says so once');
+        clock += 10 * 60_000;
+        assert.equal(await noisy.respond(ev('!flight', own)), null, 'for good, until it is restarted');
+        assert.ok(await noisy.respond(ev('!flight', { chatterId: '901', chatterLogin: 'someone' })), 'everyone else is still answered');
+      });
+
+      it('still ignores other bots, and answers everyone else exactly as before', async () => {
+        assert.equal(await tester.respond(ev('!flight', { chatterId: 'n', chatterLogin: 'nightbot' })), null);
+        assert.match((await tester.respond(ev('!flight', { chatterId: 'v', chatterLogin: 'viewer' })))!.text, /^✈️/);
+      });
     });
 
     it('never answers other bots, anything crude, or a very long message', async () => {
