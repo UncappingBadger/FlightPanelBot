@@ -122,15 +122,35 @@ describe('connecting Twitch on the setup page', () => {
   const post = (path: string, body: unknown = {}) => fetch(url(path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  it('starts with nothing connected, and says there is no application ID when none is built in or given', async () => {
+  it('starts with nothing connected, and the application ID built into this app ready to use', async () => {
     const view = (await (await get('/api/twitch')).json()) as Record<string, unknown>;
-    assert.deepEqual(view, { available: BUILT_IN_TWITCH_CLIENT_ID !== '', ownClientId: false, connectedAs: null, channel: '', commands: true, banter: true, pilotId: null, status: null, pending: null });
-    if (BUILT_IN_TWITCH_CLIENT_ID === '') {
-      const r = await post('/api/twitch/connect');
+    assert.deepEqual(view, { available: true, ownClientId: false, connectedAs: null, channel: '', commands: true, banter: true, pilotId: null, status: null, pending: null });
+  });
+
+  it('in a copy of the app with no application ID of its own, says so, and sends nothing to Twitch, until the host gives one', async () => {
+    const bare = await startWebServer({ supervisor, updates: new UpdateChecker({ version: '9.9.9', statePath: paths.updateState, autoEnabled: () => false, fetchFn: (async () => new Response('{}', { status: 404 })) as unknown as typeof fetch, repo: 'o/r' }), paths, log: silentLogger, version: '9.9.9', key: KEY, tail: () => [], onQuit: () => {}, fetchFn: tw.fetch, builtInTwitchClientId: '' });
+    try {
+      const at = (path: string) => `http://127.0.0.1:${bare.port}${path}?k=${KEY}`;
+      assert.equal(((await (await fetch(at('/api/twitch'))).json()) as { available: boolean }).available, false);
+      const r = await fetch(at('/api/twitch/connect'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
       assert.equal(r.status, 400);
       assert.match(((await r.json()) as { error: string }).error, /no Twitch application ID/);
       assert.equal(tw.seen.length, 0, 'nothing was sent to Twitch');
+    } finally {
+      await bare.close();
     }
+  });
+
+  it('signs in with the app\'s own application ID when the host gave none of their own, and with theirs when they did', async () => {
+    assert.equal(validClientId(BUILT_IN_TWITCH_CLIENT_ID), true, 'this app has a real-looking Twitch application ID built in');
+    const started = await post('/api/twitch/connect');
+    assert.equal(started.status, 200);
+    assert.equal(tw.seen[0]!.body!.client_id, BUILT_IN_TWITCH_CLIENT_ID);
+    const view = (await (await get('/api/twitch')).json()) as { available: boolean; ownClientId: boolean };
+    assert.deepEqual({ available: view.available, own: view.ownClientId }, { available: true, own: false });
+    await post('/api/twitch/settings', { clientId: CLIENT });
+    await post('/api/twitch/connect');
+    assert.equal(tw.seen.at(-1)!.body!.client_id, CLIENT, 'the host\'s own takes the place of the built-in one');
   });
 
   it('saves the host\'s own channel, options and application ID, tidied, and restarts the bot to use them', async () => {

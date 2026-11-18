@@ -31,6 +31,8 @@ export interface WebOptions {
   onQuit: () => void;
   /** Used to ask Discord whether a pasted token works. Replaceable in tests. */
   fetchFn?: typeof fetch;
+  /** The Twitch application ID built into this app (a fork may have none). Replaceable in tests. */
+  builtInTwitchClientId?: string;
 }
 
 export interface WebServer {
@@ -96,7 +98,7 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
 
   // Connecting a Twitch account: the code shown to the host while they approve it on Twitch's own page. Held in memory only.
   let pending: { device: DeviceCode; clientId: string; expiresAt: number; lastPoll: number } | null = null;
-  const clientIdForTwitch = (): string => loadSettings(opts.paths).twitch?.clientId || BUILT_IN_TWITCH_CLIENT_ID;
+  const clientIdForTwitch = (): string => loadSettings(opts.paths).twitch?.clientId || (opts.builtInTwitchClientId ?? BUILT_IN_TWITCH_CLIENT_ID);
   const twitchView = () => {
     const settings = loadSettings(opts.paths).twitch;
     const tokens = readTokens(opts.paths.twitchTokens);

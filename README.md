@@ -835,8 +835,8 @@ all, and what a viewer typed is never repeated back.
 - **Whose flights.** The streamer's FsHub pilot: the owner of the FsHub token saved in step 4, or the pilot number given on the page. The
   current flight comes from FsHub's public live feed (no token); the last landing needs the FsHub token.
 - **The application ID.** Twitch wants to know which application is asking. This is a public number (a Client ID, not a secret), and this
-  build may have one built in. If it has not, register a free application at [dev.twitch.tv/console](https://dev.twitch.tv/console) (Client Type:
-  **Public**) and paste its Client ID under *Advanced* on the page.
+  app has one built in. A host who would rather use a Twitch application of their own registers one at
+  [dev.twitch.tv/console](https://dev.twitch.tv/console) (Client Type: **Public**) and pastes its Client ID under *Advanced* on the page.
 - **It never floods a chat.** It only speaks when spoken to. A command has a cooldown (10 seconds for everyone, 4 for one person), a joke has
   one (20 seconds for one person, 5 for the room), it never sends more than 10 messages in 30 seconds or two at once, and it ignores itself
   and the usual chat bots (Nightbot, StreamElements and so on). It answers as a reply to the message that asked.
@@ -984,7 +984,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2396 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2398 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 
