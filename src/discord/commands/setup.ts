@@ -29,7 +29,7 @@ import { checkPilotId, pilotLabel, rememberPilotId } from '../dm.js';
 import { isDmClosed, UserError } from '../errors.js';
 import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
 import type { PanelRefreshResult } from '../panel.js';
-import { previewText, profitButtons, profitReport, rememberFills } from '../profitUi.js';
+import { applyProfitSettings, profitReport, profitSettingsText, showPreview } from '../profitUi.js';
 import { noPings, reminderTarget } from '../ui.js';
 
 const REQUIRED_CHANNEL_PERMS = [
@@ -466,8 +466,33 @@ export const setupCommand: Command = {
           o
             .setName('action')
             .setDescription('What to do (the default only reads and reports)')
-            .addChoices({ name: 'Check: compare, and change nothing (the default)', value: 'check' }, { name: 'Fill: show the blank cells I would fill, then ask you to confirm', value: 'fill' }),
+            .addChoices(
+              { name: 'Check: compare, and change nothing (the default)', value: 'check' },
+              { name: 'Fill: show the blank cells I would fill, then ask you to confirm', value: 'fill' },
+              { name: 'Settings: show where the fill preview goes and who can confirm it', value: 'settings' },
+            ),
         )
+        .addStringOption((o) =>
+          o
+            .setName('send-to')
+            .setDescription('Where the fill preview is shown (saved for this panel)')
+            .addChoices(
+              { name: 'Here: only to the admin who asks, in the reply (the default)', value: 'here' },
+              { name: 'DM: in the DMs of the admin who asks', value: 'dm' },
+              { name: 'Channel: posted in a channel I choose (pick it in the channel option)', value: 'channel' },
+            ),
+        )
+        .addChannelOption((o) => o.setName('channel').setDescription('The channel to post the fill preview in').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+        .addStringOption((o) =>
+          o
+            .setName('who-can-write')
+            .setDescription('Who can press Write on the fill preview (saved for this panel)')
+            .addChoices(
+              { name: 'Admins: only the admin who asked (the default)', value: 'admins' },
+              { name: 'A role: the admin who asked, and members of a role I choose (pick it in the role option)', value: 'role' },
+            ),
+        )
+        .addRoleOption((o) => o.setName('role').setDescription('The role whose members may press Write'))
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true))
         .addIntegerOption((o) => o.setName('business').setDescription("The airline's Aeroconomy business number, only if I cannot find it myself").setMinValue(1)),
     )
@@ -962,8 +987,15 @@ export const setupCommand: Command = {
       }
 
       case 'profit': {
-        const panel = pickPanel(ctx, guildId, airlineOpt());
-        const action = interaction.options.getString('action') ?? 'check';
+        const chosenAction = interaction.options.getString('action');
+        const action = chosenAction ?? 'check';
+        // Where the fill preview goes and who may confirm it are saved first, and reading Aeroconomy is skipped when only they were asked for.
+        const applied = await applyProfitSettings(ctx, interaction, pickPanel(ctx, guildId, airlineOpt()));
+        const panel = applied.panel;
+        if (action === 'settings' || (applied.given && chosenAction === null)) {
+          await interaction.editReply({ content: `${applied.given ? 'Done. ' : ''}${profitSettingsText(panel)}`, allowedMentions: noPings });
+          return;
+        }
         const business = interaction.options.getInteger('business') ?? undefined;
         if (!ctx.profits) throw new UserError("This copy of the bot has no FsHub token, which is what I read Aeroconomy's aircraft logbooks with. Whoever runs the bot can add one on its setup page.");
         let found;
@@ -986,8 +1018,7 @@ export const setupCommand: Command = {
           await interaction.editReply({ content: `${report}\n\nThere are no blank Profit Made cells I can fill, so nothing was changed.`, allowedMentions: noPings });
           return;
         }
-        const token = rememberFills({ userId: interaction.user.id, guildId, panelId: panel.id, fills: found.fills }, ctx.now());
-        await interaction.editReply({ content: previewText(panel.airlineName, found.fills), components: profitButtons(token, found.fills.length + found.fills.filter((f) => f.pay !== null && f.pay !== undefined).length), allowedMentions: noPings });
+        await showPreview(ctx, interaction, panel, found.fills);
         return;
       }
 

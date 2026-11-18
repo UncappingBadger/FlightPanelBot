@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { AeroconomyAccountClient } from '../src/aeroconomy/account.js';
 import { AeroconomyClient, AEROCONOMY_API, type AeroContract, type AeroFlight } from '../src/aeroconomy/client.js';
 import { AeroconomyError } from '../src/aeroconomy/http.js';
+import { MIGRATIONS } from '../src/db/db.js';
+import { Store } from '../src/db/store.js';
 import { commands, componentHandlers } from '../src/discord/commands/index.js';
 import { previewText, profitReport } from '../src/discord/profitUi.js';
+import { noPings } from '../src/discord/ui.js';
 import { tokenProvider } from '../src/google/serviceAccount.js';
 import { SheetsApi } from '../src/google/sheetsApi.js';
 import { AirlineProfits, compareProfits, isAirlineCallsign, pairRows, type ProfitAnalysis } from '../src/services/airlineProfits.js';
@@ -12,7 +16,7 @@ import { readSheetFlights, type SheetFlight } from '../src/services/contribution
 import { SheetWriteBack, WriteBackError } from '../src/services/writeback.js';
 import type { LogFlight } from '../src/aeroconomy/account.js';
 import { HOUR, makeHarness, T0, USER_A, USER_B, type Harness } from './helpers.js';
-import { fakeComponent, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
+import { FakeChannel, fakeComponent, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 import { FakeGoogle, flightRow, HEADER, makeServiceAccount, SHEET_ID, TAB_GID } from './fake-google.js';
 
 /* Everything below is made up: the airline (callsign code TST, FsHub airline 4242, Aeroconomy business 77), its aircraft, pilots and flights. */
@@ -765,8 +769,8 @@ describe('/setup profit', () => {
     const last = f.calls.edits.at(-1);
     return { text: String(last?.content ?? ''), components: (last?.components ?? []) as any[], error };
   };
-  const press = async (customId: string, o: { user?: FakeUser; admin?: boolean } = {}) => {
-    const f = fakeComponent(o.user ?? admin, customId, { admin: o.admin ?? true });
+  const press = async (customId: string, o: { user?: FakeUser; admin?: boolean; guildId?: string | null; roles?: string[]; notMember?: boolean } = {}) => {
+    const f = fakeComponent(o.user ?? admin, customId, { admin: o.admin ?? true, ...(o.guildId !== undefined ? { guildId: o.guildId } : {}), ...(o.roles ? { roles: o.roles } : {}), ...(o.notMember ? { notMember: true } : {}) });
     await profitButtons.handle(d.ctx, f.i);
     await settle(40);
     return { updates: f.calls.updates, edits: f.calls.edits, replies: f.calls.replies, text: String((f.calls.edits.at(-1) ?? f.calls.updates.at(-1))?.content ?? f.calls.replies.at(-1)?.content ?? '') };
@@ -813,10 +817,25 @@ describe('/setup profit', () => {
   });
 
   it('is a subcommand Discord accepts, with a check and a fill, and reads and writes nothing by itself', () => {
-    const sub = (setup.data.toJSON().options ?? []).find((o) => o.name === 'profit') as unknown as { description: string; options: Array<{ name: string; choices?: Array<{ value: string }> }> };
+    const sub = (setup.data.toJSON().options ?? []).find((o) => o.name === 'profit') as unknown as { description: string; options: Array<{ name: string; description: string; choices?: Array<{ name: string; value: string }> }> };
     assert.ok(sub && sub.description.length <= 100);
-    assert.deepEqual(sub.options.find((o) => o.name === 'action')!.choices!.map((c) => c.value), ['check', 'fill']);
+    assert.deepEqual(sub.options.find((o) => o.name === 'action')!.choices!.map((c) => c.value), ['check', 'fill', 'settings']);
     assert.ok(sub.options.some((o) => o.name === 'airline') && sub.options.some((o) => o.name === 'business'));
+    assert.deepEqual(sub.options.find((o) => o.name === 'send-to')!.choices!.map((c) => c.value), ['here', 'dm', 'channel']);
+    assert.deepEqual(sub.options.find((o) => o.name === 'who-can-write')!.choices!.map((c) => c.value), ['admins', 'role']);
+    assert.ok(sub.options.some((o) => o.name === 'channel') && sub.options.some((o) => o.name === 'role'));
+    for (const o of sub.options) {
+      assert.ok(o.description.length >= 1 && o.description.length <= 100, `${o.name}: ${o.description.length} characters`);
+      for (const c of o.choices ?? []) assert.ok(c.name.length <= 100, `${o.name} choice ${c.value}: ${c.name.length} characters`);
+    }
+    // Discord refuses a whole command whose names, descriptions and choices add up to more than 8000 characters, and then none of /setup registers.
+    const size = (x: unknown): number => {
+      if (Array.isArray(x)) return x.reduce((n: number, y) => n + size(y), 0);
+      if (x === null || typeof x !== 'object') return 0;
+      const o = x as Record<string, unknown>;
+      return ['name', 'description', 'value'].reduce((n, k) => n + (typeof o[k] === 'string' ? (o[k] as string).length : 0), 0) + size(o.options) + size(o.choices);
+    };
+    assert.ok(size(setup.data.toJSON()) <= 8000, `/setup is ${size(setup.data.toJSON())} characters`);
     assert.deepEqual(accountReads, []);
     assert.equal(g.writes.length, 0);
   });
@@ -985,5 +1004,334 @@ describe('/setup profit', () => {
     assert.doesNotMatch(profitReport('Test Air', { ...many, unreadable: 0 }), /not an amount/);
     assert.ok(previewText('Test Air', many.fills).length <= 1990);
     assert.match(previewText('Test Air', many.fills), /Nothing is written unless you press \*\*Write\*\*/, 'the closing words are never the part that is cut');
+  });
+
+  /* ---------------------------------------------------------------- where the preview goes, and who may confirm it */
+
+  describe('where the fill preview goes, and who may confirm it', () => {
+    const ROLE = '555000000000000001';
+    const PAY = 'c-payroll';
+    let pay: FakeChannel;
+    let guild: { channels: { fetch(id: string): Promise<FakeChannel | null> }; members: { me: { id: string } } };
+    let helper: FakeUser;
+    let bystander: FakeUser;
+    const me = { id: 'the-bot' };
+    const guildWith = (channel: FakeChannel | null) => ({ channels: { fetch: async (id: string) => (channel && id === channel.id ? channel : null) }, members: { me } });
+    const set = (options: Record<string, unknown>) => run({ options, guild, user: admin });
+    const ask = () => run({ options: { action: 'fill' }, guild, user: admin });
+    const saved = () => {
+      const p = h.store.getPanel(pid())!;
+      return { sendTo: p.profitSendTo, channel: p.profitChannelId, role: p.profitRoleId };
+    };
+    const NOTHING = { sendTo: 'here', channel: null, role: null };
+
+    beforeEach(() => {
+      pay = new FakeChannel(PAY);
+      guild = guildWith(pay);
+      helper = d.client.user(new FakeUser(USER_B.discordId, USER_B.username));
+      bystander = d.client.user(new FakeUser('900000000000000009', 'bystander'));
+    });
+
+    it('starts as it always was: the preview is for the admin who asked, in the reply, and only they can confirm it', async () => {
+      assert.deepEqual(saved(), NOTHING);
+      const { text, error } = await run({ options: { action: 'settings' }, guild, user: admin });
+      assert.equal(error, null);
+      assert.match(text, /is shown only to \*\*the admin who asks\*\*, in the reply to the command \(the default\)/);
+      assert.match(text, /Who can press \*\*Write\*\* \(or \*\*Cancel\*\*\) on it: only the admin who asked \(the default\)/);
+      assert.doesNotMatch(text, /^Done\./, 'nothing was changed');
+      assert.deepEqual(accountReads, [], 'showing the settings reads nothing from Aeroconomy');
+      assert.equal(g.writes.length, 0);
+    });
+
+    it('saves a channel and a role, shows them, and does not read Aeroconomy or touch the sheet to do it', async () => {
+      const done = await set({ 'send-to': 'channel', channel: { id: PAY }, role: { id: ROLE } });
+      assert.equal(done.error, null);
+      assert.match(done.text, /^Done\. /);
+      assert.ok(done.text.includes(`posted in <#${PAY}>`), done.text);
+      assert.ok(done.text.includes(`any member of <@&${ROLE}>`), done.text);
+      assert.deepEqual(saved(), { sendTo: 'channel', channel: PAY, role: ROLE });
+      assert.deepEqual(accountReads, []);
+      assert.equal(g.writes.length, 0);
+      const shown = await run({ options: { action: 'settings' }, guild, user: admin });
+      assert.ok(shown.text.includes(`posted in <#${PAY}>`) && !shown.text.startsWith('Done.'));
+    });
+
+    it('lets a channel alone mean "post it there", a role alone mean "that role", and keeps the channel when it goes to DMs for a while', async () => {
+      await set({ channel: { id: PAY } });
+      assert.deepEqual(saved(), { sendTo: 'channel', channel: PAY, role: null });
+      await set({ role: { id: ROLE } });
+      assert.deepEqual(saved(), { sendTo: 'channel', channel: PAY, role: ROLE });
+      await set({ 'send-to': 'dm' });
+      assert.deepEqual(saved(), { sendTo: 'dm', channel: PAY, role: ROLE });
+      await set({ 'send-to': 'channel' });
+      assert.deepEqual(saved(), { sendTo: 'channel', channel: PAY, role: ROLE }, 'back to the channel it had');
+      await set({ 'who-can-write': 'admins' });
+      assert.deepEqual(saved(), { sendTo: 'channel', channel: PAY, role: null }, 'only the admin who asked again');
+      await set({ 'who-can-write': 'role', role: { id: ROLE } });
+      assert.equal(saved().role, ROLE);
+      await set({ 'send-to': 'here' });
+      assert.equal(saved().sendTo, 'here');
+    });
+
+    it('refuses what makes no sense, and saves none of it', async () => {
+      const cases: Array<[Record<string, unknown>, RegExp]> = [
+        [{ 'send-to': 'channel' }, /Choose the channel/],
+        [{ 'send-to': 'dm', channel: { id: PAY } }, /only goes with the "A channel" choice/],
+        [{ 'send-to': 'here', channel: { id: PAY } }, /only goes with the "A channel" choice/],
+        [{ 'who-can-write': 'admins', role: { id: ROLE } }, /only goes with the "A role" choice/],
+        [{ role: { id: h.panel.guildId } }, /Pick a specific role/],
+        [{ 'who-can-write': 'role' }, /Choose which role/],
+        [{ channel: { id: 'nowhere' } }, /can't see that channel/],
+        [{ 'send-to': 'carrier-pigeon' }, /Choose where the preview goes/],
+        [{ 'who-can-write': 'everyone' }, /Choose who can press Write/],
+        // the good half of a bad pair is not saved either
+        [{ 'send-to': 'channel', channel: { id: PAY }, role: { id: h.panel.guildId } }, /Pick a specific role/],
+        [{ 'send-to': 'channel', channel: { id: PAY }, 'who-can-write': 'role' }, /Choose which role/],
+      ];
+      for (const [options, message] of cases) {
+        const r = await set(options);
+        assert.match(r.error?.message ?? 'no error', message, JSON.stringify(options));
+        assert.deepEqual(saved(), NOTHING, `nothing saved after ${JSON.stringify(options)}`);
+      }
+    });
+
+    it('will not take a channel it cannot post in', async () => {
+      pay.hiddenFrom.add('the-bot');
+      const r = await set({ 'send-to': 'channel', channel: { id: PAY } });
+      assert.match(r.error?.message ?? '', /I'm missing permissions in <#c-payroll>: ViewChannel, SendMessages\./);
+      assert.deepEqual(saved(), NOTHING);
+    });
+
+    it('sends the preview to the admin\'s DMs, and the Write button there writes, once', async () => {
+      await set({ 'send-to': 'dm' });
+      const asked = await ask();
+      assert.match(asked.text, /I sent the preview to your DMs/);
+      assert.deepEqual(asked.components, [], 'no button in the reply');
+      assert.equal(admin.dms.length, 1);
+      const dm = admin.dms[0];
+      assert.match(dm.content, /Fill blank Profit Made cells: Test Air/);
+      assert.deepEqual(dm.allowedMentions, noPings);
+      assert.equal(g.writes.length, 0, 'nothing is written by sending it');
+      const [go] = idsOf(dm.components) as [string, string];
+      const done = await press(go, { guildId: null });
+      assert.match(done.text, /Wrote \*\*2\*\* Profit Made cells in the sheet at <t:\d+:t>: J3, J5/);
+      assert.doesNotMatch(done.text, /Pressed by/, 'the admin who asked pressed it in their own DMs');
+      assert.equal(g.cell('J3'), '12346');
+      assert.equal(g.writes.length, 1);
+      assert.match((await press(go, { guildId: null })).text, /expired or was already used/);
+      assert.equal(g.writes.length, 1);
+    });
+
+    it('lets nobody but that admin confirm in the DMs, and not one who has stopped being an admin or left', async () => {
+      await set({ 'send-to': 'dm' });
+      await ask();
+      const [go, no] = idsOf(admin.dms[0].components) as [string, string];
+      const roleHolder = { user: helper, guildId: null, roles: [ROLE], admin: false };
+      assert.match((await press(go, roleHolder)).text, /Only the admin who asked for this can confirm it/);
+      assert.match((await press(go, { guildId: null, admin: false })).text, /Only the admin who asked for this can confirm it/, 'no longer an admin');
+      assert.match((await press(go, { guildId: null, notMember: true })).text, /Only the admin who asked for this can confirm it/, 'no longer in the server');
+      assert.match((await press(go, { user: helper, guildId: null, admin: true })).text, /Only the admin who asked for this can confirm it/, 'someone else, whoever they are');
+      assert.equal(g.writes.length, 0);
+      assert.match((await press(no, { guildId: null })).text, /Cancelled\. Nothing was written to the sheet\.$/);
+      assert.equal(g.writes.length, 0);
+    });
+
+    it('lets the person it was sent to confirm it in their DMs through the role, once they are no longer an admin', async () => {
+      await set({ 'send-to': 'dm', role: { id: ROLE } });
+      await ask();
+      const [go] = idsOf(admin.dms[0].components) as [string, string];
+      assert.match((await press(go, { guildId: null, admin: false, roles: ['some-other-role'] })).text, /Only the admin who asked/);
+      assert.equal(g.writes.length, 0);
+      assert.match((await press(go, { guildId: null, admin: false, roles: [ROLE] })).text, /Wrote \*\*2\*\* Profit Made cells/);
+      assert.equal(g.writes.length, 1);
+    });
+
+    it('shows it in the reply instead, saying why, when the DMs are closed', async () => {
+      await set({ 'send-to': 'dm' });
+      admin.failDms = true;
+      const asked = await ask();
+      assert.match(asked.text, /I couldn't send it to your DMs \(your DMs from this server are closed\), so it is here instead\./);
+      assert.match(asked.text, /Fill blank Profit Made cells: Test Air/);
+      assert.equal(admin.dms.length, 0);
+      const [go, ...rest] = idsOf(asked.components);
+      assert.equal(rest.length, 1);
+      assert.match((await press(go!)).text, /Wrote \*\*2\*\* Profit Made cells/);
+    });
+
+    it('posts the preview in the channel, for whoever may confirm it, and tells the admin where', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY }, role: { id: ROLE } });
+      const asked = await ask();
+      assert.ok(asked.text.includes(`I posted the preview in <#${PAY}> (https://discord.com/channels/${h.panel.guildId}/${PAY}/${PAY}-m1)`), asked.text);
+      assert.ok(asked.text.includes(`a member of <@&${ROLE}>`), asked.text);
+      assert.deepEqual(asked.components, [], 'no button in the admin\'s reply');
+      assert.equal(pay.sent.length, 1);
+      const posted = pay.sent[0]!.payload;
+      assert.match(posted.content, /Fill blank Profit Made cells: Test Air/);
+      assert.ok(posted.content.endsWith(`The admin who asked (<@${USER_A.discordId}>), or anyone with <@&${ROLE}>, can press **Write**.`), posted.content);
+      assert.deepEqual(posted.allowedMentions, noPings, 'naming people and a role pings nobody');
+      assert.deepEqual(idsOf(posted.components).map((i) => i.split(':').slice(0, 2).join(':')), ['profit:go', 'profit:no']);
+      assert.equal(g.writes.length, 0, 'nothing is written by posting it');
+    });
+
+    it('lets a member of the role write the cells, and says who did; the admin who asked still can; a bystander cannot', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY }, role: { id: ROLE } });
+      await ask();
+      const [go] = idsOf(pay.sent[0]!.payload.components) as [string, string];
+      const refused = await press(go, { user: bystander, admin: false });
+      assert.ok(refused.text.includes(`Only the admin who asked for this, or a member of <@&${ROLE}>, can confirm it.`), refused.text);
+      assert.equal(g.writes.length, 0);
+      assert.match((await press(go, { user: helper, admin: false, roles: ['some-other-role'] })).text, /Only the admin who asked/);
+      assert.match((await press(go, { user: helper, admin: true, roles: [] })).text, /Only the admin who asked/, 'another admin is not the one who asked');
+      assert.equal(g.writes.length, 0);
+
+      const done = await press(go, { user: helper, admin: false, roles: [ROLE] });
+      assert.match(done.text, /Wrote \*\*2\*\* Profit Made cells in the sheet at <t:\d+:t>: J3, J5/);
+      assert.ok(done.text.endsWith(`Pressed by <@${helper.id}>.`), done.text);
+      assert.equal(g.cell('J3'), '12346');
+      assert.equal(g.cell('J5'), '-4000');
+      assert.equal(g.writes.length, 1);
+      assert.match((await press(go, { user: helper, admin: false, roles: [ROLE] })).text, /expired or was already used/);
+      assert.equal(g.writes.length, 1, 'once');
+    });
+
+    it('says who pressed it when the admin who asked does it in the channel, and when a member of the role cancels', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY }, role: { id: ROLE } });
+      await ask();
+      await ask();
+      const [go] = idsOf(pay.sent[0]!.payload.components) as [string, string];
+      assert.ok((await press(go)).text.endsWith(`Pressed by <@${USER_A.discordId}>.`));
+      const [, no] = idsOf(pay.sent[1]!.payload.components) as [string, string];
+      const cancelled = await press(no, { user: helper, admin: false, roles: [ROLE] });
+      assert.equal(cancelled.text, `Cancelled. Nothing was written to the sheet. Pressed by <@${helper.id}>.`);
+    });
+
+    it('lets only the admin who asked confirm a channel preview when no role is set, and says so on it', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY } });
+      await ask();
+      const posted = pay.sent[0]!.payload;
+      assert.ok(posted.content.endsWith(`Only the admin who asked (<@${USER_A.discordId}>) can press **Write**.`), posted.content);
+      const [go] = idsOf(posted.components) as [string, string];
+      assert.match((await press(go, { user: helper, admin: false, roles: [ROLE] })).text, /^Only the admin who asked for this can confirm it\.$/);
+      assert.equal(g.writes.length, 0);
+    });
+
+    it('follows the role as it is when the button is pressed, not as it was when the preview went up', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY } });
+      await ask();
+      const [go] = idsOf(pay.sent[0]!.payload.components) as [string, string];
+      const member = { user: helper, admin: false, roles: [ROLE] };
+      assert.match((await press(go, member)).text, /Only the admin who asked/, 'no role yet');
+      await set({ role: { id: ROLE } });
+      await set({ 'who-can-write': 'admins' });
+      assert.match((await press(go, member)).text, /Only the admin who asked/, 'the role is taken away again');
+      await set({ role: { id: ROLE } });
+      assert.match((await press(go, member)).text, /Wrote \*\*2\*\* Profit Made cells/, 'and given');
+    });
+
+    it('writes once when two people press Write at the same moment, and tells the other nothing more was written', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY }, role: { id: ROLE } });
+      await ask();
+      const [go] = idsOf(pay.sent[0]!.payload.components) as [string, string];
+      const a = fakeComponent(helper, go, { admin: false, roles: [ROLE] });
+      const b = fakeComponent(admin, go, { admin: true });
+      await Promise.all([profitButtons.handle(d.ctx, a.i), profitButtons.handle(d.ctx, b.i)]);
+      await settle(40);
+      assert.equal(g.writes.length, 1);
+      const late = [a, b].filter((f) => f.calls.replies.length > 0);
+      assert.equal(late.length, 1, 'one of them was told');
+      assert.match(String(late[0]!.calls.replies[0].content), /Someone else pressed this a moment ago, so nothing more was written/);
+      assert.equal([a, b].filter((f) => f.calls.edits.length > 0).length, 1, 'and one of them wrote');
+    });
+
+    it('keeps a preview posted in a channel for an hour, where one in the reply lasts ten minutes', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY } });
+      await ask();
+      await ask();
+      const [soon] = idsOf(pay.sent[0]!.payload.components) as [string, string];
+      const [late] = idsOf(pay.sent[1]!.payload.components) as [string, string];
+      h.clock.advance(50 * 60_000);
+      assert.match((await press(soon)).text, /Wrote \*\*2\*\* Profit Made cells/, 'fifty minutes on, it still writes');
+      h.clock.advance(11 * 60_000);
+      assert.match((await press(late)).text, /expired or was already used, and nothing was written/, 'an hour and a bit on, it does not');
+    });
+
+    it('keeps a preview sent to a DM for an hour as well', async () => {
+      await set({ 'send-to': 'dm' });
+      await ask();
+      const [go] = idsOf(admin.dms[0].components) as [string, string];
+      h.clock.advance(50 * 60_000);
+      assert.match((await press(go, { guildId: null })).text, /Wrote \*\*2\*\* Profit Made cells/);
+    });
+
+    it('does not take a press that comes from another server, even from the admin who asked', async () => {
+      await ask();
+      const [go] = idsOf((await ask()).components) as [string, string];
+      assert.match((await press(go, { guildId: '900000000000000777' })).text, /Only the admin who asked for this can confirm it/);
+      assert.equal(g.writes.length, 0);
+      assert.match((await press(go)).text, /Wrote \*\*2\*\* Profit Made cells/, 'and in its own server it works');
+    });
+
+    it('says only that something went wrong, and logs it, when posting fails for another reason', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY } });
+      pay.send = async () => {
+        throw new Error('socket hang up');
+      };
+      const r = await ask();
+      assert.ok(r.text.includes(`I couldn't post it in <#${PAY}> (something went wrong, it is in my log), so it is here instead`), r.text);
+      assert.doesNotMatch(r.text, /socket hang up/, 'the error itself is not shown');
+      await set({ 'send-to': 'dm' });
+      admin.send = async () => {
+        throw new Error('boom');
+      };
+      assert.match((await ask()).text, /I couldn't send it to your DMs \(something went wrong, it is in my log\)/);
+    });
+
+    it('shows it in the reply instead, saying why, when the channel has gone or the bot cannot post there', async () => {
+      await set({ 'send-to': 'channel', channel: { id: PAY } });
+      const gone = await run({ options: { action: 'fill' }, guild: guildWith(null), user: admin });
+      assert.ok(gone.text.includes(`⚠️ I couldn't post it in <#${PAY}> (I can't post in that channel any more), so it is here instead, for you alone.`), gone.text);
+      assert.match(gone.text, /Fill blank Profit Made cells: Test Air/);
+      assert.equal(idsOf(gone.components).length, 2);
+
+      pay.isSendable = () => false; // a channel that has become one nothing can be posted in
+      assert.match((await ask()).text, /I couldn't post it in <#c-payroll> \(I can't post in that channel any more\)/);
+      pay.isSendable = () => true;
+
+      pay.send = async () => {
+        throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+      };
+      const blocked = await ask();
+      assert.ok(blocked.text.includes(`I couldn't post it in <#${PAY}> (I'm missing access or permissions there), so it is here instead`), blocked.text);
+      const [go] = idsOf(blocked.components) as [string, string];
+      assert.match((await press(go)).text, /Wrote \*\*2\*\* Profit Made cells/);
+      assert.equal(pay.sent.length, 0);
+    });
+
+    it('keeps a channel preview inside one Discord message, with the note on who may press it always the last words', () => {
+      const fills = Array.from({ length: 40 }, (_, i) => ({ sourceKey: `k${i}`, value: 123456789 + i, row: 100 + i, pilot: 'A Pilot With A Long Name', route: 'EGLL → EGCC', day: D12, callsign: 'TST1234', exact: 123456789.12, flightId: 5000 + i, logbookNm: 4321, pay: 18518518, payPlan: { amount: 18518518, basis: 'share' as const, distanceNm: null, problem: null, cell: 'empty' as const } }));
+      const note = `The admin who asked (<@${'1'.repeat(19)}>), or anyone with <@&${'2'.repeat(19)}>, can press **Write**.`;
+      const text = previewText('Test Air', fills, note);
+      assert.ok(text.length <= 1990, `${text.length} characters`);
+      assert.ok(text.endsWith(note), 'the note is never the part that is cut');
+      assert.match(text, /Nothing is written unless you press \*\*Write\*\*\./);
+      assert.match(text, /…and \d+ more\./);
+      assert.equal(previewText('Test Air', fills.slice(0, 2)).includes('\n\n\n'), false);
+    });
+
+    it('gives a database from before these settings the way it always worked', () => {
+      const old = new DatabaseSync(':memory:');
+      old.exec('PRAGMA foreign_keys = ON');
+      for (let v = 0; v < 32; v++) old.exec(MIGRATIONS[v] as string);
+      old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
+      assert.ok(MIGRATIONS.length >= 33);
+      for (let v = 32; v < MIGRATIONS.length; v++) old.exec(MIGRATIONS[v] as string);
+      const p = new Store(old).listAllPanels()[0]!;
+      assert.deepEqual([p.profitSendTo, p.profitChannelId, p.profitRoleId], ['here', null, null]);
+    });
+
+    it('will not save a destination that is not here, a DM or a channel', () => {
+      assert.throws(() => h.store.updatePanel(pid(), { profitSendTo: 'smoke-signal' as never }), /goes here, to a DM or to a channel/);
+      assert.equal(h.store.getPanel(pid())!.profitSendTo, 'here');
+    });
   });
 });

@@ -389,6 +389,8 @@ export interface FakeInteractionOptions {
   roles?: string[];
   focused?: { name: string; value: string };
   guild?: unknown;
+  /** The person who ran it, when the test needs to send them a DM (the default is a bare ID). */
+  user?: FakeUser;
 }
 
 /** A slash command or autocomplete interaction. */
@@ -401,7 +403,7 @@ export function fakeInteraction(o: FakeInteractionOptions = {}) {
     return v ?? null;
   };
   const i: any = {
-    user: { id: o.userId ?? '111111111111111111', bot: false },
+    user: o.user ?? { id: o.userId ?? '111111111111111111', bot: false },
     guildId: o.guildId === undefined ? GUILD : o.guildId,
     channelId: o.channelId ?? '700000000000000001',
     guild: o.guild ?? {},

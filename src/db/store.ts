@@ -72,8 +72,16 @@ export interface Panel {
   layout: 'cards' | 'grid';
   /** The order of day and month in the short dates on a grid panel's buttons: day first (16/11/26) or month first (11/16/26). */
   gridDates: 'dmy' | 'mdy';
+  /** Where the preview of the blank profits an admin may fill in is shown: only to that admin in the reply (the default), in their DMs, or in `profitChannelId`. */
+  profitSendTo: ProfitSendTo;
+  /** The channel the preview is posted in when `profitSendTo` is 'channel'; kept when it is switched away, so switching back needs no channel. */
+  profitChannelId: string | null;
+  /** Members of this role may press the preview's Write button as well as the admin who asked; null means only that admin. */
+  profitRoleId: string | null;
   createdAt: number;
 }
+
+export type ProfitSendTo = 'here' | 'dm' | 'channel';
 
 /** Someone who asked for a panel as a plain list in their DMs: where it is, so it can be kept up to date. */
 export interface PanelFollower {
@@ -319,6 +327,9 @@ const toPanel = (r: Row): Panel => ({
   flightNumbers: r.flight_numbers !== undefined && r.flight_numbers !== null && n(r.flight_numbers) !== 0,
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
+  profitSendTo: s(r.profit_send_to) === 'dm' ? 'dm' : s(r.profit_send_to) === 'channel' ? 'channel' : 'here',
+  profitChannelId: sn(r.profit_channel_id),
+  profitRoleId: sn(r.profit_role_id),
   createdAt: n(r.created_at),
 });
 
@@ -522,10 +533,20 @@ export class Store {
       flightNumbers: boolean;
       layout: 'cards' | 'grid';
       gridDates: 'dmy' | 'mdy';
+      profitSendTo: ProfitSendTo;
+      profitChannelId: string | null;
+      profitRoleId: string | null;
     }>,
   ): void {
     const sets: string[] = [];
     const params: SQLInputValue[] = [];
+    if (patch.profitSendTo !== undefined) {
+      if (patch.profitSendTo !== 'here' && patch.profitSendTo !== 'dm' && patch.profitSendTo !== 'channel') throw new Error(`The preview goes here, to a DM or to a channel, not ${String(patch.profitSendTo)}`);
+      sets.push('profit_send_to = ?');
+      params.push(patch.profitSendTo);
+    }
+    if (patch.profitChannelId !== undefined) (sets.push('profit_channel_id = ?'), params.push(patch.profitChannelId));
+    if (patch.profitRoleId !== undefined) (sets.push('profit_role_id = ?'), params.push(patch.profitRoleId));
     if (patch.flightNumbers !== undefined) (sets.push('flight_numbers = ?'), params.push(patch.flightNumbers ? 1 : 0));
     if (patch.gridDates !== undefined) {
       if (patch.gridDates !== 'dmy' && patch.gridDates !== 'mdy') throw new Error(`Dates are day first or month first, not ${String(patch.gridDates)}`);

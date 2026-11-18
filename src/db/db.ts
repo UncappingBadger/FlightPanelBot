@@ -542,6 +542,15 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE jobs ADD COLUMN distance_nm REAL;
   `,
+
+  /* v33: where the preview of "/setup profit action:fill" is shown, and who may press its Write button. 'profit_send_to' is 'here' (only to the
+     admin who asked, in the reply: the original behaviour and still the default), 'dm' (in that admin's DMs) or 'channel' (in 'profit_channel_id').
+     'profit_role_id' is a role whose members may press Write besides the admin who asked; null means only that admin. */
+  `
+  ALTER TABLE panels ADD COLUMN profit_send_to TEXT NOT NULL DEFAULT 'here';
+  ALTER TABLE panels ADD COLUMN profit_channel_id TEXT;
+  ALTER TABLE panels ADD COLUMN profit_role_id TEXT;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

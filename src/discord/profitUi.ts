@@ -1,15 +1,31 @@
 import { randomBytes } from 'node:crypto';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type MessageActionRowComponentBuilder } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  MessageFlags,
+  PermissionFlagsBits,
+  PermissionsBitField,
+  type ButtonInteraction,
+  type ChatInputCommandInteraction,
+  type MessageActionRowComponentBuilder,
+} from 'discord.js';
+import type { Panel, ProfitSendTo } from '../db/store.js';
 import { dayName, formatMoney } from '../services/contributions.js';
 import type { PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
 import { WriteBackError } from '../services/writeback.js';
 import { plainText, ts } from '../util/format.js';
-import type { ComponentHandler } from './context.js';
-import { isAdmin } from './guard.js';
+import type { BotContext, ComponentHandler } from './context.js';
+import { isDmClosed, isMissingAccess, UserError } from './errors.js';
+import { isAdmin, memberHasAnyRole } from './guard.js';
 import { noPings } from './ui.js';
 
-/** A preview of cells to write waits this long for the admin to confirm it. */
+/** A preview shown only to the admin who asked waits this long for them to confirm it (their reply goes away by itself soon after). */
 const PENDING_TTL_MS = 10 * 60_000;
+/** A preview sent to a DM or posted in a channel waits longer: the person who confirms it may not be at their screen. Every cell is checked again when Write is pressed. */
+const SHARED_TTL_MS = 60 * 60_000;
+/** What the bot needs in a channel to post the preview there. */
+const POST_PERMS = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] as const;
 /** How many lines of each kind a message shows. */
 const SHOWN_DIFFERENT = 8;
 const SHOWN_FILLS = 8;
@@ -18,19 +34,22 @@ const REPORT_BUDGET = 1650;
 const PREVIEW_BUDGET = 1850;
 
 interface Pending {
+  /** The admin who asked. */
   userId: string;
   guildId: string;
   panelId: number;
   fills: ProfitFillPlan[];
+  /** Where the preview was shown: only to that admin in the reply, in their DMs, or in a channel. */
+  where: ProfitSendTo;
   expiresAt: number;
 }
 const pending = new Map<string, Pending>();
 
 /** Remember what an admin was shown, so pressing the button writes exactly that; returns the button's token. */
-export function rememberFills(p: Omit<Pending, 'expiresAt'>, now: number): string {
+export function rememberFills(p: Omit<Pending, 'expiresAt' | 'where'> & { where?: ProfitSendTo }, now: number, ttlMs = PENDING_TTL_MS): string {
   for (const [k, v] of pending) if (v.expiresAt < now) pending.delete(k);
   const token = randomBytes(6).toString('hex');
-  pending.set(token, { ...p, expiresAt: now + PENDING_TTL_MS });
+  pending.set(token, { ...p, where: p.where ?? 'here', expiresAt: now + ttlMs });
   return token;
 }
 
@@ -109,9 +128,12 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
   return lines.join('\n');
 }
 
-/** What pressing the button would write, for the admin to read first. */
-export function previewText(airline: string, fills: ProfitFillPlan[]): string {
-  const closing = 'Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, or the cell is no longer empty. Nothing is written unless you press **Write**.';
+/**
+ * What pressing the button would write, for the admin to read first. A `note` (who asked, who may press, or why it is not where it was
+ * meant to be) goes after the closing words, and is counted in the budget so the message always fits.
+ */
+export function previewText(airline: string, fills: ProfitFillPlan[], note = ''): string {
+  const closing = `Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, or the cell is no longer empty. Nothing is written unless you press **Write**.${note ? `\n${note}` : ''}`;
   const lines = [
     `✍️ **Fill blank Profit Made cells: ${plainText(airline)}**`,
     `I would write the profit Aeroconomy gives, rounded up to a whole dollar (Aeroconomy has no cents), into **${fills.length}** Profit Made cell${fills.length === 1 ? '' : 's'} that ${fills.length === 1 ? 'is' : 'are'} empty today${payIntro(fills)}`,
@@ -147,6 +169,122 @@ export function profitButtons(token: string, count: number): ActionRowBuilder<Me
   ];
 }
 
+/* ------------------------------------------------------------------ where the preview goes, and who may confirm it */
+
+/** What the settings are, in words, for the admin to read (after changing them, or when asked). */
+export function profitSettingsText(panel: Panel): string {
+  const where =
+    panel.profitSendTo === 'dm'
+      ? 'in **your DMs** (the DMs of the admin who asks)'
+      : panel.profitSendTo === 'channel' && panel.profitChannelId
+        ? `posted in <#${panel.profitChannelId}>, for whoever may confirm it to see`
+        : 'only to **the admin who asks**, in the reply to the command (the default)';
+  const who = panel.profitRoleId ? `the admin who asked, and any member of <@&${panel.profitRoleId}>` : 'only the admin who asked (the default)';
+  return [
+    `✍️ **${plainText(panel.airlineName)}**: the preview that \`/setup profit action:fill\` makes, of the cells it would write, is shown ${where}.`,
+    `• Who can press **Write** (or **Cancel**) on it: ${who}.`,
+    '• Change it with `/setup profit send-to:` (here, a DM or a channel, and `channel:` for the channel) and `/setup profit who-can-write:` (admins only, or a role, and `role:` for the role). Nothing is written to the sheet by changing them.',
+  ].join('\n');
+}
+
+/**
+ * Save the delivery and confirming-role options of `/setup profit`, when any is given. Returns the panel as it is now and whether
+ * anything was given. A mix that makes no sense is refused with nothing saved.
+ */
+export async function applyProfitSettings(ctx: BotContext, interaction: ChatInputCommandInteraction, panel: Panel): Promise<{ panel: Panel; given: boolean }> {
+  const sendTo = interaction.options.getString('send-to');
+  const picked = interaction.options.getChannel('channel');
+  const who = interaction.options.getString('who-can-write');
+  const role = interaction.options.getRole('role');
+  const given = sendTo !== null || picked !== null || who !== null || role !== null;
+  if (!given) return { panel, given };
+
+  if (sendTo !== null && sendTo !== 'here' && sendTo !== 'dm' && sendTo !== 'channel') throw new UserError('Choose where the preview goes: here, your DMs, or a channel.');
+  if (who !== null && who !== 'admins' && who !== 'role') throw new UserError('Choose who can press Write: admins only, or a role.');
+  if (picked && (sendTo === 'here' || sendTo === 'dm')) throw new UserError('A channel only goes with the "A channel" choice. Leave `send-to` empty or choose that one.');
+  if (role && who === 'admins') throw new UserError('A role only goes with the "A role" choice. Leave `who-can-write` empty or choose that one.');
+  if (role && role.id === panel.guildId) throw new UserError('Pick a specific role. @everyone would let any member write to the sheet.');
+
+  const nextSendTo: ProfitSendTo | null = sendTo ?? (picked ? 'channel' : null);
+  const patch: Partial<Pick<Panel, 'profitSendTo' | 'profitChannelId' | 'profitRoleId'>> = {};
+  if (nextSendTo !== null) patch.profitSendTo = nextSendTo;
+  if (nextSendTo === 'channel') {
+    const channelId = picked?.id ?? panel.profitChannelId;
+    if (!channelId) throw new UserError('Choose the channel with the `channel` option.');
+    const guild = interaction.guild;
+    if (!guild) throw new UserError('This only works inside a server.');
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel) throw new UserError("I can't see that channel.");
+    const me = guild.members.me ?? (await guild.members.fetchMe());
+    const perms = channel.permissionsFor(me);
+    const missing = POST_PERMS.filter((p) => !perms?.has(p));
+    if (missing.length > 0) throw new UserError(`I'm missing permissions in <#${channel.id}>: ${new PermissionsBitField(missing).toArray().join(', ')}. Grant those and run this again.`);
+    patch.profitChannelId = channel.id;
+  }
+  if (who === 'admins') patch.profitRoleId = null;
+  else if (role) patch.profitRoleId = role.id;
+  else if (who === 'role' && !panel.profitRoleId) throw new UserError('Choose which role with the `role` option.');
+
+  ctx.store.updatePanel(panel.id, patch);
+  return { panel: ctx.store.getPanel(panel.id) as Panel, given };
+}
+
+/** Why a post or DM did not work, in a few words. */
+function whyNot(e: unknown, where: 'dm' | 'channel'): string {
+  if (where === 'dm' && isDmClosed(e)) return 'your DMs from this server are closed';
+  if (where === 'channel' && isMissingAccess(e)) return "I'm missing access or permissions there";
+  return 'something went wrong, it is in my log';
+}
+
+/**
+ * Show the admin the cells `/setup profit action:fill` would write, where the panel is set to show them: only to them in the reply (the
+ * default), in their DMs, or in a channel for whoever may confirm it. If the DM or the channel does not work, it is shown in the reply
+ * with a line saying why, so a preview is never lost.
+ */
+export async function showPreview(ctx: BotContext, interaction: ChatInputCommandInteraction, panel: Panel, fills: ProfitFillPlan[]): Promise<void> {
+  const now = ctx.now();
+  const count = fills.length + fills.filter((f) => f.pay !== null && f.pay !== undefined).length;
+  const asker = interaction.user.id;
+  const make = (where: ProfitSendTo, note: string) => {
+    const token = rememberFills({ userId: asker, guildId: panel.guildId, panelId: panel.id, fills, where }, now, where === 'here' ? PENDING_TTL_MS : SHARED_TTL_MS);
+    return { token, message: { content: previewText(panel.airlineName, fills, note), components: profitButtons(token, count), allowedMentions: noPings } };
+  };
+
+  let instead = '';
+  if (panel.profitSendTo === 'channel' && panel.profitChannelId) {
+    const channelId = panel.profitChannelId;
+    const who = panel.profitRoleId ? `The admin who asked (<@${asker}>), or anyone with <@&${panel.profitRoleId}>, can press **Write**.` : `Only the admin who asked (<@${asker}>) can press **Write**.`;
+    const { token, message } = make('channel', who);
+    try {
+      const channel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
+      if (!channel || !channel.isSendable()) throw new UserError("I can't post in that channel any more");
+      const sent = await channel.send(message);
+      await interaction.editReply({
+        content: `📣 I posted the preview in <#${channelId}> (https://discord.com/channels/${panel.guildId}/${channelId}/${sent.id}). Nothing is written until someone who may presses **Write** there${panel.profitRoleId ? `: you, or a member of <@&${panel.profitRoleId}>` : ''}.`,
+        allowedMentions: noPings,
+      });
+      return;
+    } catch (e) {
+      pending.delete(token);
+      if (!(e instanceof UserError)) ctx.log.warn(`Could not post the profit preview in ${channelId}`, e);
+      instead = `⚠️ I couldn't post it in <#${channelId}> (${e instanceof UserError ? e.message : whyNot(e, 'channel')}), so it is here instead, for you alone.`;
+    }
+  } else if (panel.profitSendTo === 'dm') {
+    const { token, message } = make('dm', '');
+    try {
+      await interaction.user.send(message);
+      await interaction.editReply({ content: '📬 I sent the preview to your DMs. Nothing is written until you press **Write** there.', allowedMentions: noPings });
+      return;
+    } catch (e) {
+      pending.delete(token);
+      if (!isDmClosed(e)) ctx.log.warn('Could not DM the profit preview', e);
+      instead = `⚠️ I couldn't send it to your DMs (${whyNot(e, 'dm')}), so it is here instead.`;
+    }
+  }
+  const { message } = make('here', instead);
+  await interaction.editReply(message);
+}
+
 const REASON_TEXT: Record<string, string> = {
   gone: 'the row is no longer in the sheet',
   moved: 'the row has moved',
@@ -155,7 +293,27 @@ const REASON_TEXT: Record<string, string> = {
   filled: 'the cell has something in it now',
 };
 
-/** The buttons of the preview: `profit:go:<token>` writes it, `profit:no:<token>` drops it. Only the admin who asked can press them. */
+/**
+ * May this person press the buttons of a preview? The admin who asked, as long as they are still one, and members of the panel's
+ * confirming role (when it has one). In a DM nobody but the admin it was sent to is there, so that is looked up in the server instead.
+ */
+async function mayConfirm(interaction: ButtonInteraction, wanted: Pending, roleId: string | null): Promise<boolean> {
+  if (interaction.guildId === null) {
+    if (interaction.user.id !== wanted.userId) return false;
+    try {
+      const guild = await interaction.client.guilds.fetch(wanted.guildId);
+      const member = await guild.members.fetch(wanted.userId);
+      return member.permissions.has(PermissionFlagsBits.ManageGuild) || (roleId !== null && member.roles.cache.has(roleId));
+    } catch {
+      return false; // no longer in the server, or the bot no longer is
+    }
+  }
+  if (interaction.guildId !== wanted.guildId) return false;
+  if (interaction.user.id === wanted.userId && isAdmin(interaction)) return true;
+  return roleId !== null && memberHasAnyRole(interaction, [roleId]);
+}
+
+/** The buttons of the preview: `profit:go:<token>` writes it, `profit:no:<token>` drops it. Only the admin who asked, or a member of the confirming role, can press them. */
 export const profitHandler: ComponentHandler = {
   prefix: 'profit',
   async handle(ctx, interaction) {
@@ -168,13 +326,21 @@ export const profitHandler: ComponentHandler = {
       await interaction.update({ content: 'That preview has expired or was already used, and nothing was written. Run `/setup profit action:fill` again to see the cells afresh.', components: [], allowedMentions: noPings });
       return;
     }
-    if (interaction.user.id !== wanted.userId || !isAdmin(interaction)) {
-      await interaction.reply({ content: 'Only the admin who asked for this can confirm it.', flags: MessageFlags.Ephemeral });
+    // The role is read now and not when the preview was made, so changing it takes effect on previews that are already up.
+    const roleId = ctx.store.getPanel(wanted.panelId)?.profitRoleId ?? null;
+    if (!(await mayConfirm(interaction, wanted, roleId))) {
+      await interaction.reply({ content: `Only the admin who asked for this${roleId ? `, or a member of <@&${roleId}>,` : ''} can confirm it.`, flags: MessageFlags.Ephemeral, allowedMentions: noPings });
       return;
     }
-    pending.delete(token as string);
+    // Nothing is awaited between that check and taking the preview off the list, so when two people press at once only one of them gets it.
+    if (!pending.delete(token as string)) {
+      await interaction.reply({ content: 'Someone else pressed this a moment ago, so nothing more was written.', flags: MessageFlags.Ephemeral, allowedMentions: noPings });
+      return;
+    }
+    // In a channel it matters who did it, since it may not be the admin who asked. Anywhere else it can only be them.
+    const by = wanted.where === 'channel' ? ` Pressed by <@${interaction.user.id}>.` : '';
     if (way === 'no') {
-      await interaction.update({ content: 'Cancelled. Nothing was written to the sheet.', components: [], allowedMentions: noPings });
+      await interaction.update({ content: `Cancelled. Nothing was written to the sheet.${by}`, components: [], allowedMentions: noPings });
       return;
     }
 
@@ -193,11 +359,12 @@ export const profitHandler: ComponentHandler = {
         ...(result.paid.length > 0 ? [`💵 And **${result.paid.length}** Pilot Pay cell${result.paid.length === 1 ? '' : 's'}: ${result.paid.slice(0, 12).map((w) => w.cell).join(', ')}${result.paid.length > 12 ? '…' : ''}`] : []),
         ...(result.payLeft > 0 ? [`Left alone: **${result.payLeft}** Pilot Pay cell${result.payLeft === 1 ? '' : 's'} had something in ${result.payLeft === 1 ? 'it' : 'them'} by then.`] : []),
         ...(result.skipped.length > 0 ? [`Left alone, because they changed since the preview: ${[...skipped].map(([r, n]) => `${n} (${REASON_TEXT[r] ?? r})`).join('; ')}.`] : []),
+        ...(by ? [by.trim()] : []),
       ];
       await interaction.editReply({ content: lines.join('\n'), components: [], allowedMentions: noPings });
     } catch (e) {
       if (!(e instanceof WriteBackError)) throw e;
-      await interaction.editReply({ content: `I couldn't write to the sheet, so nothing was written: ${e.message}`, components: [], allowedMentions: noPings });
+      await interaction.editReply({ content: `I couldn't write to the sheet, so nothing was written: ${e.message}${by}`, components: [], allowedMentions: noPings });
     }
   },
 };

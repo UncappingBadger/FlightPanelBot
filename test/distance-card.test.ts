@@ -107,7 +107,7 @@ describe('the database upgrade that adds the distance', () => {
     for (let v = 0; v < 31; v++) old.exec(MIGRATIONS[v] as string);
     old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
     old.prepare(`INSERT INTO jobs(panel_id, code, source_key, status, first_seen, last_seen) VALUES (1, 'OLD-001', 'k', 'open', 1, 1)`).run();
-    assert.equal(MIGRATIONS.length, 32);
+    assert.ok(MIGRATIONS.length >= 32);
     old.exec(MIGRATIONS[31] as string);
     const store = new Store(old);
     const before = store.listJobs(1)[0]!;
