@@ -32,14 +32,17 @@ export interface UpdateStatus {
   announce: boolean;
 }
 
-/** `v1.2.3`, `1.2`, `V1.0.0-beta` -> [1, 2, 3]. A missing part counts as zero. Null if it doesn't start with a version. */
-export function parseVersion(text: string): [number, number, number] | null {
-  const m = /^\s*v?(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?/i.exec(text);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
+/** A version as four numbers: the fourth is a hotfix number (`0.3.3.1` is the first hotfix of 0.3.3). */
+export type Version = [number, number, number, number];
+
+/** `v1.2.3`, `1.2`, `V1.0.0-beta`, `0.3.3.1` -> [1, 2, 3, 0] ... [0, 3, 3, 1]. A missing part counts as zero. Null if it doesn't start with a version. */
+export function parseVersion(text: string): Version | null {
+  const m = /^\s*v?(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?(?:\.(\d{1,6}))?/i.exec(text);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0), Number(m[4] ?? 0)] : null;
 }
 
-export function isNewer(remote: [number, number, number], local: [number, number, number]): boolean {
-  for (let i = 0; i < 3; i++) {
+export function isNewer(remote: Version, local: Version): boolean {
+  for (let i = 0; i < 4; i++) {
     if (remote[i] !== local[i]) return (remote[i] as number) > (local[i] as number);
   }
   return false;
@@ -75,7 +78,7 @@ export class UpdateChecker {
   private readonly fetchFn: typeof fetch;
   private readonly now: () => number;
   private readonly log: Logger;
-  private readonly local: [number, number, number] | null;
+  private readonly local: Version | null;
   private timers: NodeJS.Timeout[] = [];
   private inFlight: Promise<UpdateStatus> | null = null;
   private checkedAt: number | null = null;

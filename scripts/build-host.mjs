@@ -192,6 +192,8 @@ console.log(`  node.exe.gz ${mb(statSync(join(work, 'node.exe.gz')).size)}, bot.
 const nodeVersion = spawnSync(nodeExe, ['--version'], { encoding: 'utf8' }).stdout.trim();
 const buildId = createHash('sha1').update(botMjs).update(nodeVersion).update(String(nodeBytes.length)).digest('hex').slice(0, 12);
 const version = debug ? `${pkg.version}-debug` : pkg.version;
+// Windows wants four numbers: 0.3.3 becomes 0.3.3.0, and a hotfix (0.3.3.1) is used as it is.
+const assemblyVersion = /^\d+\.\d+\.\d+\.\d+$/.test(pkg.version) ? pkg.version : `${pkg.version}.0`;
 
 // The user manual (a PDF) is carried inside the exe and opened from the tray menu. It is written outside this repository
 // (from the online manual), so it is looked for: --manual <file>, else next to the new exe, else in release/. With none
@@ -218,8 +220,8 @@ writeFileSync(
 [assembly: AssemblyCompany("UncappingBadger")]
 [assembly: AssemblyProduct("Flight Panel Bot")]
 [assembly: AssemblyCopyright("MIT licence. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ, VATSIM or Discord.")]
-[assembly: AssemblyVersion("${pkg.version}.0")]
-[assembly: AssemblyFileVersion("${pkg.version}.0")]
+[assembly: AssemblyVersion("${assemblyVersion}")]
+[assembly: AssemblyFileVersion("${assemblyVersion}")]
 `,
 );
 

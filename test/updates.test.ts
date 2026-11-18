@@ -33,11 +33,14 @@ const make = (gh: ReturnType<typeof fakeGitHub>, o: Partial<ConstructorParameter
 
 describe('version numbers', () => {
   it('reads v-prefixed, two-part and suffixed tags', () => {
-    assert.deepEqual(parseVersion('v1.2.3'), [1, 2, 3]);
-    assert.deepEqual(parseVersion('V0.10.0'), [0, 10, 0]);
-    assert.deepEqual(parseVersion('1.2'), [1, 2, 0]);
-    assert.deepEqual(parseVersion('1.2.3-beta.1'), [1, 2, 3]);
-    assert.deepEqual(parseVersion('  v2.0.0 '), [2, 0, 0]);
+    assert.deepEqual(parseVersion('v1.2.3'), [1, 2, 3, 0]);
+    assert.deepEqual(parseVersion('V0.10.0'), [0, 10, 0, 0]);
+    assert.deepEqual(parseVersion('1.2'), [1, 2, 0, 0]);
+    assert.deepEqual(parseVersion('v0.3.3.1'), [0, 3, 3, 1], 'a hotfix number');
+    assert.deepEqual(parseVersion('0.3.3.1-beta.2'), [0, 3, 3, 1]);
+    assert.deepEqual(parseVersion('1.2.3.4.5'), [1, 2, 3, 4], 'nothing past the fourth part');
+    assert.deepEqual(parseVersion('1.2.3-beta.1'), [1, 2, 3, 0]);
+    assert.deepEqual(parseVersion('  v2.0.0 '), [2, 0, 0, 0]);
   });
 
   it('refuses anything that is not a version, including a development build', () => {
@@ -45,12 +48,17 @@ describe('version numbers', () => {
   });
 
   it('compares number by number, so 0.10.0 is newer than 0.9.0 and nothing is newer than itself', () => {
-    assert.equal(isNewer([0, 10, 0], [0, 9, 0]), true);
-    assert.equal(isNewer([1, 0, 0], [0, 99, 99]), true);
-    assert.equal(isNewer([1, 2, 4], [1, 2, 3]), true);
-    assert.equal(isNewer([1, 2, 3], [1, 2, 3]), false);
-    assert.equal(isNewer([1, 2, 2], [1, 2, 3]), false);
-    assert.equal(isNewer([0, 9, 9], [1, 0, 0]), false);
+    assert.equal(isNewer([0, 10, 0, 0], [0, 9, 0, 0]), true);
+    assert.equal(isNewer([1, 0, 0, 0], [0, 99, 99, 0]), true);
+    assert.equal(isNewer([1, 2, 4, 0], [1, 2, 3, 0]), true);
+    assert.equal(isNewer([1, 2, 3, 0], [1, 2, 3, 0]), false);
+    assert.equal(isNewer([1, 2, 2, 0], [1, 2, 3, 0]), false);
+    assert.equal(isNewer([0, 9, 9, 0], [1, 0, 0, 0]), false);
+    assert.equal(isNewer([0, 3, 3, 1], [0, 3, 3, 0]), true, 'a hotfix is newer than its release');
+    assert.equal(isNewer([0, 3, 3, 1], [0, 3, 3, 1]), false);
+    assert.equal(isNewer([0, 3, 3, 0], [0, 3, 3, 1]), false, 'and the release is not newer than its hotfix');
+    assert.equal(isNewer([0, 3, 4, 0], [0, 3, 3, 9]), true, 'the next release is newer than any hotfix of the last');
+    assert.equal(isNewer([0, 3, 3, 2], [0, 3, 3, 1]), true);
   });
 });
 
