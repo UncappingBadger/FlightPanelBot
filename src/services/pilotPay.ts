@@ -1,7 +1,8 @@
 /**
  * What a pilot is paid for a flight, by the rule the airline's CEO gave:
  *
- *  - A flight that made a profit pays the pilot 15% of the profit, and never less than $2,000.
+ *  - A flight that made a profit pays the pilot 15% of the profit, rounded UP to the next whole dollar (Aeroconomy has no cents), and never
+ *    less than $2,000. For example 15% of $54,204 is $8,130.60, which pays $8,131, and 15% of $54,203 is $8,130.45, which also pays $8,131.
  *  - A flight that lost money still pays the pilot: a base of $2,000 (which covers the first 1,000 nautical miles flown) and $1,000 more for
  *    every further 500 nautical miles, a started 500 counting as a whole one ("1,001 nm pays $3,000; 1,502 nm pays $4,000").
  *
@@ -40,6 +41,7 @@ export function pilotPay(profit: number, distanceNm: number | null): PilotPay | 
     const stretches = Math.ceil(Math.max(0, distanceNm - BASE_COVERS_NM) / STRETCH_NM);
     return { amount: PAY_MINIMUM + PAY_PER_STRETCH * stretches, basis: 'distance' };
   }
-  const share = Math.round((profit * PAY_SHARE_PERCENT) / 100);
+  // Up, not to the nearest: $8,130.45 is $8,131. A profit in whole dollars times 15 is a whole number, so a share that comes out even stays as it is.
+  const share = Math.ceil((profit * PAY_SHARE_PERCENT) / 100);
   return share >= PAY_MINIMUM ? { amount: share, basis: 'share' } : { amount: PAY_MINIMUM, basis: 'minimum' };
 }

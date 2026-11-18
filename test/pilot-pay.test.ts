@@ -26,19 +26,30 @@ const D12 = Date.UTC(2026, 10, 12);
 
 describe('what a pilot is paid for a flight', () => {
   it('pays a profitable flight 15% of the profit, and never less than $2,000', () => {
-    assert.deepEqual(pilotPay(54489, null), { amount: 8173, basis: 'share' });
+    assert.deepEqual(pilotPay(54489, null), { amount: 8174, basis: 'share' });
     assert.deepEqual(pilotPay(88552, null), { amount: 13283, basis: 'share' });
     assert.deepEqual(pilotPay(23931, null), { amount: 3590, basis: 'share' });
     assert.deepEqual(pilotPay(13333, null), { amount: 2000, basis: 'share' }, '15% comes to $1,999.95, which is $2,000');
     assert.deepEqual(pilotPay(13337, null), { amount: 2001, basis: 'share' }, '15% comes to $2,000.55');
+    assert.deepEqual(pilotPay(13340, null), { amount: 2001, basis: 'share' }, '15% comes to exactly $2,001, which stays $2,001');
     assert.deepEqual(pilotPay(13300, null), { amount: 2000, basis: 'minimum' }, '$1,995 is less than the minimum');
     assert.deepEqual(pilotPay(7020, null), { amount: 2000, basis: 'minimum' });
     assert.deepEqual(pilotPay(1, null), { amount: 2000, basis: 'minimum' });
     assert.deepEqual(pilotPay(0, null), { amount: 2000, basis: 'minimum' }, 'a flight that broke even still pays the minimum');
   });
 
+  it('rounds the pay UP to the next whole dollar, never to the nearest, and leaves a share that comes out even alone', () => {
+    assert.deepEqual(pilotPay(54203, null), { amount: 8131, basis: 'share' }, '15% comes to $8,130.45: up, where the nearest would be $8,130');
+    assert.deepEqual(pilotPay(54204, null), { amount: 8131, basis: 'share' }, '15% comes to $8,130.60 (the profit of $54,203.58 as the sheet keeps it)');
+    assert.deepEqual(pilotPay(13401, null), { amount: 2011, basis: 'share' }, '15% comes to $2,010.15: up, where the nearest would be $2,010');
+    assert.deepEqual(pilotPay(66667, null), { amount: 10001, basis: 'share' }, '15% comes to $10,000.05');
+    assert.deepEqual(pilotPay(66666, null), { amount: 10000, basis: 'share' }, '15% comes to $9,999.90');
+    for (const even of [20000, 40000, 100000, 1_000_000, 13340]) assert.equal(pilotPay(even, null)!.amount, (even * 15) / 100, `${even} is not pushed up a dollar by rounding noise`);
+    for (let profit = 14000; profit < 14400; profit++) assert.equal(pilotPay(profit, null)!.amount, Math.floor((profit * 15 + 99) / 100), `${profit}`);
+  });
+
   it('does not look at the distance of a profitable flight', () => {
-    for (const nm of [null, 0, 600, 1001, 9566, Number.NaN, -3]) assert.deepEqual(pilotPay(54489, nm), { amount: 8173, basis: 'share' }, String(nm));
+    for (const nm of [null, 0, 600, 1001, 9566, Number.NaN, -3]) assert.deepEqual(pilotPay(54489, nm), { amount: 8174, basis: 'share' }, String(nm));
     assert.deepEqual(pilotPay(5000, 9566), { amount: 2000, basis: 'minimum' });
   });
 
@@ -150,7 +161,7 @@ describe('planning the pilot pay beside a blank profit', () => {
   });
 
   it('needs no distance at all for a profit', () => {
-    assert.deepEqual(plan(sheetRow(), lf({ profit: 54489, flightId: null })), { amount: 8173, basis: 'share', distanceNm: null, problem: null, cell: 'empty' });
+    assert.deepEqual(plan(sheetRow(), lf({ profit: 54489, flightId: null })), { amount: 8174, basis: 'share', distanceNm: null, problem: null, cell: 'empty' });
     assert.deepEqual(plan(sheetRow(), lf({ profit: 1000 })), { amount: 2000, basis: 'minimum', distanceNm: null, problem: null, cell: 'empty' });
     assert.equal(planPay(0, sheetRow(), null, null, new Map()).basis, 'minimum', 'a profit that rounds to nothing is not a loss');
     assert.equal(planPay(-1, sheetRow(), 5000, null, new Map([[5000, 100]])).basis, 'distance');
@@ -176,9 +187,9 @@ describe('planning the pilot pay beside a blank profit', () => {
       lf({ entryId: 4, dep: 'EGKK', arr: 'EGLL', pilotName: 'D', profit: -300, flightId: 3, distanceNm: 800 }),
     ];
     const r = compareProfits(rows, flights, 'TST');
-    assert.deepEqual(r.fills.map((f) => [f.row, f.pay]), [[3, 8173], [4, null], [5, null], [6, null]]);
+    assert.deepEqual(r.fills.map((f) => [f.row, f.pay]), [[3, 8174], [4, null], [5, null], [6, null]]);
     const withFsHub = compareProfits(rows, flights, 'TST', new Map([[3, 800]]));
-    assert.deepEqual(withFsHub.fills.map((f) => [f.row, f.pay]), [[3, 8173], [4, null], [5, null], [6, 2000]]);
+    assert.deepEqual(withFsHub.fills.map((f) => [f.row, f.pay]), [[3, 8174], [4, null], [5, null], [6, 2000]]);
   });
 });
 
@@ -284,7 +295,7 @@ describe('working out the pay when reading an airline', () => {
     assert.deepEqual(asked, [[AIRLINE, 5000, 1]], 'one request, for the loss only: a profit needs no distance');
     assert.deepEqual(
       a.fills.map((f) => [f.row, f.value, f.pay, f.payPlan.basis, f.payPlan.distanceNm]),
-      [[2, 54489, 8173, 'share', null], [3, -4000, 4000, 'distance', 1502]],
+      [[2, 54489, 8174, 'share', null], [3, -4000, 4000, 'distance', 1502]],
     );
   });
 
@@ -302,7 +313,7 @@ describe('working out the pay when reading an airline', () => {
     answer = async () => page([]);
     const a = await profits().analyse(panel());
     assert.deepEqual([a.fills[1]!.pay, a.fills[1]!.payPlan.problem], [null, 'no-distance']);
-    assert.equal(a.fills[0]!.pay, 8173, 'the profit\'s pay does not depend on it');
+    assert.equal(a.fills[0]!.pay, 8174, 'the profit\'s pay does not depend on it');
   });
 
   it('works out no pay for a loss when FsHub and the logbook disagree about the distance', async () => {
@@ -346,7 +357,7 @@ describe('working out the pay when reading an airline', () => {
 
   it('works out no pay for a loss, and says so, when it has no way of asking FsHub', async () => {
     const a = await profits(false).analyse(panel());
-    assert.deepEqual([a.fills[0]!.pay, a.fills[1]!.pay, a.fills[1]!.payPlan.problem], [8173, null, 'no-distance']);
+    assert.deepEqual([a.fills[0]!.pay, a.fills[1]!.pay, a.fills[1]!.payPlan.problem], [8174, null, 'no-distance']);
   });
 });
 
@@ -380,14 +391,14 @@ describe('writing the pay beside a profit', () => {
   });
 
   it('writes the pay into the empty Pilot Pay cell of the same row, in the same request as the profit, as a number', async () => {
-    const got = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8173), fill(5, -4000, 'Sam', K.third, 4000)]);
+    const got = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8174), fill(5, -4000, 'Sam', K.third, 4000)]);
     assert.deepEqual(got.written.map((w) => [w.cell, w.value]), [['J3', 54489], ['J5', -4000]]);
-    assert.deepEqual(got.paid.map((w) => [w.cell, w.value]), [['K3', 8173], ['K5', 4000]]);
+    assert.deepEqual(got.paid.map((w) => [w.cell, w.value]), [['K3', 8174], ['K5', 4000]]);
     assert.equal(got.payLeft, 0);
     assert.equal(g.writes.length, 1, 'one request');
     assert.deepEqual(g.writes[0]!.data.map((d) => d.range.split('!')[1]), ['J3', 'K3', 'J5', 'K5']);
     assert.ok(g.writes[0]!.data.every((d) => typeof d.values[0]![0] === 'number'), 'numbers, not text');
-    assert.deepEqual([g.cell('J3'), g.cell('K3'), g.cell('J5'), g.cell('K5')], ['54489', '8173', '-4000', '4000']);
+    assert.deepEqual([g.cell('J3'), g.cell('K3'), g.cell('J5'), g.cell('K5')], ['54489', '8174', '-4000', '4000']);
   });
 
   it('never replaces a Pilot Pay cell that has anything in it: it writes the profit and leaves the pay as it is', async () => {
@@ -406,11 +417,11 @@ describe('writing the pay beside a profit', () => {
       g.values = grid();
       g.formulas.clear();
       setup();
-      const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8173)]);
+      const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8174)]);
       assert.deepEqual(r.paid, [], what);
       assert.equal(r.payLeft, 1, what);
       assert.deepEqual(r.written.map((w) => w.cell), ['J3'], `${what}: the profit still goes in`);
-      assert.notEqual(g.cell('K3'), '8173', what);
+      assert.notEqual(g.cell('K3'), '8174', what);
     }
   });
 
@@ -428,14 +439,14 @@ describe('writing the pay beside a profit', () => {
 
   it('leaves a pay unwritten when the sheet has no Pilot Pay column at all, and counts it as left', async () => {
     g.values = grid().map((r) => r.slice(0, 10));
-    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8173)]);
+    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8174)]);
     assert.deepEqual([r.written.length, r.paid.length, r.payLeft], [1, 0, 1]);
     assert.equal(g.writes[0]!.data.length, 1);
   });
 
   it('does not write a pay for a profit it skipped', async () => {
     g.values[2]![9] = '$13,000.00';
-    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8173), fill(5, -4000, 'Sam', K.third, 4000)]);
+    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8174), fill(5, -4000, 'Sam', K.third, 4000)]);
     assert.deepEqual(r.skipped, [{ sourceKey: K.open, reason: 'filled' }]);
     assert.deepEqual(r.paid.map((w) => w.cell), ['K5']);
     assert.equal(r.payLeft, 0);
@@ -446,7 +457,7 @@ describe('writing the pay beside a profit', () => {
     g.beforeNextRead = () => {
       g.values[2]![10] = '$1,500';
     };
-    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8173)]);
+    const r = await wb.fillProfits(panel(), [fill(3, 54489, 'Alex', K.open, 8174)]);
     assert.deepEqual([r.written.length, r.paid.length, r.payLeft], [1, 0, 1]);
     assert.equal(g.cell('K3'), '$1,500');
   });
@@ -458,7 +469,7 @@ describe('what the admin reads about the pay', () => {
   const plan = (over: Partial<ProfitFillPlan> = {}, pay: Partial<ProfitFillPlan['payPlan']> = {}): ProfitFillPlan => ({
     sourceKey: 'k',
     value: 54489,
-    pay: 8173,
+    pay: 8174,
     row: 3,
     pilot: 'Alex',
     route: 'EGLL → EGCC',
@@ -467,7 +478,7 @@ describe('what the admin reads about the pay', () => {
     exact: 54489.2,
     flightId: 5000,
     logbookNm: 500,
-    payPlan: { amount: 8173, basis: 'share', distanceNm: null, problem: null, cell: 'empty', ...pay },
+    payPlan: { amount: 8174, basis: 'share', distanceNm: null, problem: null, cell: 'empty', ...pay },
     ...over,
   });
   const analysis = (fills: ProfitFillPlan[]): ProfitAnalysis => ({ business: BUSINESS, aircraft: 1, logbookFlights: 3, usableFlights: 3, sheetCompleted: 3, matched: 3, agree: 0, fills, different: [], unreadable: 0, unmatched: 0, ambiguous: 0, readAt: T0 });
@@ -479,11 +490,11 @@ describe('what the admin reads about the pay', () => {
       plan({ row: 5, value: -4000, pay: 4000, payPlan: { amount: 4000, basis: 'distance', distanceNm: 1502, problem: null, cell: 'empty' } }),
     ];
     for (const text of [previewText('Test Air', fills), profitReport('Test Air', analysis(fills))]) {
-      assert.match(text, /row 3 · .* · \$54,489.* · pilot pay \$8,173 \(15% of the profit\)/);
+      assert.match(text, /row 3 · .* · \$54,489.* · pilot pay \$8,174 \(15% of the profit\)/);
       assert.match(text, /row 4 · .* · pilot pay \$2,000 \(the \$2,000 minimum\)/);
       assert.match(text, /row 5 · .* · -\$4,000.* · pilot pay \$4,000 \(loss, 1,502 nm flown\)/);
     }
-    assert.match(previewText('Test Air', fills), /the pilot's pay into \*\*3\*\* empty Pilot Pay cells: 15% of the profit \(at least \$2,000\), or for a flight that lost money \$2,000 plus \$1,000 per 500 nm beyond the first 1,000, by FsHub's distance/);
+    assert.match(previewText('Test Air', fills), /the pilot's pay into \*\*3\*\* empty Pilot Pay cells: 15% of the profit, rounded up to a whole dollar \(at least \$2,000\), or for a flight that lost money \$2,000 plus \$1,000 per 500 nm beyond the first 1,000, by FsHub's distance/);
     assert.match(profitReport('Test Air', analysis(fills)), /Pilot Pay beside those: \*\*3\*\* empty, with a pay I can work out/);
   });
 
@@ -492,7 +503,7 @@ describe('what the admin reads about the pay', () => {
       plan({ row: 3, pay: null, payPlan: { amount: null, basis: null, distanceNm: null, problem: 'no-distance', cell: 'empty' } }),
       plan({ row: 4, pay: null, payPlan: { amount: null, basis: null, distanceNm: null, problem: 'distance-differs', cell: 'empty' } }),
       plan({ row: 5, pay: null, payPlan: { amount: null, basis: null, distanceNm: null, problem: 'no-flight-id', cell: 'empty' } }),
-      plan({ row: 6, pay: null, payPlan: { amount: 8173, basis: 'share', distanceNm: null, problem: null, cell: 'filled' } }),
+      plan({ row: 6, pay: null, payPlan: { amount: 8174, basis: 'share', distanceNm: null, problem: null, cell: 'filled' } }),
       // A loss whose pay cell is already filled in: nothing was asked of FsHub, so no pay was worked out, and that is not a problem to report.
       plan({ row: 7, pay: null, payPlan: { amount: null, basis: null, distanceNm: null, problem: 'no-distance', cell: 'filled' } }),
     ];
@@ -506,7 +517,7 @@ describe('what the admin reads about the pay', () => {
   });
 
   it('says plainly that only the profit would be written when every pay cell already has something in it, or there is none', () => {
-    const filled = [plan({ pay: null, payPlan: { amount: 8173, basis: 'share', distanceNm: null, problem: null, cell: 'filled' } }), plan({ row: 4, pay: null, payPlan: { amount: 2000, basis: 'minimum', distanceNm: null, problem: null, cell: 'filled' } })];
+    const filled = [plan({ pay: null, payPlan: { amount: 8174, basis: 'share', distanceNm: null, problem: null, cell: 'filled' } }), plan({ row: 4, pay: null, payPlan: { amount: 2000, basis: 'minimum', distanceNm: null, problem: null, cell: 'filled' } })];
     const text = previewText('Test Air', filled);
     assert.match(text, /\*\*2\*\* Profit Made cells that are empty today \(\*\*2\*\* already have something in Pilot Pay: left as they are\)\. I would change nothing else/);
     assert.doesNotMatch(text, /the pilot's pay into/);
@@ -598,7 +609,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
   it('checks without writing and shows the pay it would fill in', async () => {
     const { text, components } = await run();
     assert.match(text, /Pilot Pay beside those: \*\*2\*\* empty, with a pay I can work out, \*\*1\*\* already filled in/);
-    assert.match(text, /row 3 · TST101 EGLL → EGCC · Thu 12 Nov · \$54,489 · pilot pay \$8,173 \(15% of the profit\)/);
+    assert.match(text, /row 3 · TST101 EGLL → EGCC · Thu 12 Nov · \$54,489 · pilot pay \$8,174 \(15% of the profit\)/);
     assert.match(text, /row 4 · TST202 KMIA → KORD · Thu 12 Nov · -\$4,000 · pilot pay \$4,000 \(loss, 1,502 nm flown\)/);
     assert.deepEqual(components, []);
     assert.equal(g.writes.length, 0);
@@ -615,7 +626,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
     const done = await press(idsOf(components)[0]!);
     assert.match(done, /Wrote \*\*3\*\* Profit Made cells/);
     assert.match(done, /And \*\*2\*\* Pilot Pay cells: K3, K4/);
-    assert.deepEqual([g.cell('J3'), g.cell('K3'), g.cell('J4'), g.cell('K4'), g.cell('J5'), g.cell('K5')], ['54489', '8173', '-4000', '4000', '20000', '$0']);
+    assert.deepEqual([g.cell('J3'), g.cell('K3'), g.cell('J4'), g.cell('K4'), g.cell('J5'), g.cell('K5')], ['54489', '8174', '-4000', '4000', '20000', '$0']);
     assert.equal(g.writes.length, 1);
   });
 

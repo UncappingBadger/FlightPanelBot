@@ -756,7 +756,7 @@ sheet's numbers, unless an admin asks.
   stray space, a zero, an error, or a formula that happens to show nothing all count as filled, and are left exactly as they are (the bot reads what is really
   stored in the cell, not just what it displays, and the report counts those cells as left alone).
 - **The pilot's pay, beside the profit.** If the sheet has a **Pilot Pay** column (not the *Pilot Paid* box), `fill` also offers the pay for each flight it
-  fills, worked out by the airline's rule: a flight that made a profit pays the pilot **15% of the profit, and never less than $2,000**; a flight that made
+  fills, worked out by the airline's rule: a flight that made a profit pays the pilot **15% of the profit, rounded up to the next whole dollar (Aeroconomy has no cents), and never less than $2,000**; a flight that made
   a **loss** still pays **$2,000, plus $1,000 for every further 500 nautical miles beyond the first 1,000** (a started 500 counts, so 1,001 nm pays $3,000
   and 1,502 nm pays $4,000). The distance is **FsHub's**: the bot asks FsHub for each such flight (one request each, at most 25 a run, and it stops if FsHub
   says it is busy), and the logbook's own distance has to agree with it to within a mile. If FsHub gives none, or the two disagree, **no pay is worked out for
@@ -938,7 +938,7 @@ messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord'
 ## Development
 
 ```bash
-npm test              # 2276 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2277 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

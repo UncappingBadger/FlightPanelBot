@@ -134,7 +134,7 @@ function payIntro(fills: ProfitFillPlan[]): string {
   const nothingElse = ' I would change nothing else, and no cell that has anything in it.';
   if (s.noColumn === fills.length) return `. The sheet has no Pilot Pay column.${nothingElse}`;
   if (s.fill === 0) return `${tail}.${nothingElse}`;
-  const rule = "15% of the profit (at least $2,000), or for a flight that lost money $2,000 plus $1,000 per 500 nm beyond the first 1,000, by FsHub's distance";
+  const rule = "15% of the profit, rounded up to a whole dollar (at least $2,000), or for a flight that lost money $2,000 plus $1,000 per 500 nm beyond the first 1,000, by FsHub's distance";
   return `, and the pilot's pay into **${s.fill}** empty Pilot Pay cell${s.fill === 1 ? '' : 's'}: ${rule}${tail}.${nothingElse}`;
 }
 
