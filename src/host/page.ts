@@ -199,7 +199,9 @@ export function renderPage(version: string): string {
     var parts = [];
     parts.push(t.connectedAs ? 'Connected as ' + t.connectedAs + '.' : 'No Twitch account is connected.');
     var st = t.status;
-    if (st && t.connectedAs) parts.push('Bot: ' + st.detail);
+    // Connecting an account is not enough: the bot joins nothing until a channel is chosen and saved.
+    if (t.connectedAs && !t.channel) parts.push('Next: type the channel to join below (for your own channel, that is ' + t.connectedAs + ') and press Save.');
+    else if (st && t.connectedAs) parts.push('Bot: ' + st.detail);
     $('twitch-state').textContent = parts.join(' ');
     $('twitch-disconnect').className = t.connectedAs ? 'secondary' : 'secondary hidden';
     $('twitch-connect').textContent = t.connectedAs ? 'Connect a different account' : 'Connect to Twitch';

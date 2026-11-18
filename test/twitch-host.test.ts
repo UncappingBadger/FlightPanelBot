@@ -284,6 +284,7 @@ describe('connecting Twitch on the setup page', () => {
     assert.match(page, /Connect to Twitch/);
     assert.match(page, /only speaks when spoken to/);
     assert.match(page, /disconnect it here at any time/);
+    assert.match(page, /Next: type the channel to join below/, 'a connected account with no channel is told what to do next');
     for (const id of ['twitch-state', 'twitch-channel', 'twitch-pilot', 'twitch-commands', 'twitch-banter', 'twitch-save', 'twitch-disconnect', 'twitch-client']) assert.match(page, new RegExp(`id="${id}"`), id);
   });
 });
