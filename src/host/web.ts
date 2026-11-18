@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Logger } from '../util/log.js';
@@ -6,7 +7,10 @@ import { fshubTokenProblem, normalizeFsHubToken } from '../fshub/client.js';
 import { checkDiscordToken, checkFsHubToken } from './accounts.js';
 import type { HostPaths } from './paths.js';
 import { renderPage } from './page.js';
-import { discordTokenProblem, loadSettings, normalizeToken, removeGoogleKey, saveGoogleKey, saveSettings } from './settings.js';
+import { BUILT_IN_TWITCH_CLIENT_ID, validClientId } from '../twitch/clientId.js';
+import { CHAT_SCOPES, pollDeviceFlow, revokeToken, startDeviceFlow, TwitchAuthError, validateToken, type DeviceCode } from '../twitch/oauth.js';
+import { readTokens, removeTokens, writeTokens } from '../twitch/tokens.js';
+import { discordTokenProblem, loadSettings, normalizeChannel, normalizeToken, removeGoogleKey, saveGoogleKey, saveSettings } from './settings.js';
 import type { Supervisor } from './supervisor.js';
 import type { UpdateChecker } from './updates.js';
 
@@ -90,6 +94,32 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
   };
   const json = (res: ServerResponse, status: number, data: unknown) => send(res, status, JSON.stringify(data));
 
+  // Connecting a Twitch account: the code shown to the host while they approve it on Twitch's own page. Held in memory only.
+  let pending: { device: DeviceCode; clientId: string; expiresAt: number; lastPoll: number } | null = null;
+  const clientIdForTwitch = (): string => loadSettings(opts.paths).twitch?.clientId || BUILT_IN_TWITCH_CLIENT_ID;
+  const twitchView = () => {
+    const settings = loadSettings(opts.paths).twitch;
+    const tokens = readTokens(opts.paths.twitchTokens);
+    let status: unknown = null;
+    try {
+      status = JSON.parse(readFileSync(opts.paths.twitchStatus, 'utf8'));
+    } catch {
+      /* the bot has not written one */
+    }
+    const waiting = pending && Date.now() < pending.expiresAt ? { userCode: pending.device.userCode, verificationUri: pending.device.verificationUri, expiresAt: pending.expiresAt } : null;
+    return {
+      available: clientIdForTwitch() !== '',
+      ownClientId: Boolean(settings?.clientId),
+      connectedAs: tokens ? tokens.login : null,
+      channel: settings?.channel ?? '',
+      commands: settings?.commands ?? true,
+      banter: settings?.banter ?? true,
+      pilotId: settings?.pilotId ?? null,
+      status,
+      pending: waiting,
+    };
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Only our own address: a web page on the internet that points a hostname at this computer is refused.
     const host = (req.headers.host ?? '').toLowerCase();
@@ -105,6 +135,8 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
       const count = Math.min(Math.max(Number(url.searchParams.get('n')) || 200, 1), 500);
       return json(res, 200, { lines: opts.tail(count) });
     }
+
+    if (req.method === 'GET' && url.pathname === '/api/twitch') return json(res, 200, twitchView());
 
     if (req.method !== 'POST') throw new HttpError(404, 'Not found.');
     // A page on another site can't send JSON with our header, so this also blocks cross-site requests.
@@ -178,6 +210,105 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
         const current = loadSettings(opts.paths);
         current.fshubAccessToken = '';
         saveSettings(opts.paths, current);
+        void opts.supervisor.restart();
+        return json(res, 200, { ok: true });
+      }
+
+      // Optional Twitch chat. Step one of connecting: Twitch gives a short code, which the host types at Twitch's own page.
+      case '/api/twitch/connect': {
+        const clientId = clientIdForTwitch();
+        if (!clientId) throw new HttpError(400, "This copy of the app has no Twitch application ID yet. Paste one under 'Advanced' below.");
+        try {
+          const device = await startDeviceFlow(clientId, CHAT_SCOPES, fetchFn);
+          pending = { device, clientId, expiresAt: Date.now() + device.expiresInSec * 1000, lastPoll: 0 };
+          return json(res, 200, { userCode: device.userCode, verificationUri: device.verificationUri, expiresInSec: device.expiresInSec, intervalSec: device.intervalSec });
+        } catch (e) {
+          throw new HttpError(400, e instanceof TwitchAuthError ? e.message : 'Could not start the Twitch sign-in.');
+        }
+      }
+
+      // Step two, asked every few seconds by the page: has the host approved it yet?
+      case '/api/twitch/poll': {
+        const p = pending;
+        if (!p) throw new HttpError(400, 'Start by pressing Connect to Twitch.');
+        if (Date.now() >= p.expiresAt) {
+          pending = null;
+          throw new HttpError(400, 'That code ran out. Press Connect to Twitch to get a new one.');
+        }
+        if (Date.now() - p.lastPoll < p.device.intervalSec * 1000) return json(res, 200, { status: 'pending' });
+        p.lastPoll = Date.now();
+        try {
+          const set = await pollDeviceFlow(p.clientId, CHAT_SCOPES, p.device.deviceCode, fetchFn);
+          if (set === null) return json(res, 200, { status: 'pending' });
+          const who = await validateToken(set.accessToken, fetchFn);
+          if (!who) throw new TwitchAuthError('invalid', "Twitch didn't accept the new sign-in. Try again.");
+          writeTokens(opts.paths.twitchTokens, {
+            clientId: p.clientId,
+            accessToken: set.accessToken,
+            refreshToken: set.refreshToken,
+            expiresAt: Date.now() + set.expiresInSec * 1000,
+            userId: who.userId,
+            login: who.login,
+            scopes: set.scopes.length > 0 ? set.scopes : who.scopes,
+          });
+          pending = null;
+          opts.log.info(`Twitch account connected (${who.login})`);
+          void opts.supervisor.restart();
+          return json(res, 200, { status: 'connected', login: who.login });
+        } catch (e) {
+          if (e instanceof TwitchAuthError && e.kind === 'unavailable') return json(res, 200, { status: 'pending', note: e.message });
+          pending = null;
+          throw new HttpError(400, e instanceof TwitchAuthError ? e.message : 'The Twitch sign-in failed.');
+        }
+      }
+
+      case '/api/twitch/settings': {
+        const current = loadSettings(opts.paths);
+        const before = current.twitch ?? { channel: '', commands: true, banter: true };
+        const channelRaw = typeof body.channel === 'string' ? body.channel.trim() : null;
+        let channel = before.channel;
+        if (channelRaw !== null) {
+          if (channelRaw === '') channel = '';
+          else {
+            const c = normalizeChannel(channelRaw);
+            if (c === null) throw new HttpError(400, "That doesn't look like a Twitch channel name (letters, digits and underscores, 3 to 25 long).");
+            channel = c;
+          }
+        }
+        const next: NonNullable<typeof current.twitch> = {
+          channel,
+          commands: typeof body.commands === 'boolean' ? body.commands : before.commands,
+          banter: typeof body.banter === 'boolean' ? body.banter : before.banter,
+        };
+        if ('pilotId' in body) {
+          const raw = body.pilotId;
+          if (raw !== null && raw !== '' && raw !== undefined) {
+            const n = Number(raw);
+            if (!Number.isSafeInteger(n) || n <= 0) throw new HttpError(400, "The FsHub pilot number is the number in the address of the streamer's FsHub profile.");
+            next.pilotId = n;
+          }
+        } else if ('pilotId' in before && before.pilotId !== undefined) next.pilotId = before.pilotId;
+        if ('clientId' in body) {
+          const raw = typeof body.clientId === 'string' ? body.clientId.trim() : '';
+          if (raw !== '') {
+            if (!validClientId(raw)) throw new HttpError(400, "That doesn't look like a Twitch Client ID (letters and digits, about 30 long).");
+            next.clientId = raw;
+          }
+        } else if ('clientId' in before && before.clientId) next.clientId = before.clientId;
+        if (next.channel === '' && !next.clientId) delete current.twitch;
+        else current.twitch = next;
+        saveSettings(opts.paths, current);
+        void opts.supervisor.restart();
+        return json(res, 200, { ok: true, ...twitchView() });
+      }
+
+      case '/api/twitch/disconnect': {
+        const tokens = readTokens(opts.paths.twitchTokens);
+        if (tokens) await revokeToken(tokens.clientId, tokens.accessToken, fetchFn);
+        removeTokens(opts.paths.twitchTokens);
+        rmSync(opts.paths.twitchStatus, { force: true });
+        pending = null;
+        opts.log.info('Twitch account disconnected');
         void opts.supervisor.restart();
         return json(res, 200, { ok: true });
       }

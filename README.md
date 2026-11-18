@@ -801,6 +801,52 @@ from 800 and from 1,000. Nothing is ever said in a channel, and a normal or mere
 - **Nothing to set up.** It works wherever the bot reads the airline's FsHub flights, and stops if you switch that off with
   `/setup fshub confirm:off`.
 
+### Twitch chat (optional)
+
+For a host who streams their flying. The bot can join **one Twitch channel's chat** and tell viewers about the streamer's flight, and answer
+what chat says to it, in the voice of a cheerful, overworked airline scheduler. It is entirely opt-in: nothing runs, and nothing is sent to Twitch, until the host
+connects a Twitch account and names a channel in step 5 of the setup page.
+
+| Viewers type | The bot answers with |
+|---|---|
+| `!flight` (or `!route`) | the route, callsign and aircraft, the phase, height and speed, how far through the flight it is, and the time to go; or that nobody is flying, and what the last flight was |
+| `!distance` | how far there is still to go, and of how many nautical miles in all; or how far the last flight was |
+| `!landing` | the last landing rate in feet per minute, with a kind word for it ("butter", "a nice one", "a proper thump") |
+| `!aircraft` (or `!plane`) | what the streamer is flying, or flew last |
+| `!eta` | the time to go, and roughly when it lands (Zulu) |
+| `!commands` | the list above |
+
+A message that names the bot (its Twitch account name), or that answers one of its messages, is answered too: compliments are thanked,
+"lazy" is taken with good humour, an insult is waved off, and a question about the flight in plain words ("@botname how far are we?") gets the
+same answer as the command. The lines are all family-friendly, and the butt of the joke is always the bot. Anything crude is not answered at
+all, and what a viewer typed is never repeated back.
+
+- **Connecting.** Press **Connect to Twitch**. The page shows a short code and a link to Twitch's own page; open it signed in as the Twitch
+  account the bot should speak as, type the code and press Authorise. No password and no token is typed or pasted anywhere (Twitch's tokens
+  last four hours, so a pasted one would stop working the same day). Twitch hands the bot a sign-in that it keeps in `twitch.json` beside
+  `settings.json` (readable by that Windows user only, never written to the log, never sent back to the page) and keeps fresh by itself. It
+  asks for two permissions only: to read the chat it is in and to write to it (`user:read:chat`, `user:write:chat`). **Disconnect** on the
+  page (or Connections in the Twitch settings) takes it away at any time. If Twitch stops accepting it (the host disconnected the app, changed
+  their password, or the bot went 30 days without running) the page says so and the host connects again.
+- **Which account.** Make a free Twitch account for the bot and connect that, and make it a moderator of the channel (`/mod name`): the
+  replies then come from the bot and not from the streamer, and a moderator is not held back by slow mode or followers-only chat and may
+  send 100 messages in 30 seconds where an ordinary account may send 20. Connecting the streamer's own account works, but the replies then
+  appear as the streamer's.
+- **Whose flights.** The streamer's FsHub pilot: the owner of the FsHub token saved in step 4, or the pilot number given on the page. The
+  current flight comes from FsHub's public live feed (no token); the last landing needs the FsHub token.
+- **The application ID.** Twitch wants to know which application is asking. This is a public number (a Client ID, not a secret), and this
+  build may have one built in. If it has not, register a free application at [dev.twitch.tv/console](https://dev.twitch.tv/console) (Client Type:
+  **Public**) and paste its Client ID under *Advanced* on the page.
+- **It never floods a chat.** It only speaks when spoken to. A command has a cooldown (10 seconds for everyone, 4 for one person), a joke has
+  one (20 seconds for one person, 5 for the room), it never sends more than 10 messages in 30 seconds or two at once, and it ignores itself
+  and the usual chat bots (Nightbot, StreamElements and so on). It answers as a reply to the message that asked.
+- **What it reads, and where it goes.** It reads the channel's chat only to see whether a message is for it, and keeps none of it. The only
+  thing sent anywhere is its own reply, to Twitch. It talks to `id.twitch.tv` (sign-in), `api.twitch.tv` (find the channel, send a message) and
+  `eventsub.wss.twitch.tv` (the chat connection), and to FsHub as for live tracking.
+- **If something is wrong** the setup page says what (not connected, the sign-in no longer accepted, no such channel, Twitch not reachable,
+  banned from the chat) and the log has the same in a line, and the Discord side of the bot carries on regardless. The two switches on the page
+  turn off the commands, or the jokes, separately.
+
 ### The grid layout
 
 By default the panel is a **card** for each flight. A server can choose a more compact **grid of buttons** instead with
@@ -932,13 +978,13 @@ the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and
 never sends names, IDs or other personal data to anyone: the only thing asked of FsHub about a person is the
-pilot ID they typed. (The green OPEN stamp on a card is a picture kept inside the bot and attached to the panel's
+pilot ID they typed. **Only if the host connected a Twitch account and chose a channel** (*Twitch chat*), it also contacts `id.twitch.tv`, `api.twitch.tv` and `eventsub.wss.twitch.tv`: the sign-in, the channel's chat as it arrives (read to see whether a message is for the bot, and not kept) and the bot's own replies; the Twitch sign-in is a file of its own beside the settings, and is deleted by *Disconnect*. (The green OPEN stamp on a card is a picture kept inside the bot and attached to the panel's
 messages; it is drawn by `scripts/make-stamp.mjs`. A pilot's picture is Discord's own, asked of Discord.)
 
 ## Development
 
 ```bash
-npm test              # 2278 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
+npm test              # 2396 tests: import parser, Google Sheet reader and write-back (against a pretend Google), job rules, panel (open flights, completed flights, the 1-to-7-day period, overlapping redraws), DM conversation and FsHub pilot IDs, the list view in pilots' DMs, the METAR decoder, VATSIM client and weather DM command, the completed-flights channel, the OPEN stamp and pilot pictures on cards, FsHub client, roster sync, flight confirmation and the hourly automatic completion (against a pretend FsHub), live tracking of take-offs and landings (against a pretend FsHub live feed and FsHub), the grid layout (buttons, folds, the private flight cards), the late-departure warnings (flight times learned from FsHub flights or worked out from the airports' positions, read from a pretend OurAirports list), the scheduler, roles, refresh, reminders, database upgrades, AeroDAQ (against real captured responses), update check, host app (settings, setup page security, supervisor)
 npm run typecheck     # src and tests
 ```
 

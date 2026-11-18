@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { dailyHours, type Config } from '../config.js';
+import { validClientId } from '../twitch/clientId.js';
 import { normalizeFsHubToken } from '../fshub/client.js';
 import { parseServiceAccount } from '../google/serviceAccount.js';
 import { BUILT_IN_NOTE_USER, validNoteUser } from '../util/builtInNote.js';
@@ -25,6 +26,33 @@ export interface HostSettings {
   fshubAccessToken: string;
   /** Optional: one Discord user who gets a short note once a day (services/dailyNote.ts), and the hours (UTC) it may arrive in. Absent when not set. */
   dailyNote?: { userId: string; fromHour: number; toHour: number };
+  /**
+   * Optional Twitch chat (src/twitch). Absent for a host who never set it up, and then nothing here is written to the settings file. Connecting
+   * a Twitch account is separate (the sign-in is kept in its own file); this is what the bot does once connected.
+   */
+  twitch?: TwitchSettings;
+}
+
+export interface TwitchSettings {
+  /** The channel whose chat the bot joins, as its login name. */
+  channel: string;
+  commands: boolean;
+  banter: boolean;
+  /** The streamer's FsHub pilot number, when it is not the owner of the FsHub token. */
+  pilotId?: number;
+  /** A Twitch application's Client ID of the host's own, in place of the one built in. */
+  clientId?: string;
+}
+
+/** A channel as a login name: what was pasted may be `#name`, `Name` or a link to the channel. Null when it cannot be one. */
+export function normalizeChannel(raw: string): string | null {
+  const t = raw
+    .trim()
+    .replace(/^https?:\/\/(www\.)?twitch\.tv\//i, '')
+    .replace(/^[#@]/, '')
+    .replace(/[/?#].*$/, '')
+    .toLowerCase();
+  return /^[a-z0-9_]{3,25}$/.test(t) ? t : null;
 }
 
 const FileSchema = z.object({
@@ -35,6 +63,11 @@ const FileSchema = z.object({
   dailyNoteUserId: z.string().default(''),
   dailyNoteFromHour: z.number().int().min(0).max(23).default(14),
   dailyNoteToHour: z.number().int().min(1).max(24).default(23),
+  twitchChannel: z.string().default(''),
+  twitchCommands: z.boolean().default(true),
+  twitchBanter: z.boolean().default(true),
+  twitchPilotId: z.number().int().positive().nullable().default(null),
+  twitchClientId: z.string().default(''),
 });
 
 /** Tidy a pasted token: no spaces, quotes, or a leading "Bot ". */
@@ -84,12 +117,17 @@ export function loadSettings(paths: HostPaths): HostSettings {
     parsed = FileSchema.parse({});
   }
   const noteUser = parsed.dailyNoteUserId.trim();
+  const channel = normalizeChannel(parsed.twitchChannel) ?? '';
+  const clientId = validClientId(parsed.twitchClientId) ? parsed.twitchClientId.trim() : '';
   return {
     discordToken: normalizeToken(parsed.discordToken),
     checkForUpdates: parsed.checkForUpdates,
     logLevel: parsed.logLevel,
     fshubAccessToken: normalizeFsHubToken(parsed.fshubAccessToken),
     ...(/^\d{15,21}$/.test(noteUser) ? { dailyNote: { userId: noteUser, ...dailyHours(parsed.dailyNoteFromHour, parsed.dailyNoteToHour) } } : {}),
+    ...(channel || clientId
+      ? { twitch: { channel, commands: parsed.twitchCommands, banter: parsed.twitchBanter, ...(parsed.twitchPilotId !== null ? { pilotId: parsed.twitchPilotId } : {}), ...(clientId ? { clientId } : {}) } }
+      : {}),
   };
 }
 
@@ -119,8 +157,15 @@ function writeAtomic(path: string, text: string): void {
 
 export function saveSettings(paths: HostPaths, settings: HostSettings): void {
   // The daily-note settings are written only when somebody has set them, so nobody else's file carries them.
-  const { dailyNote, ...rest } = settings;
-  const out = dailyNote ? { ...rest, dailyNoteUserId: dailyNote.userId, dailyNoteFromHour: dailyNote.fromHour, dailyNoteToHour: dailyNote.toHour } : rest;
+  const { dailyNote, twitch, ...rest } = settings;
+  const out = {
+    ...rest,
+    ...(dailyNote ? { dailyNoteUserId: dailyNote.userId, dailyNoteFromHour: dailyNote.fromHour, dailyNoteToHour: dailyNote.toHour } : {}),
+    // Likewise the Twitch settings: nobody who never set them up has them in the file.
+    ...(twitch
+      ? { twitchChannel: twitch.channel, twitchCommands: twitch.commands, twitchBanter: twitch.banter, ...(twitch.pilotId !== undefined ? { twitchPilotId: twitch.pilotId } : {}), ...(twitch.clientId ? { twitchClientId: twitch.clientId } : {}) }
+      : {}),
+  };
   writeAtomic(paths.settings, `${JSON.stringify(out, null, 2)}\n`);
 }
 
@@ -149,6 +194,7 @@ export function toConfig(paths: HostPaths, s: HostSettings, builtInNoteUser: str
     googleServiceAccountFile: existsSync(paths.googleKey) ? paths.googleKey : undefined,
     fshubToken: s.fshubAccessToken || undefined,
     dailyNote: note ? { userId: note.userId, ...dailyHours(note.fromHour, note.toHour) } : undefined,
+    twitch: s.twitch && s.twitch.channel ? { tokensFile: paths.twitchTokens, statusFile: paths.twitchStatus, channel: s.twitch.channel, commands: s.twitch.commands, banter: s.twitch.banter, pilotId: s.twitch.pilotId } : undefined,
   };
 }
 

@@ -93,6 +93,27 @@ export function renderPage(version: string): string {
     <div class="msg hidden" id="fshub-msg"></div>
   </section>
 
+  <section id="s-twitch">
+    <h2>5. Optional: answer a Twitch chat about your flight</h2>
+    <p class="muted">For streamers. The bot joins one Twitch channel's chat and answers <code>!flight</code>, <code>!distance</code>, <code>!landing</code>, <code>!aircraft</code> and <code>!eta</code> with your current flight from FsHub, and replies to chat's compliments, jokes and insults in a family-friendly way. It only speaks when spoken to, and nothing happens until you connect a Twitch account below. You can disconnect it here at any time, or under Connections in your Twitch settings.</p>
+    <p class="muted">Tip: connect a separate Twitch account made for the bot (and make it a moderator of your channel), so the replies come from it and not from you. It uses your FsHub token above to know whose flights to talk about.</p>
+    <p id="twitch-state" class="muted">Checking…</p>
+    <div class="row"><button id="twitch-connect">Connect to Twitch</button><button class="secondary hidden" id="twitch-disconnect">Disconnect</button></div>
+    <div class="msg hidden" id="twitch-code"></div>
+    <label for="twitch-channel">Channel to join (the streamer's Twitch name)</label>
+    <input type="text" id="twitch-channel" autocomplete="off" spellcheck="false" placeholder="for example yourchannel">
+    <label for="twitch-pilot">Optional: the streamer's FsHub pilot number</label>
+    <input type="text" id="twitch-pilot" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the owner of the FsHub token">
+    <label class="check"><input type="checkbox" id="twitch-commands" checked> Answer <code>!flight</code>, <code>!distance</code>, <code>!landing</code>, <code>!aircraft</code> and <code>!eta</code></label>
+    <label class="check"><input type="checkbox" id="twitch-banter" checked> Reply to chat's compliments, jokes and insults</label>
+    <div class="row"><button id="twitch-save">Save</button></div>
+    <details style="margin-top:10px"><summary class="muted">Advanced: my own Twitch application ID</summary>
+      <p class="muted">Only needed if this copy of the app has no Twitch application ID built in. Register a free application at <a href="https://dev.twitch.tv/console" target="_blank" rel="noopener">dev.twitch.tv/console</a> (Client Type: Public), then paste its Client ID here.</p>
+      <input type="text" id="twitch-client" autocomplete="off" spellcheck="false" placeholder="Client ID">
+    </details>
+    <div class="msg hidden" id="twitch-msg"></div>
+  </section>
+
   <section>
     <h2>Updates</h2>
     <p id="update-state" class="muted">Checking…</p>
@@ -173,6 +194,38 @@ export function renderPage(version: string): string {
     $('update-auto').checked = !!u.auto;
     $('update-auto').disabled = !u.supported;
   }
+  var twitchWait = null;
+  function renderTwitch(t) {
+    var parts = [];
+    parts.push(t.connectedAs ? 'Connected as ' + t.connectedAs + '.' : 'No Twitch account is connected.');
+    var st = t.status;
+    if (st && t.connectedAs) parts.push('Bot: ' + st.detail);
+    $('twitch-state').textContent = parts.join(' ');
+    $('twitch-disconnect').className = t.connectedAs ? 'secondary' : 'secondary hidden';
+    $('twitch-connect').textContent = t.connectedAs ? 'Connect a different account' : 'Connect to Twitch';
+    $('twitch-connect').disabled = !t.available && !$('twitch-client').value;
+    if (document.activeElement !== $('twitch-channel')) $('twitch-channel').value = t.channel || '';
+    if (document.activeElement !== $('twitch-pilot')) $('twitch-pilot').value = t.pilotId || '';
+    if (document.activeElement !== $('twitch-commands')) $('twitch-commands').checked = !!t.commands;
+    if (document.activeElement !== $('twitch-banter')) $('twitch-banter').checked = !!t.banter;
+    if (!t.available) show($('twitch-msg'), 'This copy of the app has no Twitch application ID yet. Open Advanced below and paste one.', true);
+  }
+  function twitchPoll() { api('/api/twitch').then(renderTwitch).catch(function () {}); }
+  function twitchBody() {
+    var b = { channel: $('twitch-channel').value, commands: $('twitch-commands').checked, banter: $('twitch-banter').checked, pilotId: $('twitch-pilot').value.trim() === '' ? null : $('twitch-pilot').value.trim() };
+    // The saved application ID is never shown, so an empty box means "leave it", not "remove it".
+    if ($('twitch-client').value.trim() !== '') b.clientId = $('twitch-client').value;
+    return b;
+  }
+  function twitchWatch(intervalSec) {
+    clearTimeout(twitchWait);
+    twitchWait = setTimeout(function () {
+      api('/api/twitch/poll', {}).then(function (r) {
+        if (r.status === 'connected') { $('twitch-code').className = 'msg hidden'; show($('twitch-msg'), 'Connected as ' + r.login + '. The bot is restarting to join the chat.', false); twitchPoll(); }
+        else twitchWatch(intervalSec);
+      }).catch(function (e) { $('twitch-code').className = 'msg hidden'; show($('twitch-msg'), e.message, true); });
+    }, Math.max(intervalSec, 3) * 1000);
+  }
   function poll() { api('/api/state').then(render).catch(function () { $('phase').textContent = 'Lost contact with the bot'; }); }
   function logs() { api('/api/logs?n=150').then(function (j) { var p = $('logs'); var atEnd = p.scrollTop + p.clientHeight >= p.scrollHeight - 20; p.textContent = j.lines.join('\\n') || 'Nothing yet.'; if (atEnd) p.scrollTop = p.scrollHeight; }); }
 
@@ -203,6 +256,24 @@ export function renderPage(version: string): string {
     }).catch(function (e) { show($('fshub-msg'), e.message, true); }).then(function () { $('fshub-save').disabled = false; });
   };
   $('fshub-remove').onclick = function () { api('/api/fshub/remove', {}).then(function () { show($('fshub-msg'), 'Token removed.', false); poll(); }); };
+  $('twitch-connect').onclick = function () {
+    $('twitch-connect').disabled = true; show($('twitch-msg'), 'Asking Twitch for a code\u2026', false);
+    var save = $('twitch-client').value.trim() ? api('/api/twitch/settings', { clientId: $('twitch-client').value }) : Promise.resolve();
+    save.then(function () { return api('/api/twitch/connect', {}); }).then(function (r) {
+      var box = $('twitch-code'); box.className = 'msg'; box.textContent = '';
+      var a = document.createElement('a'); a.href = r.verificationUri; a.target = '_blank'; a.rel = 'noopener'; a.textContent = r.verificationUri.replace('https://', '');
+      box.appendChild(document.createTextNode('Open ')); box.appendChild(a); box.appendChild(document.createTextNode(' (sign in as the account the bot should use), type this code, and press Authorise: '));
+      var b = document.createElement('b'); b.textContent = r.userCode; box.appendChild(b);
+      show($('twitch-msg'), 'Waiting for you to approve it on Twitch\u2026', false);
+      twitchWatch(r.intervalSec);
+    }).catch(function (e) { show($('twitch-msg'), e.message, true); }).then(function () { $('twitch-connect').disabled = false; });
+  };
+  $('twitch-save').onclick = function () {
+    $('twitch-save').disabled = true;
+    api('/api/twitch/settings', twitchBody()).then(function (r) { renderTwitch(r); show($('twitch-msg'), 'Saved. The bot is restarting to use it.', false); poll(); })
+      .catch(function (e) { show($('twitch-msg'), e.message, true); }).then(function () { $('twitch-save').disabled = false; });
+  };
+  $('twitch-disconnect').onclick = function () { api('/api/twitch/disconnect', {}).then(function () { show($('twitch-msg'), 'Disconnected from Twitch.', false); twitchPoll(); poll(); }); };
   $('restart').onclick = function () { api('/api/restart', {}).then(poll); };
   $('logs-refresh').onclick = logs;
   $('google-remove').onclick = function () { api('/api/google-key/remove', {}).then(function () { show($('google-msg'), 'Key removed.', false); poll(); }); };
@@ -215,7 +286,7 @@ export function renderPage(version: string): string {
     };
     reader.readAsText(f);
   };
-  poll(); logs(); setInterval(poll, 2500); setInterval(logs, 5000);
+  poll(); logs(); twitchPoll(); setInterval(poll, 2500); setInterval(logs, 5000); setInterval(twitchPoll, 5000);
 })();
 </script>
 </body>

@@ -36,6 +36,30 @@ export interface LiveFlight {
   arr: string | null;
 }
 
+/** One pilot's flight as the live feed shows it right now, with the figures a viewer of their stream would ask about. */
+export interface LiveDetail {
+  flightId: string;
+  /** FsHub's phase (`climbing`, `cruise`, `descending`, `taxiing_to_gate`, ...). */
+  phase: string | null;
+  airborne: boolean;
+  onGround: boolean | null;
+  aircraftIcao: string | null;
+  callsign: string | null;
+  /** The flight plan's airports, when one was filed. */
+  dep: string | null;
+  arr: string | null;
+  altitudeFt: number | null;
+  /** True airspeed, in knots. */
+  speedKts: number | null;
+  headingDeg: number | null;
+  /** How far there is still to go, in nautical miles, and how far through the plan the flight is (0 to 100). */
+  distanceToGoNm: number | null;
+  progressPct: number | null;
+  etaMinutes: number | null;
+  /** FsHub's word for how the flight is running against its schedule (`ON-TIME`, `DELAYED`, ...). */
+  flightStatus: string | null;
+}
+
 export interface LivePilot {
   pilotId: number;
   /** In the air right now. */
@@ -96,6 +120,36 @@ const PilotSchema = z
           phase: z.string().nullish(),
           position: z.preprocess(objectOrMissing, z.object({ on_ground: z.boolean().nullish() }).passthrough().optional()),
           plan: z.preprocess(objectOrMissing, z.object({ departure: airport, arrival: airport }).passthrough().optional()),
+        })
+        .passthrough()
+        .optional(),
+    ),
+  })
+  .passthrough();
+
+/** A figure that is not a plain number (a string, null, nonsense) counts as missing: an odd value must never cost the whole flight. */
+const finiteOrNull = z.unknown().optional().transform((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
+
+const DetailSchema = z
+  .object({
+    pilot_id: z.number().int(),
+    is_airborne: z.boolean().nullish(),
+    active_flight: z.preprocess(
+      objectOrMissing,
+      z
+        .object({
+          id: z.union([z.string(), z.number()]).transform(String),
+          phase: z.string().nullish(),
+          position: z.preprocess(
+            objectOrMissing,
+            z.object({ on_ground: z.boolean().nullish(), altitude_ft: finiteOrNull, speed_tas_kts: finiteOrNull, heading: finiteOrNull }).passthrough().optional(),
+          ),
+          aircraft: z.preprocess(objectOrMissing, z.object({ icao: z.string().nullish() }).passthrough().optional()),
+          plan: z.preprocess(objectOrMissing, z.object({ callsign: z.string().nullish(), flight_no: z.string().nullish(), departure: airport, arrival: airport }).passthrough().optional()),
+          eta_minutes: finiteOrNull,
+          distance_nm: finiteOrNull,
+          progress: finiteOrNull,
+          flight_status: z.string().nullish(),
         })
         .passthrough()
         .optional(),
@@ -173,6 +227,41 @@ export class LiveFeed {
       : null;
     const airborne = parsed.data.is_airborne ?? (flight !== null && flight.onGround === false && flight.phase !== null && AIRBORNE_PHASES.has(flight.phase));
     return { pilotId: parsed.data.pilot_id, airborne: airborne === true && flight !== null, flight };
+  }
+
+  /** One pilot's flight in detail, or null when they have none (not online, or not flying). */
+  async pilotDetail(pilotId: number): Promise<LiveDetail | null> {
+    if (!Number.isSafeInteger(pilotId) || pilotId <= 0) return null;
+    const body = await this.get(`/pilot/${pilotId}`);
+    if (body === null) return null;
+    const parsed = DetailSchema.safeParse(body);
+    if (!parsed.success) throw new LiveFeedError('The live feed sent a pilot in a form I do not understand.');
+    const f = parsed.data.active_flight;
+    if (!f) return null;
+    const code = (v: string | null | undefined, ok: RegExp): string | null => {
+      const t = (v ?? '').trim().toUpperCase();
+      return ok.test(t) ? t : null;
+    };
+    const onGround = f.position?.on_ground ?? null;
+    const phase = f.phase ?? null;
+    const airborne = parsed.data.is_airborne ?? (onGround === false && isAirbornePhase(phase));
+    return {
+      flightId: f.id,
+      phase,
+      airborne: airborne === true,
+      onGround,
+      aircraftIcao: code(f.aircraft?.icao, /^[A-Z0-9]{2,5}$/),
+      callsign: code(f.plan?.callsign ?? f.plan?.flight_no, /^[A-Z0-9-]{1,12}$/),
+      dep: f.plan?.departure ?? null,
+      arr: f.plan?.arrival ?? null,
+      altitudeFt: f.position?.altitude_ft ?? null,
+      speedKts: f.position?.speed_tas_kts ?? null,
+      headingDeg: f.position?.heading ?? null,
+      distanceToGoNm: f.distance_nm,
+      progressPct: f.progress === null ? null : Math.min(100, Math.max(0, f.progress)),
+      etaMinutes: f.eta_minutes,
+      flightStatus: f.flight_status ? f.flight_status.toUpperCase().slice(0, 16) : null,
+    };
   }
 
   /**

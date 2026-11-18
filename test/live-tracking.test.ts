@@ -121,6 +121,99 @@ describe('the live feed client', () => {
     assert.deepEqual(await feed.pilot(7), { pilotId: 7, airborne: false, flight: null }, 'in the air with no flight is not believed');
   });
 
+  describe('one pilot\'s flight in detail (for a stream\'s chat)', () => {
+    const full = {
+      pilot_id: 7,
+      is_airborne: true,
+      active_flight: {
+        id: 'abc',
+        phase: 'cruise',
+        position: { lat: 1, lng: 2, altitude_ft: 37_012, speed_tas_kts: 461, heading: 149, on_ground: false },
+        aircraft: { icao: 'a320' },
+        plan: { callsign: 'tst517', flight_no: 'TST517', departure: 'vhhh', arrival: 'kord' },
+        eta_minutes: 125,
+        distance_nm: 3000,
+        progress: 48,
+        flight_status: 'on-time',
+      },
+    };
+
+    it('reads the aircraft, the figures and the plan, tidied', async () => {
+      reply = () => json(full);
+      assert.deepEqual(await feed.pilotDetail(7), {
+        flightId: 'abc',
+        phase: 'cruise',
+        airborne: true,
+        onGround: false,
+        aircraftIcao: 'A320',
+        callsign: 'TST517',
+        dep: 'VHHH',
+        arr: 'KORD',
+        altitudeFt: 37_012,
+        speedKts: 461,
+        headingDeg: 149,
+        distanceToGoNm: 3000,
+        progressPct: 48,
+        etaMinutes: 125,
+        flightStatus: 'ON-TIME',
+      });
+      assert.equal(calls[0]!.url, `${LIVE_FEED}/pilot/7`);
+    });
+
+    it('copes with the parts a flight without a plan does not have, and with odd values', async () => {
+      reply = () => json({ pilot_id: 7, is_airborne: false, active_flight: { id: 'f', phase: 'taxiing_to_runway', position: { on_ground: true }, aircraft: { icao: 'a b!' }, plan: false, airline: false, progress: 250, eta_minutes: 'soon', distance_nm: null } });
+      const d = await feed.pilotDetail(7);
+      assert.deepEqual(d, {
+        flightId: 'f',
+        phase: 'taxiing_to_runway',
+        airborne: false,
+        onGround: true,
+        aircraftIcao: null,
+        callsign: null,
+        dep: null,
+        arr: null,
+        altitudeFt: null,
+        speedKts: null,
+        headingDeg: null,
+        distanceToGoNm: null,
+        progressPct: 100,
+        etaMinutes: null,
+        flightStatus: null,
+      });
+    });
+
+    it('keeps the progress between none and all of the way', async () => {
+      reply = () => json({ ...full, active_flight: { ...full.active_flight, progress: 250 } });
+      assert.equal((await feed.pilotDetail(7))!.progressPct, 100);
+      reply = () => json({ ...full, active_flight: { ...full.active_flight, progress: -5 } });
+      assert.equal((await feed.pilotDetail(7))!.progressPct, 0);
+    });
+
+    it('works out whether it is in the air from the phase when the feed does not say', async () => {
+      reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'climbing', position: { on_ground: false } } });
+      assert.equal((await feed.pilotDetail(7))!.airborne, true);
+      reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'awaiting_departure', position: { on_ground: false } } });
+      assert.equal((await feed.pilotDetail(7))!.airborne, false);
+    });
+
+    it('says nothing is flying for a pilot with no flight, one not found, or a number that cannot be a pilot, without asking for the last', async () => {
+      reply = () => json({ pilot_id: 7, is_airborne: false, active_flight: false });
+      assert.equal(await feed.pilotDetail(7), null);
+      reply = () => json({ error: 'not found' }, 404);
+      assert.equal(await feed.pilotDetail(7), null);
+      calls.length = 0;
+      for (const bad of [0, -1, 1.5, Number.NaN]) assert.equal(await feed.pilotDetail(bad), null);
+      assert.equal(calls.length, 0, 'nothing was asked');
+    });
+
+    it('fails clearly when the feed is down or sends something it cannot read', async () => {
+      reply = () => json({}, 500);
+      await assert.rejects(feed.pilotDetail(7), (e: unknown) => e instanceof LiveFeedError);
+      reply = () => json({ pilot_id: 'seven' });
+      await assert.rejects(feed.pilotDetail(7), (e: unknown) => e instanceof LiveFeedError);
+    });
+  });
+
   it('treats a pilot with no flight (a 404) as not flying, not as a failure', async () => {
     reply = () => json({ error: 'pilot not found or has no active flights' }, 404);
     assert.equal(await feed.pilot(1001), null);

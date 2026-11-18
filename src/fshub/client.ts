@@ -409,6 +409,20 @@ export class FsHubClient implements FsHubApi {
     return parseFlightPage(data);
   }
 
+  /**
+   * A pilot's most recent flights (a landing each), newest first: what a stream's viewers ask about the last landing. FsHub lists a pilot's
+   * flights at /pilot/{id}/flight; none, or a pilot who has not flown, is an empty list.
+   */
+  async pilotRecentFlights(pilotId: number, limit = 5): Promise<FsHubFlight[]> {
+    safeId(pilotId);
+    const size = Math.min(Math.max(Math.trunc(limit) || 1, 1), 20);
+    const res = await this.get(`/pilot/${pilotId}/flight?limit=${size}`);
+    if (res.status === 404 || res.status === 204) return [];
+    const data = dataOf(res.json);
+    if (!Array.isArray(data)) throw new FsHubError('bad-response', 'FsHub sent a list of flights I could not read.');
+    return parseFlightPage(data).flights.sort((a, b) => b.arrivedAt - a.arrivedAt);
+  }
+
   private remember<T>(cache: Map<number, { at: number; value: T }>, id: number, value: T): void {
     if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value as number);
     cache.set(id, { at: this.now(), value });

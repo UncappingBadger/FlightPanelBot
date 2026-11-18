@@ -89,6 +89,48 @@ describe('reading a page of flights', () => {
   });
 });
 
+describe('asking FsHub for one pilot\'s latest flights', () => {
+  const make = (answer: (url: URL) => Response) => {
+    const urls: URL[] = [];
+    const fetchFn = (async (u: string) => {
+      const url = new URL(String(u));
+      urls.push(url);
+      return answer(url);
+    }) as unknown as typeof fetch;
+    return { urls, client: new FsHubClient({ token: 'tok-0123456789abcdefghijkl', fetchFn }) };
+  };
+  const page = (...flights: unknown[]) => new Response(JSON.stringify({ data: flights }));
+
+  it('asks for a pilot\'s flights and gives them newest first, with the landing rate and distance', async () => {
+    const { client, urls } = make(() =>
+      page(
+        rawFlight(1, { arrival: { icao: 'EGKK', time: '2026-11-10T11:00:00.000000Z' }, landing_rate: -250, distance: { nm: 120, km: 222 } }),
+        rawFlight(2, { arrival: { icao: 'EGCC', time: '2026-11-12T11:00:00.000000Z' }, landing_rate: -612, distance: { nm: 300, km: 556 } }),
+      ),
+    );
+    const flights = await client.pilotRecentFlights(500);
+    assert.deepEqual(flights.map((f) => [f.id, f.arr, f.landingRate, f.distanceNm]), [[2, 'EGCC', -612, 300], [1, 'EGKK', -250, 120]]);
+    assert.equal(urls[0]!.pathname, '/api/v3/pilot/500/flight');
+    assert.equal(urls[0]!.searchParams.get('limit'), '5');
+  });
+
+  it('never asks for fewer than one or more than twenty, and not for a number that cannot be a pilot', async () => {
+    const { client, urls } = make(() => page());
+    await client.pilotRecentFlights(5, 0);
+    await client.pilotRecentFlights(5, 500);
+    await client.pilotRecentFlights(5, 7.9);
+    assert.deepEqual(urls.map((u) => u.searchParams.get('limit')), ['1', '20', '7']);
+    for (const bad of [0, -1, 1.5]) await assert.rejects(client.pilotRecentFlights(bad), /Not a FsHub ID/);
+  });
+
+  it('says none for a pilot who has not flown (a 404 or an empty list), and fails clearly on nonsense', async () => {
+    assert.deepEqual(await make(() => new Response('{"message":"No records found"}', { status: 404 })).client.pilotRecentFlights(5), []);
+    assert.deepEqual(await make(() => page()).client.pilotRecentFlights(5), []);
+    assert.deepEqual(await make(() => new Response(null, { status: 204 })).client.pilotRecentFlights(5), []);
+    await assert.rejects(make(() => new Response('{"data":"many"}')).client.pilotRecentFlights(5), (e: unknown) => e instanceof FsHubError && e.kind === 'bad-response');
+  });
+});
+
 describe('asking FsHub for an airline\'s flights', () => {
   const make = (answer: (url: URL) => Response) => {
     const urls: URL[] = [];

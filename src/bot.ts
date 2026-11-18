@@ -19,6 +19,7 @@ import { DemoJobSource } from './jobs/demo.js';
 import { sourceSelector } from './jobs/sheet.js';
 import { FsHubClient } from './fshub/client.js';
 import { LiveFeed } from './fshub/liveFeed.js';
+import { TwitchBridge } from './twitch/bridge.js';
 import { AirportDirectory } from './services/airports.js';
 import { DistanceFiller } from './services/distanceFill.js';
 import { AutoCompleter } from './services/autoComplete.js';
@@ -167,6 +168,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   });
   // The same feed says when each of the airline's flights in the air is expected to land: on the flight's card, and for `/eta`.
   const etas = new FlightEtas({ store, feed: liveFeed, panels, logger: log });
+  let twitch: TwitchBridge | null = null;
   panels.etas = etas;
   const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log, live });
   // A short note once a day to one person, when a host has named them (nothing is sent otherwise).
@@ -285,6 +287,21 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
       // Bring every panel up to date after a restart, then start background work.
       for (const p of store.listAllPanels()) panels.schedule(p.id);
       scheduler.start();
+      // Optional: the host connected a Twitch account and chose a channel, so the bot answers its chat about the streamer's flight.
+      if (config.twitch) {
+        twitch = new TwitchBridge({
+          tokensFile: config.twitch.tokensFile,
+          statusFile: config.twitch.statusFile,
+          channel: config.twitch.channel,
+          commands: config.twitch.commands,
+          banter: config.twitch.banter,
+          pilotId: config.twitch.pilotId,
+          feed: liveFeed,
+          fshub,
+          logger: log,
+        });
+        void twitch.start();
+      }
       void (async () => {
         for (const g of c.guilds.cache.values()) await registerFor(g.id, g.name).catch((e) => log.warn('Command registration failed', e));
       })();
@@ -293,6 +310,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   });
 
   const stop = async () => {
+    twitch?.stop();
     scheduler.stop();
     // The FsHub lane may be mid-request; give it a moment to finish rather than closing the database under it.
     await Promise.race([scheduler.idle(), new Promise<void>((r) => setTimeout(r, 3_000).unref?.())]);

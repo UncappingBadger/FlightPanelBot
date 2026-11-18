@@ -32,6 +32,21 @@ export interface Config {
   fshubToken: string | undefined;
   /** The one person who gets a note a day, and the hours (UTC) it may arrive in. Undefined: no notes. */
   dailyNote?: { userId: string; fromHour: number; toHour: number } | undefined;
+  /** Optional Twitch chat: set only when the host chose a channel (see src/twitch). Without it the bot never contacts Twitch. */
+  twitch?: TwitchConfig | undefined;
+}
+
+export interface TwitchConfig {
+  tokensFile: string;
+  statusFile: string;
+  /** The channel whose chat the bot joins (its login name). */
+  channel: string;
+  /** `!flight` and friends, and plain questions about the flight. */
+  commands: boolean;
+  /** Replies to compliments, jokes and insults. */
+  banter: boolean;
+  /** The streamer's FsHub pilot number; absent: the owner of the FsHub token. */
+  pilotId?: number | undefined;
 }
 
 /** The hours (UTC) a daily note may arrive in: the given ones if they make a window, otherwise mid-afternoon to late evening in the UK and the US morning to afternoon. */

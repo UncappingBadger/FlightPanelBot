@@ -15,6 +15,9 @@ export interface HostPaths {
   home: string;
   settings: string;
   googleKey: string;
+  /** The Twitch sign-in, when the host connected one (see src/twitch/tokens.ts), and the bot's latest Twitch status, for the setup page. */
+  twitchTokens: string;
+  twitchStatus: string;
   dataDir: string;
   database: string;
   logsDir: string;
@@ -29,6 +32,8 @@ export function hostPaths(home: string): HostPaths {
     home,
     settings: join(home, 'settings.json'),
     googleKey: join(home, 'google-key.json'),
+    twitchTokens: join(home, 'twitch.json'),
+    twitchStatus: join(home, 'twitch-status.json'),
     dataDir: join(home, 'data'),
     database: join(home, 'data', 'bot.sqlite'),
     logsDir: join(home, 'logs'),
