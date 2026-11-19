@@ -1,11 +1,12 @@
 import type { AeroAircraft, AeroconomyAccountClient, LogFlight } from '../aeroconomy/account.js';
 import type { AeroconomyClient } from '../aeroconomy/client.js';
 import type { Panel, Store } from '../db/store.js';
-import { FsHubError, type FsHubApi } from '../fshub/client.js';
+import type { FsHubApi } from '../fshub/client.js';
 import { downloadSheetCsv, sheetRefOf } from '../jobs/sheet.js';
 import { silentLogger, type Logger } from '../util/log.js';
-import { readSheetFlights, type SheetFlight } from './contributions.js';
+import { isUnsetPay, readSheetFlights, type SheetFlight } from './contributions.js';
 import { callsignCode } from './flightEtas.js';
+import { fshubDistances } from './fshubDistances.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
 import type { ProfitFill } from './writeback.js';
 
@@ -14,7 +15,8 @@ import type { ProfitFill } from './writeback.js';
  * the airline's managers entered in its schedule sheet, and works out which blank cells could be filled in.
  *
  * Reading is all this does. Writing a profit into the sheet is a separate step (`SheetWriteBack.fillProfits`), taken only when an admin
- * asks for it and confirms it. A cell that already has something in it is never a candidate: a difference is reported, not corrected.
+ * asks for it and confirms it. A cell that already has something in it is never a candidate: a difference is reported, not corrected. (A
+ * Pilot Pay cell holding only $0 has no pay in it: a column formatted as money shows that for an empty cell.)
  */
 
 const HOUR = 3_600_000;
@@ -45,8 +47,12 @@ export type PayProblem =
   /** FsHub's distance and the logbook's are not the same. */
   | 'distance-differs';
 
-/** What is in the sheet's Pilot Pay cell of the row: nothing (it can be filled), something (it is left alone), or the sheet has no such column. */
-export type PayCell = 'empty' | 'filled' | 'missing';
+/**
+ * What is in the sheet's Pilot Pay cell of the row: no pay (empty, or the $0 a money-formatted column shows: it can be filled), a figure above
+ * zero or any note or formula (left alone), no pay again after this bot wrote one (somebody set it back to $0 on purpose: left alone), or the
+ * sheet has no such column.
+ */
+export type PayCell = 'empty' | 'filled' | 'zeroed' | 'missing';
 
 /** The pilot's pay for a flight whose profit is going to be filled in, how it was worked out, and what the sheet's cell for it holds. */
 export interface PayPlan {
@@ -148,8 +154,11 @@ export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pa
  * distance flown, and that distance is FsHub's: `distances` holds what FsHub recorded for each flight it was asked about, and the logbook's
  * own figure has to agree with it. Without both, there is no pay to work out, and the plan says why instead of guessing.
  */
-export function planPay(value: number, row: SheetFlight, flightId: number | null, logbookNm: number | null, distances: ReadonlyMap<number, number>): PayPlan {
-  const cell: PayCell = row.payRaw === null ? 'missing' : row.payRaw === '' ? 'empty' : 'filled';
+export function planPay(value: number, row: SheetFlight, flightId: number | null, logbookNm: number | null, distances: ReadonlyMap<number, number>, wroteBefore = false): PayPlan {
+  // A cell with no pay in it (blank, or $0) is free to be written over, unless this bot wrote a pay there before: then it is back to nothing
+  // because somebody put it there, and that is theirs to decide.
+  const cell: PayCell = row.payRaw === null ? 'missing' : !isUnsetPay(row.payRaw) ? 'filled' : wroteBefore ? 'zeroed' : 'empty';
+  if (cell === 'zeroed') return { amount: null, basis: null, distanceNm: null, problem: null, cell };
   const none = (problem: PayProblem): PayPlan => ({ amount: null, basis: null, distanceNm: null, problem, cell });
   let nm: number | null = null;
   if (paidByDistance(value)) {
@@ -164,7 +173,7 @@ export function planPay(value: number, row: SheetFlight, flightId: number | null
 }
 
 /** The comparison, from the sheet's rows and the logbook's flights (all of them; only the airline's own callsign is used). */
-export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: string, distances: ReadonlyMap<number, number> = new Map()): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'readAt'> {
+export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: string, distances: ReadonlyMap<number, number> = new Map(), wrotePay: ReadonlySet<string> = new Set()): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'readAt'> {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
   const completed = rows.filter((r) => r.completed);
   const { pairs, unmatched, ambiguous } = pairRows(completed, usable);
@@ -181,7 +190,7 @@ export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: 
       }
       // Up, not to the nearest (Aeroconomy has no cents): $54,203.58 is $54,204, and a loss of $8,093.66 is -$8,093. The + 0 turns a -0 into 0.
       const value = Math.ceil(flight.profit) + 0;
-      const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances);
+      const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances, wrotePay.has(row.sourceKey));
       fills.push({
         sourceKey: row.sourceKey,
         value,
@@ -264,11 +273,12 @@ export class AirlineProfits {
     const code = callsignCode(panel);
     // A flight that lost money pays the pilot by the distance, so FsHub is asked how far each one was flown. Only the ones whose Pilot Pay is
     // empty need it: a pay that will not be written is not worth a request.
-    const ids = compareProfits(sheet.flights, flights, code)
+    const wrotePay = this.d.store.payWrittenKeys(panel.id);
+    const ids = compareProfits(sheet.flights, flights, code, new Map(), wrotePay)
       .fills.filter((f) => f.flightId !== null && paidByDistance(f.value) && f.payPlan.cell === 'empty')
       .map((f) => f.flightId as number);
     const distances = await this.fshubDistances(airlineId, ids);
-    const result = compareProfits(sheet.flights, flights, code, distances);
+    const result = compareProfits(sheet.flights, flights, code, distances, wrotePay);
     this.log.info(`Compared ${result.matched} flights of ${panel.airlineName} with Aeroconomy's logbooks: ${result.agree} agree, ${result.fills.length} blank, ${result.different.length} differ`);
     return { business: businessId, aircraft: fleet.length, readAt: this.now(), ...result };
   }
@@ -278,21 +288,8 @@ export class AirlineProfits {
    * about) is simply absent from the answer. At most `MAX_DISTANCE_LOOKUPS` are asked, and asking stops if FsHub says it is busy.
    */
   private async fshubDistances(airlineId: number, flightIds: number[]): Promise<Map<number, number>> {
-    const out = new Map<number, number>();
     const fshub = this.d.fshub;
-    if (!fshub) return out;
-    for (const id of flightIds.slice(0, MAX_DISTANCE_LOOKUPS)) {
-      try {
-        // FsHub lists an airline's flights from just after a cursor, oldest first, so the flight just before this one's ID gives this one.
-        const page = await fshub.airlineFlights(airlineId, id - 1, 1);
-        const nm = page.flights.find((f) => f.id === id)?.distanceNm;
-        if (typeof nm === 'number') out.set(id, nm);
-      } catch (e) {
-        this.log.debug(`FsHub gave no distance for flight ${id}: ${e instanceof Error ? e.message : String(e)}`);
-        if (e instanceof FsHubError && e.kind === 'rate-limited') break;
-      }
-    }
-    return out;
+    return fshub ? fshubDistances(fshub, airlineId, flightIds, MAX_DISTANCE_LOOKUPS, this.log) : new Map<number, number>();
   }
 
   /**

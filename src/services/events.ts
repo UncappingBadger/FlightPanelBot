@@ -9,12 +9,18 @@ export interface ReleasedNotice {
   reason: 'removed' | 'changed' | 'admin';
 }
 
-/** Someone who was down as a flight's backup is no longer: nobody is flying it any more, or it is no longer listed. */
+/**
+ * Someone who was down as a flight's backup is no longer: nobody is flying it any more, it is no longer listed, or they stood down
+ * themselves (`stood-down`: they are not messaged). Where this bot had written their name in the sheet's Backup Pilot cell, `sourceKey`
+ * and `sheetName` say which flight and what was written, so the name can be taken off again.
+ */
 export interface BackupNotice {
   panelId: number;
   discordId: string;
   jobCode: string;
-  reason: 'freed' | 'removed';
+  reason: 'freed' | 'removed' | 'stood-down';
+  sourceKey?: string;
+  sheetName?: string;
 }
 
 export type JobEvent =

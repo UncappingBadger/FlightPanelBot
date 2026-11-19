@@ -1,6 +1,7 @@
 import type { Panel } from '../db/store.js';
 import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js';
 import { parseLegChain } from '../jobs/import.js';
+import { isUnsetPay } from './contributions.js';
 import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
@@ -50,7 +51,7 @@ export interface ProfitFill {
   /** The row and the pilot's name it had a moment ago: if either has changed since, nothing is written to it. */
   row: number;
   pilot: string;
-  /** What the pilot is paid for the flight, in whole dollars, for the row's Pilot Pay cell; written only if that cell is empty too. Null or missing: none. */
+  /** What the pilot is paid for the flight, in whole dollars, for the row's Pilot Pay cell; written only if that cell has no pay in it (empty, or $0) too. Null or missing: none. */
   pay?: number | null;
 }
 
@@ -88,16 +89,19 @@ interface Located {
   doneCell: string;
   pilot: string;
   ticked: boolean;
+  /** The flight's *Backup Pilot* cell, and what is in it. Null where the sheet has no such column. */
+  backupCell: string | null;
+  backup: string;
 }
 
 /**
- * Keeps the airline's Google Sheet in step with what pilots do here. It only ever touches two cells
- * of a flight's own row: the Pilot cell and the Flight Completed box. Before every write it reads
+ * Keeps the airline's Google Sheet in step with what pilots do here. It only ever touches three cells
+ * of a flight's own row: the Pilot cell, the Flight Completed box and (where the sheet has one) the Backup Pilot cell. Before every write it reads
  * the tab afresh and finds the row again by the flight's route and date, so a sheet that has been
  * edited or re-sorted in the meantime is never written to blindly.
  *
- * The one other thing it can write is a blank Profit Made cell, and the pilot's pay in a blank Pilot Pay cell beside it, and only when an
- * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`). It never changes a cell that has anything in it.
+ * The one other thing it can write is a blank Profit Made cell, and the pilot's pay in a blank (or $0) Pilot Pay cell beside it, and only when an
+ * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`). It never changes any other cell that has anything in it.
  * The one more is the Pilot Paid box of a flight whose pilot has just been paid (`markPilotsPaid`, from `/payroll`), which it only ever ticks.
  */
 export class SheetWriteBack {
@@ -157,6 +161,41 @@ export class SheetWriteBack {
       const at = await this.locate(panel, sourceKey);
       if (!same(at.pilot, oldName) || at.ticked) return false;
       await this.write(at, [{ a1: at.pilotCell, value: newName }]);
+      return true;
+    });
+  }
+
+  /**
+   * Put a backup pilot's name in the flight's *Backup Pilot* cell. Returns false, writing nothing, where the sheet has no such column. Refuses
+   * if the flight is finished or cancelled, or if the cell already names someone else; a cell already holding this name is left as it is.
+   */
+  claimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
+    return this.serial(async () => {
+      const at = await this.locate(panel, sourceKey);
+      if (at.backupCell === null) return false;
+      if (at.ticked || isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed or cancelled.');
+      if (at.backup === '') await this.write(at, [{ a1: at.backupCell, value: name }]);
+      else if (!same(at.backup, name)) throw new WriteBackError('CONFLICT', `The sheet already names **${at.backup}** as the backup for that flight.`, at.backup);
+      return true;
+    });
+  }
+
+  /** Take a backup pilot's name off a flight, but only if it is still the name we wrote. Returns whether it was cleared. */
+  unclaimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
+    return this.serial(async () => {
+      const at = await this.locate(panel, sourceKey);
+      if (at.backupCell === null || !same(at.backup, name) || at.ticked) return false;
+      await this.write(at, [{ a1: at.backupCell, value: '' }]);
+      return true;
+    });
+  }
+
+  /** Change the backup pilot's name we wrote against a flight, but only if it is still the one we wrote. Returns whether it changed. */
+  renameBackup(panel: Panel, sourceKey: string, oldName: string, newName: string): Promise<boolean> {
+    return this.serial(async () => {
+      const at = await this.locate(panel, sourceKey);
+      if (at.backupCell === null || !same(at.backup, oldName) || at.ticked) return false;
+      await this.write(at, [{ a1: at.backupCell, value: newName }]);
       return true;
     });
   }
@@ -223,9 +262,11 @@ export class SheetWriteBack {
           const a1 = `${colLetter(parsed.cols.profit)}${row}`;
           cells.push({ a1, value: fill.value });
           result.written.push({ sourceKey: fill.sourceKey, cell: a1, value: fill.value });
-          // The pilot's pay goes in beside it, on the same terms: only into a Pilot Pay cell with nothing in it at all.
+          // The pilot's pay goes in beside it, but only into a Pilot Pay cell with no pay in it: nothing at all, or a plain zero (a column formatted
+          // as money shows $0 for an empty cell). Both what it shows and what is stored in it must say so; a figure above zero, a note, a stray
+          // space or a formula (even one that works out to zero) is somebody's and is left exactly as it is.
           if (fill.pay !== undefined && fill.pay !== null) {
-            const empty = parsed.cols.pay >= 0 && (values[parsed.cols.pay] ?? '') === '' && (stored.values[row - 1]?.[parsed.cols.pay] ?? '') === '';
+            const empty = parsed.cols.pay >= 0 && isUnsetPay(values[parsed.cols.pay]) && isUnsetPay(stored.values[row - 1]?.[parsed.cols.pay]);
             if (empty) {
               const payCell = `${colLetter(parsed.cols.pay)}${row}`;
               cells.push({ a1: payCell, value: fill.pay });
@@ -403,6 +444,7 @@ export class SheetWriteBack {
       const row = parsed.rowOf.get(sourceKey);
       if (row === undefined) throw new WriteBackError('FLIGHT_NOT_FOUND', "I can't find that flight in the sheet any more. Its row may have been changed or removed.");
       const cells = tab.values[row - 1] ?? [];
+      const iBackup = findHeader(tab.values)?.names.findIndex((n) => n === 'backuppilot') ?? -1;
       return {
         ref,
         title: tab.title,
@@ -411,6 +453,8 @@ export class SheetWriteBack {
         doneCell: `${colLetter(parsed.cols.done)}${row}`,
         pilot: (cells[parsed.cols.pilot] ?? '').trim(),
         ticked: isTicked(cells[parsed.cols.done] ?? ''),
+        backupCell: iBackup >= 0 ? `${colLetter(iBackup)}${row}` : null,
+        backup: iBackup >= 0 ? (cells[iBackup] ?? '').trim() : '',
       };
     } catch (e) {
       throw this.wrap(e);

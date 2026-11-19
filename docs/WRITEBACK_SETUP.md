@@ -9,10 +9,14 @@ the sheet follows:
 | gives the flight back (or an admin frees it) | clears that cell, but only if it still holds the name the bot wrote |
 | presses **Complete** and confirms | their name into **Pilot** if the cell was empty, and ticks **Flight Completed** |
 | tells the bot `name <their name>` in a DM | changes the name the bot wrote on their open flights |
+| stands by as a flight's backup (**Backup pilot**) | their name into the **Backup Pilot** cell of that flight's row, if the sheet has that column and the flight has one leg |
+| stands down, or the pilot gives the flight back, or an admin frees it | clears the Backup Pilot cell, but only if it still holds the name the bot wrote |
+
+Once an hour the bot also goes back over the backups already down for flights and writes in any that never reached the sheet.
 
 It never writes anywhere else: no other cell, no other tab (the "Pilot Info" tab is never read or written), no
 formatting. Before every write it reads the tab again and finds the flight's row by its route and date, so
-inserting or sorting rows is safe. If the sheet already names someone else, or already shows the flight
+inserting or sorting rows is safe. If the sheet already names someone else (as pilot, or as backup), or already shows the flight
 completed or cancelled, the bot refuses and tells the pilot, rather than overwriting.
 
 Writing needs a **Google service account**: a robot Google account that the sheet's owner shares the sheet

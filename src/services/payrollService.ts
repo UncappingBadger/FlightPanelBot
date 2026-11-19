@@ -2,10 +2,12 @@ import type { Panel, PayrollSettings, Store } from '../db/store.js';
 import { ImportError } from '../jobs/import.js';
 import { downloadSheetCsv, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { silentLogger, type Logger } from '../util/log.js';
-import { dayName, parseMoney, readSheetFlights, type SheetFlight, type SheetFlights } from './contributions.js';
+import { dayName, readSheetFlights, type SheetFlight, type SheetFlights } from './contributions.js';
 import type { PaymentGateway } from './payGateway.js';
 import { WriteBackError, type PaidTick, type PaidTickResult } from './writeback.js';
-import { buildPayLines, centsOf, isAccount, isPayable, nameKey, readPilotInfo, type IdentityBook, type LedgerView, type PayDraft, type PayLine } from './payroll.js';
+import type { FsHubApi } from '../fshub/client.js';
+import { fshubDistances } from './fshubDistances.js';
+import { buildPayLines, isAccount, isPayable, nameKey, readPilotInfo, rowStillAgrees, type BuildInput, type IdentityBook, type LedgerView, type PayDraft, type PayLine } from './payroll.js';
 
 /**
  * Paying the pilots of one airline: making the list of what is due (reading the airline's sheet, and the tab that has the pilots' accounts),
@@ -14,8 +16,14 @@ import { buildPayLines, centsOf, isAccount, isPayable, nameKey, readPilotInfo, t
  */
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 /** After a list could not be made (the sheet would not open), wait this long before trying again. */
 const RETRY_AFTER_MS = 30 * 60_000;
+/** A flight landed up to this long before its sheet day began, or this long after it (the same window the profit check uses). */
+const EARLY_MS = 6 * HOUR;
+const LATE_MS = 36 * HOUR;
+/** The most FsHub lookups (one per flight that lost money) one list makes: FsHub's request budget is shared with the rest of the bot. */
+const MAX_DISTANCE_LOOKUPS = 25;
 
 /** Why a list could not be made or paid, in words an admin can act on. */
 export class PayrollError extends Error {
@@ -36,6 +44,8 @@ export interface PayrollDeps {
   gateway: PaymentGateway;
   /** Ticks the Pilot Paid box of each flight that was paid. Without it (or where writing to the sheet is switched off) the boxes are left for a person to tick. */
   writeback?: PaidTicker | null;
+  /** Reads FsHub, for the distance of a flight that lost money (its pay depends on that). Without it, such flights are flagged to be checked. */
+  fshub?: Pick<FsHubApi, 'airlineFlights'> | null;
   fetchFn?: typeof fetch;
   now?: () => number;
   logger?: Logger;
@@ -118,15 +128,57 @@ export class Payroll {
     const infoCsv = await this.download({ id: settings.infoSheetId, gid: settings.infoGid }, 'the Pilot Info tab');
     const info = readPilotInfo(infoCsv);
     if (!info.ok) throw new PayrollError(`${info.reason}${info.headers.length > 0 ? ` The titles I can see are: ${info.headers.slice(0, 12).join(', ')}.` : ''}`);
-    const built = buildPayLines({
+    const input: BuildInput = {
       flights: sheet.flights,
       info: info.rows,
       startDay: settings.startDay,
       ledger: this.ledgerView(panel.id),
       identities: this.identities(panel.id),
       flightRef: (f) => this.d.store.getJobBySourceKey(panel.id, f.sourceKey)?.code ?? f.flightNumber,
-    });
+    };
+    let built = buildPayLines(input);
+    // A flight that lost money is paid by the distance flown. The first pass names the ones whose distance is not known yet; FsHub is asked
+    // about those, and the list is made again with what it said.
+    const distances = await this.lossDistances(panel, sheet.flights, built.lines);
+    if (distances.size > 0) built = buildPayLines({ ...input, distances });
     return { airline: panel.airlineName, made: this.now(), sourceAccount, lines: built.lines, waiting: built.waiting, unsettled: this.d.store.countUnsettledPayments(panel.id) };
+  }
+
+  /**
+   * The distance FsHub recorded for each flight on the list that lost money and has none yet, by the flight's key in the sheet. The FsHub flight is
+   * the one the pilot flew on that route that landed in the row's day (the bot keeps the airline's flights for a week); if there is not exactly
+   * one such flight, or two rows would be the same flight, or FsHub gives no distance, the flight is left out and stays flagged: a distance is
+   * never guessed. Never throws.
+   */
+  private async lossDistances(panel: Panel, flights: SheetFlight[], lines: PayLine[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const fshub = this.d.fshub;
+    const airlineId = panel.fshubAirlineId;
+    const needing = lines.filter((l) => l.flags.includes('no-distance'));
+    if (!fshub || airlineId === null || needing.length === 0) return out;
+    try {
+      const byKey = new Map(flights.map((f) => [f.sourceKey, f]));
+      const picks: Array<{ sourceKey: string; flightId: number }> = [];
+      for (const line of needing) {
+        const f = byKey.get(line.sourceKey);
+        if (!f || f.route.split('→').length !== 2) continue; // several legs are not one FsHub flight
+        const same = this.d.store
+          .listFshubFlights(panel.id, line.dep, line.arr, f.day - EARLY_MS, f.day + LATE_MS)
+          .filter((c) => (line.fshubId !== null ? c.pilotId === line.fshubId : c.pilotName !== null && nameKey(c.pilotName) === nameKey(f.pilot)));
+        if (same.length === 1) picks.push({ sourceKey: line.sourceKey, flightId: (same[0] as { flightId: number }).flightId });
+      }
+      const claims = new Map<number, number>();
+      for (const p of picks) claims.set(p.flightId, (claims.get(p.flightId) ?? 0) + 1);
+      const sole = picks.filter((p) => claims.get(p.flightId) === 1);
+      const found = await fshubDistances(fshub, airlineId, sole.map((p) => p.flightId), MAX_DISTANCE_LOOKUPS, this.log);
+      for (const p of sole) {
+        const nm = found.get(p.flightId);
+        if (nm !== undefined) out.set(p.sourceKey, nm);
+      }
+    } catch (e) {
+      this.log.warn('Looking up the distances of flights that lost money failed', e);
+    }
+    return out;
   }
 
   private async download(ref: SheetRef, what: string): Promise<string> {
@@ -202,7 +254,7 @@ export class Payroll {
       else if (!f.completed) skip('not-completed');
       else if (f.pilotPaid === true) skip('already-paid');
       else if (nameKey(f.pilot) !== nameKey(line.pilot)) skip('changed');
-      else if (!line.amended && !(parseMoney(f.payRaw) !== null && centsOf(parseMoney(f.payRaw) as number) === line.cents)) skip('changed');
+      else if (!line.amended && !rowStillAgrees(line, f)) skip('changed');
       else if (!line.account) skip('no-account');
       else toSend.push(line);
     }

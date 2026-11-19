@@ -46,6 +46,10 @@ export function lineText(l: PayLine): string {
     `${mark} **${l.n}** · ${plainText(truncate(l.pilot, 40))} · **${dollarsText(l.cents)}**${l.amended ? ' ✏️' : ''}${l.out ? ' · *left out of this run*' : ''}`,
     `↳ ${l.account ? `\`${l.account}\`` : '*no account*'} · \`${l.uniqueId}\``,
   ];
+  if (!l.out && !l.amended && l.sheetCents !== undefined) {
+    const why = l.lossNm !== undefined ? `for a loss flight of ${Math.round(l.lossNm).toLocaleString('en-US')} nm` : 'the minimum';
+    lines.push(`↳ 📋 the sheet says ${dollarsText(l.sheetCents)}; raised to ${dollarsText(l.cents)}${l.lossNm !== undefined ? ' ' : ', '}${why}`);
+  }
   if (!l.out && l.flags.length > 0) lines.push(`↳ ⚠️ ${l.flags.map((f) => FLAG_TEXT[f]).join('; ')}`);
   return lines.join('\n');
 }

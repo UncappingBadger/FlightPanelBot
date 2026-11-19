@@ -63,17 +63,19 @@ const PROBLEM_TEXT: Record<PayProblem, string> = {
 
 /** The pilot's pay for a row, in words and how it was worked out, or why there is none. Empty when its cell isn't going to be filled anyway. */
 function payText(p: PayPlan): string {
+  if (p.cell === 'zeroed') return ' · pilot pay: left at $0 (it was set back to $0 after I wrote one)';
   if (p.cell !== 'empty') return '';
   if (p.amount === null || p.problem !== null) return ` · pilot pay: ${p.problem ? PROBLEM_TEXT[p.problem] : 'not worked out'}`;
   const how = p.basis === 'share' ? '15% of the profit' : p.basis === 'minimum' ? 'the $2,000 minimum' : `loss, ${Math.round(p.distanceNm ?? 0).toLocaleString('en-US')} nm flown`;
   return ` · pilot pay ${formatMoney(p.amount)} (${how})`;
 }
 
-/** How the pay of the blank rows stands: to be filled, already filled in (left alone), or not worked out. */
-function paySummary(fills: ProfitFillPlan[]): { fill: number; kept: number; none: number; noColumn: number } {
+/** How the pay of the blank rows stands: to be filled, already filled in or set back to $0 on purpose (left alone), or not worked out. */
+function paySummary(fills: ProfitFillPlan[]): { fill: number; kept: number; zeroed: number; none: number; noColumn: number } {
   return {
     fill: fills.filter((f) => f.payPlan.cell === 'empty' && f.payPlan.amount !== null).length,
     kept: fills.filter((f) => f.payPlan.cell === 'filled').length,
+    zeroed: fills.filter((f) => f.payPlan.cell === 'zeroed').length,
     none: fills.filter((f) => f.payPlan.cell === 'empty' && f.payPlan.amount === null).length,
     noColumn: fills.filter((f) => f.payPlan.cell === 'missing').length,
   };
@@ -98,9 +100,10 @@ function payBullet(fills: ProfitFillPlan[]): string {
   const s = paySummary(fills);
   if (s.noColumn === fills.length) return '• 💵 The sheet has no Pilot Pay column, so only Profit Made would be filled';
   const parts = [
-    ...(s.fill > 0 ? [`**${s.fill}** empty, with a pay I can work out`] : []),
-    ...(s.none > 0 ? [`**${s.none}** empty, with a pay I can't work out yet`] : []),
-    ...(s.kept > 0 ? [`**${s.kept}** already filled in (left exactly as they are)`] : []),
+    ...(s.fill > 0 ? [`**${s.fill}** empty or $0, with a pay I can work out`] : []),
+    ...(s.none > 0 ? [`**${s.none}** empty or $0, with a pay I can't work out yet`] : []),
+    ...(s.kept > 0 ? [`**${s.kept}** already have a pay in them (left exactly as they are)`] : []),
+    ...(s.zeroed > 0 ? [`**${s.zeroed}** set back to $0 after I wrote one (left alone)`] : []),
   ];
   return `• 💵 Pilot Pay beside those: ${parts.join(', ')}`;
 }
@@ -151,15 +154,16 @@ export function previewText(airline: string, fills: ProfitFillPlan[], note = '')
 function payIntro(fills: ProfitFillPlan[]): string {
   const s = paySummary(fills);
   const left = [
-    ...(s.kept > 0 ? [`**${s.kept}** already have something in Pilot Pay`] : []),
+    ...(s.kept > 0 ? [`**${s.kept}** already have a pay in Pilot Pay`] : []),
+    ...(s.zeroed > 0 ? [`**${s.zeroed}** were set back to $0 after I wrote a pay`] : []),
     ...(s.none > 0 ? [`**${s.none}** have a pay I can't work out`] : []),
   ];
   const tail = left.length > 0 ? ` (${left.join('; ')}: left as they are)` : '';
-  const nothingElse = ' I would change nothing else, and no cell that has anything in it.';
+  const nothingElse = ' I would change nothing else, and no other cell that has anything in it.';
   if (s.noColumn === fills.length) return `. The sheet has no Pilot Pay column.${nothingElse}`;
   if (s.fill === 0) return `${tail}.${nothingElse}`;
   const rule = "15% of the profit, rounded up to a whole dollar (at least $2,000), or for a flight that lost money $2,000 plus $1,000 per 500 nm beyond the first 1,000, by FsHub's distance";
-  return `, and the pilot's pay into **${s.fill}** empty Pilot Pay cell${s.fill === 1 ? '' : 's'}: ${rule}${tail}.${nothingElse}`;
+  return `, and the pilot's pay into **${s.fill}** Pilot Pay cell${s.fill === 1 ? '' : 's'} that ${s.fill === 1 ? 'is' : 'are'} empty or $0: ${rule}${tail}.${nothingElse}`;
 }
 
 export function profitButtons(token: string, count: number): ActionRowBuilder<MessageActionRowComponentBuilder>[] {
@@ -354,6 +358,8 @@ export const profitHandler: ComponentHandler = {
     }
     try {
       const result = await ctx.writeback.fillProfits(panel, wanted.fills);
+      // Remember which pay cells were written by this bot: one that is later set back to $0 is then known to be somebody's own choice.
+      if (result.paid.length > 0) ctx.store.recordPayWrites(panel.id, result.paid.map((p) => ({ sourceKey: p.sourceKey, cents: Math.round(p.value * 100) })), now);
       const skipped = new Map<string, number>();
       for (const s of result.skipped) skipped.set(s.reason, (skipped.get(s.reason) ?? 0) + 1);
       const lines = [

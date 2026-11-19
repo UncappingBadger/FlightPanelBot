@@ -70,6 +70,15 @@ function isEcho(leg: LegView): boolean {
   return Boolean(written && leg.sheetHolder && written.trim().toLowerCase() === leg.sheetHolder.trim().toLowerCase());
 }
 
+/**
+ * The title and notes of a flight, as a line. The schedule's own *Backup Pilot* name is one of the notes ("Backup: Sam"); where the flight has a
+ * backup pilot here, the panel shows that person itself (and the bot writes their name in that cell), so the note would only say it twice.
+ */
+function aboutOf(view: JobView): string {
+  const notes = view.backup ? (view.job.notes ?? '').split(' · ').filter((part) => !part.startsWith('Backup: ')).join(' · ') : view.job.notes;
+  return [view.job.title, notes].filter(Boolean).join(' - ');
+}
+
 /** One job as the block of text shown on the panel and in DMs. */
 export function jobBlock(view: JobView, now: number): string {
   const { job, legs } = view;
@@ -84,7 +93,7 @@ export function jobBlock(view: JobView, now: number): string {
 
   const lines = [head.join(' · ')];
   if (meta.length) lines.push(meta.join(' · '));
-  const about = [job.title, job.notes].filter(Boolean).join(' - ');
+  const about = aboutOf(view);
   if (about) lines.push(`*${truncate(about, 160)}*`);
 
   if (legs.length === 1) {
@@ -249,7 +258,7 @@ export function openCard(view: JobView, now: number, avatars?: Avatars, opts: { 
   const { job, legs } = view;
   const taken = isTaken(view);
   const title = [job.code, legs.length > 1 ? `${legs.length} legs` : '', job.aircraft ? plainText(truncate(job.aircraft, 20)) : ''].filter(Boolean).join(' · ');
-  const about = [job.title, job.notes].filter(Boolean).join(' - ');
+  const about = aboutOf(view);
   const e = new EmbedBuilder()
     .setColor(taken ? COLORS.taken : COLORS.open)
     .setTitle(title)

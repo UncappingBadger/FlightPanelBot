@@ -108,8 +108,15 @@ flight has one backup; if the flight you name can't be backed up, the bot says w
 panel shows the backup's name on the flight (*BACKUP*). If the pilot gives the flight back, an
 admin frees it, or the airline drops it, the bot DMs the backup that their spot has ended (and, if it's open again, that
 they can take it). Stand down any time from **My flights**. The backup is not made the pilot automatically: they
-press **Reserve** if they still want the flight. A backup named in the sheet's *Backup Pilot* column still shows as a note on
-the flight; a Discord backup is not written to the sheet. Where a role is needed to reserve, it is needed to be a backup too.
+press **Reserve** if they still want the flight. Where the bot writes to the sheet and the sheet has a *Backup Pilot* column, the
+backup's name is written into that cell for a single-leg flight, on the same terms as a reservation writes the *Pilot* cell: only
+into an empty cell, never over another name or a finished flight (the bot says so and doesn't make you the backup), and it comes
+off again, if it is still the name the bot wrote, when they stand down, give the flight back, an admin frees it, or `name <your
+name>` changes it. A backup named in the sheet's *Backup Pilot* column by a person still shows as a note on the flight. Once an hour
+the bot also **goes back over every backup already down for a flight** and writes in any whose name never reached the sheet (they
+were put down before the bot wrote backups there, or the sheet could not be reached at the time), leaving alone any cell that
+names someone else or any finished flight, and never undoing the backup itself. Where a role is needed to reserve, it is needed
+to be a backup too.
 
 **My contributions.** **DM the bot `my contributions`** to see what the flights you completed made for the airline over the
 last 7 days (today and the six days before it, Zulu). The bot reads the airline's linked Google Sheet, finds the flights
@@ -523,7 +530,7 @@ The tab is found by its column headings, in any order. The layout it understands
 | `Date` | the day the landing window opens, month first (`11/12/2026`) or `2026-11-12` |
 | `Landing Window Zulu` | `0600-2359z`, ` 1200 - 0600z` (an end earlier than the start runs into the next day), weekday words ignored. Times are UTC and shown to each pilot in their own timezone. |
 | `Pilot` | a name already against the flight. It shows on the panel as *(in the schedule)* and can't be reserved. `CANCELLED` closes the flight. |
-| `Backup Pilot` | shown as a note on the flight |
+| `Backup Pilot` | shown as a note on the flight (the bot also writes a backup pilot's name here when they stand by, see [Writing to the sheet](#writing-to-the-sheet)) |
 | `Aircraft` | the required airframe |
 | `Flight Completed (by Pilot)` | `TRUE` takes the flight off the open list and shows it on the panel as ✅ completed, with the pilot's name, for 24 hours (see below). A `CANCELLED` pilot is never shown as completed. |
 | `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
@@ -771,10 +778,13 @@ sheet's numbers, unless an admin asks.
   a **loss** still pays **$2,000, plus $1,000 for every further 500 nautical miles beyond the first 1,000** (a started 500 counts, so 1,001 nm pays $3,000
   and 1,502 nm pays $4,000). The distance is **FsHub's**: the bot asks FsHub for each such flight (one request each, at most 25 a run, and it stops if FsHub
   says it is busy), and the logbook's own distance has to agree with it to within a mile. If FsHub gives none, or the two disagree, **no pay is worked out for
-  that flight** and the preview says why: it never guesses. The pay goes in on the very same terms as the profit: **only into a Pilot Pay cell with nothing
-  in it at all** (a formula, a zero, a note or a stray space all count as something), checked again when *Write* is pressed, as a number. A sheet whose Pilot
-  Pay cells already hold formulas or amounts therefore gets only its profits; the preview says how many Pilot Pay cells were left as they are. A pay is only
-  ever written beside a profit the bot is writing in the same row.
+  that flight** and the preview says why: it never guesses. The pay goes in **only into a Pilot Pay cell that has no pay in it**: empty, or holding just a
+  zero (`$0`, `0`), since a column formatted as money shows `$0` for an empty cell. **Anything above zero is left exactly as it is**, and so is a formula (even
+  one that works out to zero), a note or a stray space. Both what the cell shows and what is stored in it are checked again when *Write* is pressed, and the
+  pay is written as a number. A sheet whose Pilot Pay cells already hold amounts or formulas therefore gets only its profits; the preview says how many Pilot
+  Pay cells were left as they are. The bot remembers each Pilot Pay cell it writes: if someone later sets one back to `$0` on purpose, the bot sees that it
+  wrote there before, treats the zero as their decision, and leaves it at `$0` (the preview says so). A pay is only ever written beside a profit the bot is
+  writing in the same row.
 - **What counts as the same flight.** A completed row is matched to the logbook flight with the same two airports that landed in the row's day (a little
   before it, or up to a day and a half after it begins), flown under the airline's own callsign (the code and a number, as for landing times); if
   several flights could be it, the pilot's name decides, and if that does not, the row is left alone. A flight cannot belong to two rows, and a flight of
@@ -910,11 +920,12 @@ A-1002,EGLL-EGCC-EGPH,A320,2026-11-12 08:00,2026-11-15 20:00,"28,000","Two legs,
 
 Optional. With a Google service account the sheet's owner shares the sheet with, the bot also writes: a pilot's
 name into the **Pilot** cell when they reserve, cleared when they give the flight back, and the **Flight
-Completed** box ticked when they press **Complete**. It touches only those two cells of that flight's row, and
+Completed** box ticked when they press **Complete**, and a backup pilot's name into the **Backup Pilot** cell when they stand by (if the sheet has that
+column; cleared again when their spot ends). It touches only those three cells of that flight's row, and
 re-reads the tab and finds the row by route and date before every write. The only other things it writes are *blank* cells:
 the **Distance (NM)** of a flight, if the sheet has that column (see [The Distance column](#the-distance-column)), and a *blank*
-**Profit Made** cell (and the pilot's pay in a blank **Pilot Pay** cell beside it), which only happens when an admin asks for exactly that and confirms it (see
-[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)). It never changes a cell that has anything in it. It refuses rather than overwrite if the
+**Profit Made** cell (and the pilot's pay in a blank or `$0` **Pilot Pay** cell beside it), which only happens when an admin asks for exactly that and confirms it (see
+[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)). It never changes any other cell that has anything in it. It refuses rather than overwrite if the
 sheet already names someone else or shows the flight finished, and a *completion* is never recorded if the sheet
 can't be updated, so the two never disagree. Names are written as plain text, never as formulas.
 

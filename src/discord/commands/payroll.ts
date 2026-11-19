@@ -49,7 +49,7 @@ export function payrollSettingsText(ctx: BotContext, panel: Panel, s: PayrollSet
       ? '• After a payment goes through, I tick **Pilot Paid** on its row in the sheet (only an empty box is ever ticked).'
       : "• After a payment goes through, **Pilot Paid** can't be ticked for you: writing to the sheet isn't switched on for this panel (`/setup writeback`), so the Pay result lists the rows to tick by hand.",
     connected ? '• The bank connection is **on**.' : "• ⚠️ **Paying isn't connected to Aeroconomy yet** (the bot has no access to the airline's bank account). You get the list and can check and amend it, but **Pay** stops there: nothing is sent and nothing is recorded as paid.",
-    '• A payment is only ever made once: each has a unique ID that is kept, and the pay is taken from the sheet\'s Pilot Pay column. `/payroll run` makes a list now.',
+    "• A payment is only ever made once: each has a unique ID that is kept. The pay is taken from the sheet's Pilot Pay column, but never less than **$2,000** a flight, and a flight that lost money gets $2,000 for its first 1,000 nm and $1,000 more for every further 500 nm, by the distance FsHub recorded. `/payroll run` makes a list now.",
   ].join('\n');
 }
 

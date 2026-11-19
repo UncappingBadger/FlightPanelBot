@@ -760,6 +760,44 @@ export class Store {
     return this.run('INSERT OR IGNORE INTO job_backups(job_id, discord_id, username, created_at) VALUES (?,?,?,?)', jobId, discordId, username, now).changes > 0;
   }
 
+  /**
+   * Remember what happened when this bot looked at the sheet's Backup Pilot cell for a job's backup: the name it wrote there, or an empty string
+   * for "looked, and wrote nothing" (the sheet names someone else, or shows the flight finished), so that it is not looked at again. Null is "not
+   * looked at yet".
+   */
+  setBackupSheetName(jobId: number, discordId: string, name: string | null): void {
+    this.run('UPDATE job_backups SET sheet_name = ? WHERE job_id = ? AND discord_id = ?', name, jobId, discordId);
+  }
+
+  /** The name this bot wrote in the sheet for a job's backup, and the job's key in the sheet; null if there is no backup or nothing was written. */
+  getBackupSheetName(jobId: number): { name: string; sourceKey: string; discordId: string } | null {
+    const r = this.get("SELECT b.sheet_name, b.discord_id, j.source_key FROM job_backups b JOIN jobs j ON j.id = b.job_id WHERE b.job_id = ? AND b.sheet_name IS NOT NULL AND b.sheet_name <> ''", jobId);
+    return r ? { name: s(r.sheet_name), sourceKey: s(r.source_key), discordId: s(r.discord_id) } : null;
+  }
+
+  /** The names this bot has written in sheets for this person as a backup, with the flight each is against (open flights only). */
+  listSheetBackupsByUser(discordId: string): Array<{ panelId: number; jobId: number; sourceKey: string; sheetName: string }> {
+    return this.all(
+      `SELECT j.panel_id, j.id AS job_id, j.source_key, b.sheet_name FROM job_backups b JOIN jobs j ON j.id = b.job_id
+       WHERE b.discord_id = ? AND b.sheet_name IS NOT NULL AND b.sheet_name <> '' AND j.status = 'open'`,
+      discordId,
+    ).map((r) => ({ panelId: n(r.panel_id), jobId: n(r.job_id), sourceKey: s(r.source_key), sheetName: s(r.sheet_name) }));
+  }
+
+  /**
+   * The open flights of a panel that have a backup pilot whose name this bot has never tried to put in the sheet (they were put down before it
+   * wrote backups there, or the sheet could not be reached then), oldest first. Only flights of one leg: a sheet row is one leg.
+   */
+  listUnloggedBackups(panelId: number): Array<{ jobId: number; discordId: string; username: string; sourceKey: string; code: string }> {
+    return this.all(
+      `SELECT j.id AS job_id, j.source_key, j.code, b.discord_id, b.username FROM job_backups b JOIN jobs j ON j.id = b.job_id
+       WHERE j.panel_id = ? AND j.status = 'open' AND b.sheet_name IS NULL
+         AND (SELECT COUNT(*) FROM job_legs l WHERE l.job_id = j.id) = 1
+       ORDER BY b.created_at, j.id`,
+      panelId,
+    ).map((r) => ({ jobId: n(r.job_id), discordId: s(r.discord_id), username: s(r.username), sourceKey: s(r.source_key), code: s(r.code) }));
+  }
+
   /** Take the backup off a job. With `discordId`, only if that person is the backup. True if one was removed. */
   deleteBackup(jobId: number, discordId?: string): boolean {
     return discordId === undefined
@@ -1576,6 +1614,20 @@ export class Store {
   /** Drop a panel's older lists when a new one is made, and any that have run out. */
   clearPayrollDrafts(panelId: number, now: number): void {
     this.run('DELETE FROM payroll_drafts WHERE panel_id = ? OR expires_at <= ?', panelId, now);
+  }
+
+  /* ------------------------------------------------------------------ Pilot Pay cells this bot wrote */
+
+  /** Remember that these flights' Pilot Pay cells were written by this bot (a flight written again keeps one record, with the newest amount). */
+  recordPayWrites(panelId: number, writes: Array<{ sourceKey: string; cents: number }>, now: number): void {
+    this.tx(() => {
+      for (const w of writes) this.run('INSERT OR REPLACE INTO pay_writes(panel_id, source_key, cents, written_at) VALUES (?,?,?,?)', panelId, w.sourceKey, w.cents, now);
+    });
+  }
+
+  /** The flights (by their key in the sheet) whose Pilot Pay cell this bot has written. */
+  payWrittenKeys(panelId: number): Set<string> {
+    return new Set(this.all('SELECT source_key FROM pay_writes WHERE panel_id = ?', panelId).map((r) => s(r.source_key)));
   }
 }
 

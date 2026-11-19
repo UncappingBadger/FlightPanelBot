@@ -1,6 +1,7 @@
 import { canon, parseCsv } from '../jobs/import.js';
 import { formatMoney, parseMoney, type SheetFlight } from './contributions.js';
 import { parsePilotId } from './pilotId.js';
+import { PAY_MINIMUM, pilotPay } from './pilotPay.js';
 
 /**
  * Working out who is to be paid what, from the airline's own sheet. No money moves here and nothing is written anywhere: this turns the
@@ -20,6 +21,50 @@ export const cleanAccount = (text: string): string => text.replace(/[‐-―−]
 export const isAccount = (text: string): boolean => ACCOUNT_PATTERN.test(text);
 
 export const centsOf = (dollars: number): number => Math.round(dollars * 100);
+
+/** What is to be paid for a flight, and how it compares with what the sheet's Pilot Pay cell says. */
+export interface PayAmount {
+  cents: number;
+  /** The cell's own amount when the pay is more than it (so the list can say so); null when the cell is paid as it stands. */
+  sheetCents: number | null;
+  /** The distance, in nautical miles, the pay was worked out from (a flight that lost money, with FsHub's distance known); null otherwise. */
+  lossNm: number | null;
+  /** The flight lost money and its distance is not known, so the pay by distance could not be worked out and has to be checked. */
+  needsDistance: boolean;
+}
+
+/**
+ * What to pay for a flight whose Pilot Pay cell holds an amount: the cell's amount, but never less than the airline's rule gives.
+ * Aeroconomy's own pay for a flight is a share of its profit ($34 on $225), which is not what the airline pays:
+ *
+ *  - every flight pays at least the $2,000 minimum (a flight that made a profit, or lost money);
+ *  - a flight that lost money pays $2,000 for the first 1,000 nm and $1,000 more for every further 500 nm (a started 500 counting as a whole
+ *    one), by the distance FsHub recorded (`nm`). Without that distance it can only be raised to the minimum, and says so (`needsDistance`).
+ *
+ * A cell that already holds more than the rule is paid as it stands. Null when the cell holds no amount (or $0, which is how an unfinished
+ * row is kept): no pay is due yet.
+ */
+export function payAmount(f: Pick<SheetFlight, 'payRaw' | 'profit'>, nm: number | null): PayAmount | null {
+  const dollars = parseMoney(f.payRaw);
+  if (dollars === null || dollars <= 0) return null;
+  const cell = centsOf(dollars);
+  const lost = f.profit !== null && f.profit < 0;
+  const byDistance = lost && nm !== null ? pilotPay(f.profit as number, nm) : null;
+  const rule = centsOf(byDistance ? byDistance.amount : PAY_MINIMUM);
+  const cents = Math.max(cell, rule);
+  return { cents, sheetCents: cents > cell ? cell : null, lossNm: byDistance ? nm : null, needsDistance: lost && byDistance === null };
+}
+
+/**
+ * Whether a flight's row still says what a line on a list was made from: the Pilot Pay cell holds what it held then, and a flight whose pay was
+ * worked out by distance is still one that lost money. (A payment an admin amended is the admin's, and is not checked against the cell.)
+ */
+export function rowStillAgrees(line: Pick<PayLine, 'cents' | 'sheetCents' | 'lossNm'>, f: Pick<SheetFlight, 'payRaw' | 'profit'>): boolean {
+  const dollars = parseMoney(f.payRaw);
+  if (dollars === null || centsOf(dollars) !== (line.sheetCents ?? line.cents)) return false;
+  return line.lossNm === undefined || (f.profit !== null && f.profit < 0);
+}
+
 /** `$8,131`, or `$8,131.50` when there are cents. */
 export const dollarsText = (cents: number): string => formatMoney(cents / 100);
 
@@ -33,7 +78,8 @@ export type PayFlag =
   | 'id-mismatch' // the bot ties this name to another FsHub ID
   | 'name-differs' // FsHub knows this ID under a different name
   | 'account-changed' // not the account this pilot was last paid into
-  | 'bad-amount'; // not a sensible amount
+  | 'bad-amount' // not a sensible amount
+  | 'no-distance'; // lost money, so its pay depends on the distance flown, and FsHub's distance for it is not known
 
 export const FLAG_TEXT: Record<PayFlag, string> = {
   'no-info': 'not on the Pilot Info tab',
@@ -45,6 +91,7 @@ export const FLAG_TEXT: Record<PayFlag, string> = {
   'name-differs': 'FsHub knows that ID by another name',
   'account-changed': 'not the account they were last paid into',
   'bad-amount': 'the amount is not between $0.01 and $500,000',
+  'no-distance': "it lost money, so its pay depends on the distance flown, and I couldn't get FsHub's distance for it: check the amount",
 };
 
 /** One payment on a list. */
@@ -59,6 +106,10 @@ export interface PayLine {
   fshubId: number | null;
   account: string | null;
   cents: number;
+  /** When the sheet's Pilot Pay was less than the airline's rule gives and `cents` is the rule's amount instead: what the sheet says. Absent otherwise. */
+  sheetCents?: number;
+  /** When the pay was worked out from the distance FsHub recorded for a flight that lost money: that distance, in nautical miles. Absent otherwise. */
+  lossNm?: number;
   uniqueId: string;
   dep: string;
   arr: string;
@@ -188,6 +239,8 @@ export interface BuildInput {
   identities: IdentityBook;
   /** The airline's own number for a flight (`WLF516`), if the bot has one for the sheet row. */
   flightRef(row: SheetFlight): string | null;
+  /** The distance FsHub recorded for flights, in nautical miles, by the flight's key in the sheet: what a flight that lost money is paid by. */
+  distances?: ReadonlyMap<string, number>;
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -222,23 +275,24 @@ const endpoints = (route: string): { dep: string; arr: string } => {
 export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: number } {
   const { ledger, identities } = input;
   let waiting = 0;
-  const due: Array<{ flight: SheetFlight; cents: number }> = [];
+  const due: Array<{ flight: SheetFlight; pay: PayAmount }> = [];
   for (const f of input.flights) {
     if (!f.completed || f.pilot.trim() === '' || (input.startDay !== null && f.day < input.startDay)) continue;
     if (f.pilotPaid === true || ledger.isTaken(f.sourceKey, f.pilot)) continue;
-    const dollars = parseMoney(f.payRaw);
-    if (dollars === null || dollars <= 0) {
+    const pay = payAmount(f, input.distances?.get(f.sourceKey) ?? null);
+    if (pay === null) {
       waiting++;
       continue;
     }
-    due.push({ flight: f, cents: centsOf(dollars) });
+    due.push({ flight: f, pay });
   }
   due.sort((a, b) => a.flight.day - b.flight.day || a.flight.row - b.flight.row);
 
   const infoByName = new Map<string, PilotInfoRow[]>();
   for (const r of input.info) infoByName.set(nameKey(r.name), [...(infoByName.get(nameKey(r.name)) ?? []), r]);
 
-  const drafts = due.map(({ flight: f, cents }) => {
+  const drafts = due.map(({ flight: f, pay }) => {
+    const { cents, sheetCents, lossNm } = pay;
     const matches = infoByName.get(nameKey(f.pilot)) ?? [];
     const info = matches.length === 1 ? (matches[0] as PilotInfoRow) : null;
     const flags: PayFlag[] = [];
@@ -249,7 +303,8 @@ export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: n
     // With no row on the Pilot Info tab there is no account to judge, only the amount.
     for (const flag of structuralFlags(account, cents)) if (info || flag === 'bad-amount') flags.push(flag);
     if (info) flags.push(...identityFlags(f.pilot, info, identities, ledger, account));
-    return { f, cents, account, fshubId, flags: [...new Set(flags)], ...endpoints(f.route) };
+    if (pay.needsDistance) flags.push('no-distance');
+    return { f, cents, sheetCents, lossNm, account, fshubId, flags: [...new Set(flags)], ...endpoints(f.route) };
   });
 
   const base = (d: (typeof drafts)[number]) => `${d.fshubId ?? 'NOID'}-${d.dep}-${d.arr}-${dateStamp(d.f.day)}`;
@@ -275,6 +330,8 @@ export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: n
       fshubId: d.fshubId,
       account: d.account,
       cents: d.cents,
+      ...(d.sheetCents !== null ? { sheetCents: d.sheetCents } : {}),
+      ...(d.lossNm !== null ? { lossNm: d.lossNm } : {}),
       uniqueId: unique,
       dep: d.dep,
       arr: d.arr,

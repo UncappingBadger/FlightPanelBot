@@ -339,8 +339,9 @@ export class JobService {
     const view = this.store.getJobView(jobId);
     if (!view?.backup) return;
     if (reason === 'freed' && view.legs.some((l) => l.holder || l.sheetHolder)) return;
+    const written = this.store.getBackupSheetName(jobId);
     this.store.deleteBackup(jobId);
-    into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: view.job.code, reason });
+    into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: view.job.code, reason, ...(written ? { sourceKey: written.sourceKey, sheetName: written.name } : {}) });
   }
 
   /** Close jobs whose deadline has passed. Returns the panels that changed. */
@@ -656,10 +657,17 @@ export class JobService {
 
   /** Stand down as the backup for a flight. True if they were the backup. */
   removeBackup(jobId: number, discordId: string): boolean {
+    const written = this.store.getBackupSheetName(jobId);
     const removed = this.store.deleteBackup(jobId, discordId);
     if (removed) {
       const job = this.store.getJob(jobId);
-      if (job) this.events.emit({ type: 'changed', panelId: job.panelId });
+      if (job) {
+        this.events.emit({ type: 'changed', panelId: job.panelId });
+        // Where their name was written in the sheet it comes off again: whoever listens to this does that (and sends nobody a message).
+        if (written && written.discordId === discordId) {
+          this.events.emit({ type: 'backup-ended', notice: { panelId: job.panelId, discordId, jobCode: job.code, reason: 'stood-down', sourceKey: written.sourceKey, sheetName: written.name } });
+        }
+      }
     }
     return removed;
   }

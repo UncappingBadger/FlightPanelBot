@@ -292,6 +292,20 @@ async function renamePilot(ctx: BotContext, user: Person & { send: Message['auth
       ctx.log.warn(`Could not rename ${r.sheetName} in the sheet: ${e instanceof Error ? e.message : e}`);
     }
   }
+  // The same for the flights they stand by as backup for, where their name is in the Backup Pilot cell.
+  for (const b of ctx.store.listSheetBackupsByUser(user.id)) {
+    const panel = ctx.store.getPanel(b.panelId);
+    if (sameName(b.sheetName, name) || !panel || !ctx.writeback?.enabledFor(panel)) continue;
+    try {
+      if (await ctx.writeback.renameBackup(panel, b.sourceKey, b.sheetName, name)) {
+        ctx.store.setBackupSheetName(b.jobId, user.id, name);
+        moved++;
+      }
+    } catch (e) {
+      failed++;
+      ctx.log.warn(`Could not rename ${b.sheetName} as a backup in the sheet: ${e instanceof Error ? e.message : e}`);
+    }
+  }
   await say(
     user,
     [
@@ -573,8 +587,8 @@ async function startBackup(ctx: BotContext, interaction: ButtonInteraction, pane
  * leg, it already has a backup, it is theirs) say why and let them try another ID; the conversation stays open.
  */
 async function backUpFlight(ctx: BotContext, user: Message['author'], session: DmSession, view: JobView): Promise<void> {
-  const problem = ctx.jobs.backupProblem(view, user.id);
-  if (problem) {
+  // Something wrong with the flight they named: say so and let them try another ID (a few times).
+  const reject = async (problem: string): Promise<void> => {
     const attempts = session.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) {
       ctx.store.deleteSession(user.id);
@@ -583,14 +597,47 @@ async function backUpFlight(ctx: BotContext, user: Message['author'], session: D
     }
     ctx.store.upsertSession({ ...session, attempts, expiresAt: ctx.now() + SESSION_TTL_MS });
     await say(user, `${problem}\nSend a different flight ID, or say \`cancel\`.`);
-    return;
-  }
+  };
+  const problem = ctx.jobs.backupProblem(view, user.id);
+  if (problem) return reject(problem);
   const done = ctx.jobs.addBackup(view.job.id, { discordId: user.id, username: user.username });
+  const sheet = await backupToSheet(ctx, user, done);
+  if (sheet.kind === 'undone') return reject(`⚠️ ${sheet.message} So I haven't put you down as backup for **${done.job.code}**.`);
   ctx.store.deleteSession(user.id);
+  const note =
+    sheet.kind === 'written'
+      ? `\n📝 I've put **${plainText(sheet.name)}** as the backup in the airline's sheet. Not how you appear there? Reply \`name <your name>\` and I'll use that from now on.`
+      : sheet.kind === 'unreachable'
+        ? `\n⚠️ I couldn't update the airline's sheet (${sheet.message}), so it doesn't show you as the backup yet. Please ask a manager to add you to the *Backup Pilot* cell for **${done.job.code}** there.`
+        : '';
   await say(
     user,
-    `🛟 You're down as backup for **${done.job.code}** (${routeText(done.legs)}). The panel shows your name. If the pilot gives it back I'll tell you, and you can stand down any time from **My flights**.`,
+    `🛟 You're down as backup for **${done.job.code}** (${routeText(done.legs)}). The panel shows your name. If the pilot gives it back I'll tell you, and you can stand down any time from **My flights**.${note}`,
   );
+}
+
+/**
+ * Put a new backup pilot's name in the flight's *Backup Pilot* cell, where the panel's sheet is written to (and has that column, and the flight is
+ * a single leg, like a reservation). If the sheet already names someone else as backup, or shows the flight finished, the backup is undone and the
+ * person told, as a reservation is. If the sheet can't be reached the backup stands, and they are told it isn't in the sheet yet.
+ */
+async function backupToSheet(ctx: BotContext, user: Person, view: JobView): Promise<SheetResult> {
+  const panel = ctx.store.getPanel(view.job.panelId);
+  if (!panel || !writesToSheet(ctx, panel, view.legs.length)) return { kind: 'none' };
+  const name = pilotNameFor(ctx, user);
+  try {
+    if (!(await ctx.writeback!.claimBackup(panel, view.job.sourceKey, name))) return { kind: 'none' }; // the sheet has no Backup Pilot column
+  } catch (e) {
+    if (!(e instanceof WriteBackError)) throw e;
+    if (e.code === 'CONFLICT' || e.code === 'CLOSED') {
+      ctx.jobs.removeBackup(view.job.id, user.id);
+      return { kind: 'undone', message: e.message };
+    }
+    ctx.log.warn(`Could not write the backup for ${view.job.code} to the sheet: ${e.message}`);
+    return { kind: 'unreachable', message: e.message };
+  }
+  ctx.store.setBackupSheetName(view.job.id, user.id, name);
+  return { kind: 'written', name };
 }
 
 /**

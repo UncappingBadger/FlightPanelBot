@@ -45,6 +45,7 @@ import { DEBUG_SHEET_INTERVAL_MS, SourceRefresher } from './services/refresh.js'
 import { ReminderService } from './services/reminders.js';
 import { Scheduler } from './services/scheduler.js';
 import { SheetWriteBack } from './services/writeback.js';
+import { BackupSheetCheck, backupSheetCleaner } from './services/backupSheet.js';
 import { DEBUG_BUILD, dbg } from './util/debugBuild.js';
 import { LocalSheet, localSheetFetch } from './google/localSheet.js';
 import { createLogger, type Logger } from './util/log.js';
@@ -198,7 +199,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     : null;
   // Paying pilots: the list of what is due is made from the airline's sheet, checked by an admin, and (once the bank is connected) paid. It is built
   // but switched off (see src/features.ts) until the bank connection exists: unless a developer turns it on, nothing of it is registered or run.
-  const payroll = payrollEnabled() ? new Payroll({ store, gateway: new NotConnectedGateway(), writeback, logger: log }) : null;
+  const payroll = payrollEnabled() ? new Payroll({ store, gateway: new NotConnectedGateway(), writeback, fshub, logger: log }) : null;
   if (payroll) log.info(`Paying pilots is switched on (${PAYROLL_FLAG}). There is no bank connection, so nothing can be paid.`);
   let payrollDaily: PayrollDaily | null = null;
   const scheduler = new Scheduler(jobs, refresher, {
@@ -212,6 +213,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     etas,
     numbers: aeroNumbers,
     departures,
+    ...(writeback ? { backups: new BackupSheetCheck({ store, writeback, logger: log }) } : {}),
     ...(dailyNote ? { daily: dailyNote } : {}),
     ...(fshubSync ? { fshub: fshubSync } : {}),
     ...(autoComplete ? { autoComplete } : {}),
@@ -234,6 +236,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   market.attach(client);
   notifier = new Notifier(client, panels, log);
   notifier.subscribe(events);
+  events.subscribe(backupSheetCleaner({ store, writeback, logger: log }));
   registerInteractionRouter(client, ctx);
   if (payroll) payrollDaily = new PayrollDaily(ctx, client);
 

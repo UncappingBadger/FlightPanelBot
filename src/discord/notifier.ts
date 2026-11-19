@@ -75,6 +75,8 @@ export class Notifier {
     if (event.type === 'backup-ended') {
       // A backup whose flight has nobody flying it any more (or is gone) is told, so they can take it themselves if they want it.
       const b = event.notice;
+      if (b.reason === 'stood-down') return; // they did it themselves
+
       try {
         const user = await this.client.users.fetch(b.discordId);
         await user.send({

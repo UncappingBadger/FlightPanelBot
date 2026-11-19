@@ -60,6 +60,13 @@ export function parseMoney(text: string | null | undefined): number | null {
   return Number.isFinite(n) ? (negative ? -n : n) : null;
 }
 
+/**
+ * Whether a Pilot Pay cell, as it shows or is stored, has no pay in it: nothing at all, or a plain zero (`$0`, `0`, `$0.00`). A column
+ * formatted as money fills its empty cells with $0, so a zero is not somebody's decision to pay nothing, and may be written over. Anything
+ * else, a note (`TBD`), a stray space or a formula, even one that works out to zero, is somebody's, and is not.
+ */
+export const isUnsetPay = (text: string | null | undefined): boolean => (text ?? '') === '' || parseMoney(text) === 0;
+
 /** `$1,234`, `-$114,799`, `$1,234.50`: whole amounts without cents, as the sheet is usually kept. */
 export function formatMoney(amount: number): string {
   const rounded = Math.round(amount * 100) / 100;

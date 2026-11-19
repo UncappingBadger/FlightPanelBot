@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../src/db/db.js';
-import { Store } from '../src/db/store.js';
+import { Store, type FlownFlight } from '../src/db/store.js';
 import { commands, commandSet, componentHandlers, handlerSet } from '../src/discord/commands/index.js';
 import { payrollCommand } from '../src/discord/commands/payroll.js';
 import { PAYROLL_FLAG, payrollEnabled } from '../src/features.js';
@@ -20,6 +20,7 @@ import {
   MAX_PAYMENT_CENTS,
   parseAmount,
   readPilotInfo,
+  rowStillAgrees,
   summarise,
   type IdentityBook,
   type LedgerView,
@@ -34,7 +35,7 @@ import { SheetsApi } from '../src/google/sheetsApi.js';
 import { HOUR, makeHarness, T0, USER_A, USER_B, type Harness } from './helpers.js';
 import { FakeGoogle, makeServiceAccount, SHEET_ID, TAB_GID } from './fake-google.js';
 import type { BotContext } from '../src/discord/context.js';
-import { FakeChannel, fakeComponent, fakeInteraction, fakeModal, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
+import { FakeChannel, FakeFsHub, fakeComponent, fakeInteraction, fakeModal, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 
 /* Everything below is made up: the airline, its pilots, their accounts and their flights. */
 
@@ -70,8 +71,8 @@ const book = (known: Record<number, string[]> = { 32411: ['Alex Smith'], 41502: 
 });
 const info = (over: Partial<PilotInfoRow> = {}): PilotInfoRow => ({ row: 2, name: 'Alex Smith', fshubId: 32411, account: '2002-0001111', ...over });
 
-const build = (flights: SheetFlight[], infoRows: PilotInfoRow[] = [info()], extra: { ledger?: Partial<LedgerView>; identities?: IdentityBook; startDay?: number | null; ref?: (f: SheetFlight) => string | null } = {}) =>
-  buildPayLines({ flights, info: infoRows, startDay: extra.startDay ?? null, ledger: { ...none, ...extra.ledger }, identities: extra.identities ?? book(), flightRef: extra.ref ?? (() => null) });
+const build = (flights: SheetFlight[], infoRows: PilotInfoRow[] = [info()], extra: { ledger?: Partial<LedgerView>; identities?: IdentityBook; startDay?: number | null; ref?: (f: SheetFlight) => string | null; distances?: Map<string, number> } = {}) =>
+  buildPayLines({ flights, info: infoRows, startDay: extra.startDay ?? null, ledger: { ...none, ...extra.ledger }, identities: extra.identities ?? book(), flightRef: extra.ref ?? (() => null), ...(extra.distances ? { distances: extra.distances } : {}) });
 
 describe('the Pilot Info tab', () => {
   it('finds the name, FsHub ID and bank account columns by their titles, and tidies what is in them', () => {
@@ -209,6 +210,107 @@ describe('making the list of payments', () => {
       assert.ok(lines[0]!.flags.includes('bad-amount'));
     }
     assert.deepEqual(build([flight({ payRaw: '$500,000' })]).lines[0]!.flags, []);
+  });
+
+  it("pays no less than the $2,000 minimum, whatever the Pilot Pay cell says, and keeps what the sheet had so the list can say so", () => {
+    const lines = build([
+      flight({ row: 2, sourceKey: 'share', payRaw: '$34' }), // Aeroconomy's own 15% of a $225 profit
+      flight({ row: 3, sourceKey: 'edge', payRaw: '$1,999.99' }),
+      flight({ row: 4, sourceKey: 'exact', payRaw: '$2,000' }),
+      flight({ row: 5, sourceKey: 'over', payRaw: '$2,000.01' }),
+      flight({ row: 6, sourceKey: 'big', payRaw: '$7,500' }),
+      flight({ row: 7, sourceKey: 'tiny', payRaw: '$0.50' }),
+    ]).lines;
+    assert.deepEqual(
+      lines.map((l) => [l.cents, l.sheetCents]),
+      [
+        [200000, 3400],
+        [200000, 199999],
+        [200000, undefined],
+        [200001, undefined],
+        [750000, undefined],
+        [200000, 50],
+      ],
+    );
+    assert.ok(lines.every((l) => l.flags.length === 0), 'raising to the minimum is the rule, not something to check by hand');
+    assert.ok(!('sheetCents' in lines[2]!), 'nothing is noted when the sheet already had the minimum or more');
+  });
+
+  describe('a flight that lost money', () => {
+    const lost = (key: string, pay: string, profit = -5000) => flight({ row: 2, sourceKey: key, profit, profitRaw: `-$${Math.abs(profit)}`, payRaw: pay });
+    const payFor = (pay: string, nm: number | null, profit = -5000) => {
+      const line = build([lost('k', pay, profit)], [info()], nm === null ? {} : { distances: new Map([['k', nm]]) }).lines[0]!;
+      return [line.cents / 100, line.sheetCents === undefined ? null : line.sheetCents / 100, line.lossNm ?? null, line.flags] as const;
+    };
+
+    it('is paid $2,000 for the first 1,000 nm and $1,000 more for each further 500 nm, a started 500 counting as a whole one', () => {
+      for (const [nm, expected] of [
+        [0, 2000],
+        [400, 2000],
+        [999.9, 2000],
+        [1000, 2000],
+        [1000.1, 3000],
+        [1001, 3000],
+        [1499, 3000],
+        [1500, 3000],
+        [1501, 4000],
+        [1502, 4000],
+        [2000, 4000],
+        [2001, 5000],
+        [2100, 5000],
+        [3000, 6000],
+        [5000, 10000],
+      ] as const) {
+        assert.equal(payFor('$500', nm)[0], expected, `${nm} nm`);
+      }
+    });
+
+    it('says what the sheet had, and the distance it worked from, when it raised the pay', () => {
+      assert.deepEqual(payFor('$500', 2100), [5000, 500, 2100, []]);
+      assert.deepEqual(payFor('$2,000', 1200), [3000, 2000, 1200, []]);
+    });
+
+    it("pays what the sheet says when that is already as much as the rule, or more (a manager's own bigger figure)", () => {
+      assert.deepEqual(payFor('$3,000', 1200), [3000, null, 1200, []]);
+      assert.deepEqual(payFor('$3,500', 1200), [3500, null, 1200, []]);
+    });
+
+    it('is raised only to the minimum, and flagged, when FsHub has no distance for it', () => {
+      assert.deepEqual(payFor('$500', null), [2000, 500, null, ['no-distance']]);
+      assert.deepEqual(payFor('$2,000', null), [2000, null, null, ['no-distance']]);
+      assert.deepEqual(payFor('$5,000', null), [5000, null, null, ['no-distance']], 'what the sheet says is kept, but it cannot be checked');
+    });
+
+    it('does not use a distance for a flight that made a profit, or for one with no profit written yet', () => {
+      assert.deepEqual(payFor('$34', 3000, 225), [2000, 34, null, []]);
+      assert.deepEqual(payFor('$34', 3000, 0), [2000, 34, null, []]);
+      const blank = build([flight({ payRaw: '$34', profit: null })], [info()], { distances: new Map([['KORD-EGLL@2026-11-10', 3000]]) }).lines[0]!;
+      assert.deepEqual([blank.cents, blank.lossNm, blank.flags], [200000, undefined, []]);
+    });
+
+    it('keeps each flight to its own distance', () => {
+      const lines = build([lost('a', '$100'), { ...lost('b', '$100'), row: 3 }, { ...lost('c', '$100'), row: 4 }], [info()], { distances: new Map([['a', 1200], ['c', 2600]]) }).lines;
+      assert.deepEqual(lines.map((l) => [l.cents / 100, l.flags]), [[3000, []], [2000, ['no-distance']], [6000, []]]);
+    });
+  });
+
+  it('knows whether a row still says what a payment on a list was made from', () => {
+    const plain = { cents: 750000 };
+    assert.ok(rowStillAgrees(plain, { payRaw: '$7,500', profit: 10_000 }));
+    assert.ok(!rowStillAgrees(plain, { payRaw: '$7,600', profit: 10_000 }));
+    assert.ok(!rowStillAgrees(plain, { payRaw: '', profit: 10_000 }));
+    const raised = { cents: 200000, sheetCents: 3400 };
+    assert.ok(rowStillAgrees(raised, { payRaw: '$34', profit: 225 }), 'the cell still says $34');
+    assert.ok(!rowStillAgrees(raised, { payRaw: '$2,000', profit: 225 }), 'but not once somebody changed it');
+    const byDistance = { cents: 500000, sheetCents: 200000, lossNm: 2100 };
+    assert.ok(rowStillAgrees(byDistance, { payRaw: '$2,000', profit: -5000 }));
+    assert.ok(!rowStillAgrees(byDistance, { payRaw: '$2,000', profit: 5000 }), 'no longer a loss, so the distance does not apply');
+    assert.ok(!rowStillAgrees(byDistance, { payRaw: '$2,000', profit: null }));
+  });
+
+  it('still leaves a flight with no pay yet off the list, even though the minimum is $2,000', () => {
+    const { lines, waiting } = build([flight({ sourceKey: 'zero', payRaw: '$0' }), flight({ row: 3, sourceKey: 'blank', payRaw: '' })]);
+    assert.deepEqual([lines.length, waiting], [0, 2]);
   });
 
   it('cross-checks the tab against what the bot knows of each person', () => {
@@ -368,14 +470,41 @@ describe('keeping the settings, the ledger and the lists', () => {
   it('upgrades a database made before paying pilots existed', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON;');
-    for (let v = 0; v < MIGRATIONS.length - 1; v++) {
+    const step = MIGRATIONS.findIndex((m) => m.includes('CREATE TABLE payroll_settings'));
+    assert.ok(step >= 33);
+    for (let v = 0; v < step; v++) {
       db.exec(MIGRATIONS[v] as string);
       db.exec(`PRAGMA user_version = ${v + 1}`);
     }
     assert.ok(!db.prepare(`SELECT name FROM sqlite_master WHERE name = 'payroll_payments'`).get());
-    db.exec(MIGRATIONS[MIGRATIONS.length - 1] as string);
+    db.exec(MIGRATIONS[step] as string);
     for (const t of ['payroll_settings', 'payroll_payments', 'payroll_drafts']) assert.ok(db.prepare('SELECT name FROM sqlite_master WHERE name = ?').get(t), t);
-    assert.ok(MIGRATIONS.length >= 34);
+  });
+
+  it('keeps which pay cells the bot wrote, per flight, in a table that a database made before it gets with the upgrade', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON;');
+    const step = MIGRATIONS.findIndex((m) => m.includes('CREATE TABLE pay_writes'));
+    assert.ok(step >= 34);
+    for (let v = 0; v < step; v++) db.exec(MIGRATIONS[v] as string);
+    assert.ok(!db.prepare(`SELECT name FROM sqlite_master WHERE name = 'pay_writes'`).get());
+    db.exec(MIGRATIONS[step] as string);
+    assert.ok(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'pay_writes'`).get());
+  });
+
+  it('remembers each written pay once per flight (the newest wins), forgets them with the panel, and tells panels apart', async () => {
+    const h = await makeHarness();
+    try {
+      const other = h.store.createPanel({ guildId: 'g2', name: 'Other Air', prefix: 'OTH', channelId: 'c2', now: T0 });
+      h.store.recordPayWrites(h.panel.id, [{ sourceKey: 'a', cents: 100 }, { sourceKey: 'b', cents: 200 }], T0);
+      h.store.recordPayWrites(h.panel.id, [{ sourceKey: 'a', cents: 300 }], T0 + 1);
+      h.store.recordPayWrites(other.id, [{ sourceKey: 'z', cents: 100 }], T0);
+      assert.deepEqual([...h.store.payWrittenKeys(h.panel.id)].sort(), ['a', 'b']);
+      assert.deepEqual([...h.store.payWrittenKeys(other.id)], ['z']);
+      assert.deepEqual([...h.store.payWrittenKeys(99999)], []);
+    } finally {
+      await h.close();
+    }
   });
 });
 
@@ -512,6 +641,116 @@ describe('paying pilots', () => {
     });
   });
 
+  describe('a flight that lost money', () => {
+    const AIRLINE = 99;
+    let fs: FakeFsHub;
+    const SAM_ROW = 2; // sheet row 3: EGLL → EGCC, flown by Sam Jones on 10 Nov
+    const flown = (flightId: number, over: Partial<FlownFlight> = {}): FlownFlight => ({
+      flightId,
+      pilotId: 41502,
+      pilotName: 'Sam Jones',
+      dep: 'EGLL',
+      arr: 'EGCC',
+      departedAt: D10 + 9 * HOUR,
+      arrivedAt: D10 + 10 * HOUR,
+      aircraftIcao: 'A320',
+      aircraftName: null,
+      scheduleStatus: null,
+      ...over,
+    });
+    /** FsHub's own record of a flight (what it answers when asked about one), with the distance it recorded. */
+    const known = (flightId: number, distanceNm: number | null, over: Partial<FlownFlight> = {}) => {
+      const f = flown(flightId, over);
+      const all = fs.flights.get(AIRLINE) ?? [];
+      all.push({ id: f.flightId, pilotId: f.pilotId, pilotName: f.pilotName, dep: f.dep, arr: f.arr, departedAt: f.departedAt, arrivedAt: f.arrivedAt, aircraftIcao: f.aircraftIcao, aircraftName: f.aircraftName, scheduleStatus: null, distanceNm });
+      fs.flights.set(AIRLINE, all);
+      h.store.upsertFshubFlights(h.panel.id, [f]);
+    };
+    const withFsHub = () => (payroll = new Payroll({ store: h.store, gateway: gw, writeback: wb, fshub: fs, fetchFn, now: () => h.clock.now }));
+    const sam = async () => byPilot(await payroll.prepare(panel(), settings()), 'Sam Jones');
+
+    beforeEach(() => {
+      fs = new FakeFsHub();
+      h.store.updatePanel(h.panel.id, { fshubAirlineId: AIRLINE });
+      sheets.schedule[SAM_ROW]![8] = '-$5,000.00'; // lost money
+      sheets.schedule[SAM_ROW]![9] = '$500'; // and the sheet has only a small figure for the pilot
+      withFsHub();
+    });
+
+    it("is paid by the distance FsHub recorded for it: $2,000 for the first 1,000 nm and $1,000 for each further 500", async () => {
+      known(7001, 1620);
+      const line = await sam();
+      assert.deepEqual([line.cents, line.sheetCents, line.lossNm, line.flags], [400000, 50000, 1620, []]);
+      assert.deepEqual(fs.flightCalls, [{ airlineId: AIRLINE, cursor: 7000, limit: 1 }], 'one question to FsHub, about that flight');
+    });
+
+    it('is the pilot that flew it, on that route, in that day, and nothing else', async () => {
+      known(7001, 3000, { pilotId: 50003, pilotName: 'Jo Kim' }); // somebody else flew that route
+      known(7002, 3000, { arr: 'EGKK' }); // another route
+      known(7003, 3000, { arrivedAt: D10 + 4 * 24 * HOUR }); // another day
+      const line = await sam();
+      assert.deepEqual([line.cents, line.lossNm, line.flags], [200000, undefined, ['no-distance']]);
+      assert.deepEqual(fs.flightCalls, [], 'there was nothing to ask about');
+    });
+
+    it('is raised to the minimum and flagged when the bot has no such flight, FsHub gives no distance, or it could be either of two', async () => {
+      assert.deepEqual([(await sam()).cents, (await sam()).flags], [200000, ['no-distance']]);
+      known(7001, null);
+      assert.deepEqual([(await sam()).cents, (await sam()).flags], [200000, ['no-distance']], 'FsHub recorded no distance');
+      known(7002, 3000, { arrivedAt: D10 + 11 * HOUR });
+      const two = await sam();
+      assert.deepEqual([two.cents, two.lossNm, two.flags], [200000, undefined, ['no-distance']], 'two flights of that pilot on that route that day: not guessed');
+    });
+
+    it('is flagged, never guessed, when FsHub cannot be asked at all', async () => {
+      known(7001, 1620);
+      fs.flightError = new Error('down');
+      assert.deepEqual([(await sam()).cents, (await sam()).flags], [200000, ['no-distance']]);
+      payroll = new Payroll({ store: h.store, gateway: gw, writeback: wb, fetchFn, now: () => h.clock.now });
+      assert.deepEqual([(await sam()).cents, (await sam()).flags], [200000, ['no-distance']], 'and the same without FsHub connected');
+      h.store.updatePanel(h.panel.id, { fshubAirlineId: null });
+      withFsHub();
+      assert.deepEqual([(await sam()).cents, (await sam()).flags], [200000, ['no-distance']], 'and for a panel not linked to an FsHub airline');
+    });
+
+    it('is not paid twice over for one FsHub flight when two rows claim it', async () => {
+      known(7001, 1620);
+      sheets.schedule.push(srow('EGLL-EGCC', '11/10/2026', 'Sam Jones', { pay: '$500' }));
+      sheets.schedule[sheets.schedule.length - 1]![8] = '-$4,000.00';
+      const draft = await payroll.prepare(panel(), settings());
+      const lines = draft.lines.filter((l) => l.pilot === 'Sam Jones');
+      assert.deepEqual(lines.map((l) => [l.cents, l.flags]), [[200000, ['no-distance']], [200000, ['no-distance']]]);
+    });
+
+    it('pays the amount worked out by distance, and is not stopped by the sheet still saying less', async () => {
+      known(7001, 1620);
+      const draft = await payroll.prepare(panel(), settings());
+      const out = await payroll.pay(panel(), settings(), draft.lines);
+      assert.deepEqual(out.skipped, []);
+      assert.equal(gw.calls.find((c) => c.recipientAccount === '2002-0002222')!.cents, 400000, 'the bank is asked for $4,000, not $500');
+    });
+
+    it('is left out if the sheet changes to another amount, or the flight is no longer one that lost money, before it is paid', async () => {
+      known(7001, 1620);
+      const draft = await payroll.prepare(panel(), settings());
+      const samSkips = (out: Awaited<ReturnType<Payroll['pay']>>) => out.skipped.filter((s) => s.line.pilot === 'Sam Jones').map((s) => s.reason); // (Alex, on the same list, gets paid the first time)
+      sheets.schedule[SAM_ROW]![9] = '$900';
+      assert.deepEqual(samSkips(await payroll.pay(panel(), settings(), draft.lines)), ['changed']);
+      sheets.schedule[SAM_ROW]![9] = '$500';
+      sheets.schedule[SAM_ROW]![8] = '$5,000.00'; // now a profit
+      assert.deepEqual(samSkips(await payroll.pay(panel(), settings(), draft.lines)), ['changed']);
+      assert.ok(!gw.calls.some((c) => c.recipientAccount === '2002-0002222'));
+    });
+
+    it('is not asked about a flight that made a profit', async () => {
+      sheets.schedule[SAM_ROW]![8] = '$5,000.00';
+      known(7001, 1620);
+      const line = await sam();
+      assert.deepEqual([line.cents, line.lossNm, line.flags], [200000, undefined, []]);
+      assert.deepEqual(fs.flightCalls, []);
+    });
+  });
+
   describe('paying a list', () => {
     it('sends each ready payment once, with its unique ID, and a list read again offers none of them', async () => {
       const draft = await payroll.prepare(panel(), settings());
@@ -529,6 +768,26 @@ describe('paying pilots', () => {
       ]);
       const next = await payroll.prepare(panel(), settings());
       assert.deepEqual(next.lines.map((l) => l.pilot), ['Pat Lee', 'Jo Kim'], 'only the two that were flagged are still due');
+    });
+
+    it('pays the $2,000 minimum when the sheet says less, and the sheet still saying less does not stop it', async () => {
+      sheets.schedule[2]![9] = '$34'; // Sam's flight: the cell holds Aeroconomy's own small share
+      const draft = await payroll.prepare(panel(), settings());
+      const sam = byPilot(draft, 'Sam Jones');
+      assert.deepEqual([sam.cents, sam.sheetCents, sam.flags], [200000, 3400, []]);
+      const out = await payroll.pay(panel(), settings(), draft.lines);
+      assert.deepEqual(out.skipped, []);
+      assert.deepEqual(out.paid.map((l) => l.pilot), ['Alex Smith', 'Sam Jones']);
+      assert.equal(gw.calls.find((c) => c.recipientAccount === '2002-0002222')!.cents, 200000, 'the bank is asked for $2,000, not $34');
+    });
+
+    it('leaves that payment out if the sheet is then changed to some other amount', async () => {
+      sheets.schedule[2]![9] = '$34';
+      const draft = await payroll.prepare(panel(), settings());
+      sheets.schedule[2]![9] = '$2,600';
+      const out = await payroll.pay(panel(), settings(), draft.lines);
+      assert.deepEqual(out.skipped.map((s) => [s.line.pilot, s.reason]), [['Sam Jones', 'changed']]);
+      assert.ok(!gw.calls.some((c) => c.recipientAccount === '2002-0002222'));
     });
 
     it('does not send what is flagged or left out, and is not made to by an old list', async () => {
@@ -1128,6 +1387,13 @@ describe('/payroll and its buttons', () => {
     it('draw the worst a payment can look inside the limit', () => {
       const worst: PayLine = { n: 99, sourceKey: 'k', row: 5, pilot: 'W'.repeat(80), fshubId: 1, account: '2002-123456789012', cents: 50_000_000, uniqueId: 'U'.repeat(64), dep: 'EGLL', arr: 'EGKK', day: D10, flags: ['no-info', 'ambiguous-info', 'id-mismatch', 'name-differs', 'account-changed', 'bad-amount'], amended: true, out: false };
       assert.ok(lineText(worst).length < 600);
+      const raised: PayLine = { ...worst, amended: false, sheetCents: 49_999_999 };
+      assert.match(lineText(raised), /the sheet says \$499,999\.99; raised to \$500,000, the minimum/);
+      assert.match(lineText({ ...raised, lossNm: 2102.4 }), /the sheet says \$499,999\.99; raised to \$500,000 for a loss flight of 2,102 nm/);
+      assert.ok(lineText({ ...raised, lossNm: 99_999.9 }).length < 750);
+      assert.ok(lineText(raised).length < 700);
+      assert.doesNotMatch(lineText({ ...raised, amended: true }), /the sheet says/, 'an amended amount is no longer the minimum');
+      assert.doesNotMatch(lineText({ ...raised, out: true }), /the sheet says/);
       const draft: PayDraft = { airline: 'A'.repeat(100), made: T0, sourceAccount: SOURCE, lines: Array.from({ length: 40 }, (_, i) => ({ ...worst, n: i + 1 })), waiting: 99, unsettled: 99 };
       for (const mode of ['list', 'amend'] as const) {
         for (let page = 0; page < paginate(draft.lines).length; page++) {

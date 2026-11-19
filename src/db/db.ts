@@ -597,6 +597,24 @@ export const MIGRATIONS: string[] = [
     expires_at  INTEGER NOT NULL
   );
   `,
+
+  /* v35: 'pay_writes' remembers each Pilot Pay cell this bot wrote into a sheet (by the flight's key), so that a pay someone later sets back to $0 on
+     purpose is recognised as theirs and left alone, where a $0 the bot never wrote (a money-formatted empty cell) is free to be written over. */
+  `
+  CREATE TABLE pay_writes (
+    panel_id    INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    source_key  TEXT NOT NULL,
+    cents       INTEGER NOT NULL,
+    written_at  INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, source_key)
+  );
+  `,
+
+  /* v36: the name this bot wrote into a flight's *Backup Pilot* cell for its backup pilot, so it can be taken off again (only if it is still that
+     name) when they stand down, rename themselves, or their spot ends. Null where nothing was written (no such column, several legs, or writing off). */
+  `
+  ALTER TABLE job_backups ADD COLUMN sheet_name TEXT;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {
