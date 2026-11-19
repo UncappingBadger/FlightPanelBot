@@ -551,6 +551,52 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE panels ADD COLUMN profit_channel_id TEXT;
   ALTER TABLE panels ADD COLUMN profit_role_id TEXT;
   `,
+
+  /* v34: paying pilots. 'payroll_settings' is what an admin set up for a panel (the account the pay comes out of, the tab of the sheet that lists the
+     pilots' accounts, the first day that is ever paid, when each day's list is made). 'payroll_payments' is the ledger: one row for every payment the
+     bot has begun, by its unique ID, which is never used twice; a row is 'sending' from just before the bank is asked until it says yes ('paid') or no
+     ('failed'), and one left 'sending' is never retried by itself, since nobody knows whether the money moved. 'payroll_drafts' is a list of payments waiting
+     for an admin to check it, kept in the database (as JSON) so that a restart does not lose it or the changes made to it. */
+  `
+  CREATE TABLE payroll_settings (
+    panel_id        INTEGER PRIMARY KEY REFERENCES panels(id) ON DELETE CASCADE,
+    enabled         INTEGER NOT NULL DEFAULT 0,
+    source_account  TEXT,
+    info_sheet_id   TEXT,
+    info_gid        TEXT,
+    start_day       INTEGER,
+    run_at_minute   INTEGER NOT NULL DEFAULT 720,
+    owner_id        TEXT,
+    last_run_day    INTEGER
+  );
+
+  CREATE TABLE payroll_payments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    panel_id    INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    unique_id   TEXT NOT NULL,
+    source_key  TEXT,
+    pilot       TEXT NOT NULL,
+    fshub_id    INTEGER,
+    account     TEXT NOT NULL,
+    cents       INTEGER NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('sending','paid','failed')),
+    detail      TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (panel_id, unique_id)
+  );
+  CREATE INDEX idx_payroll_payments_key ON payroll_payments(panel_id, source_key);
+
+  CREATE TABLE payroll_drafts (
+    token       TEXT PRIMARY KEY,
+    panel_id    INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    asker_id    TEXT NOT NULL,
+    place       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

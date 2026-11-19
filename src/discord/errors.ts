@@ -1,6 +1,7 @@
 import { DiscordAPIError } from 'discord.js';
 import { ImportError } from '../jobs/import.js';
 import { JobError } from '../services/jobs.js';
+import { PayrollError } from '../services/payrollService.js';
 import type { Logger } from '../util/log.js';
 
 /** An expected problem with a message that is safe and useful to show to the user as-is. */
@@ -36,7 +37,7 @@ export function isMissingAccess(e: unknown): boolean {
 
 /** Turn any thrown value into the text the user should see. Unexpected errors are logged, not shown. */
 export function describeError(e: unknown, log: Logger): string {
-  if (e instanceof UserError || e instanceof JobError) return e.message;
+  if (e instanceof UserError || e instanceof JobError || e instanceof PayrollError) return e.message;
   if (e instanceof ImportError) return [e.message, ...e.problems.map((p) => `• ${p}`)].join('\n');
   log.error('Unhandled error while handling an interaction', e);
   return 'Something went wrong on my side. Please try again, and let the bot owner know if it keeps happening.';

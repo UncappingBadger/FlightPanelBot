@@ -1,5 +1,5 @@
 import { parseCsv, parseLegChain } from '../jobs/import.js';
-import { findHeader, isCancelled, isTicked, parseSheetDate, PAY_COLUMNS, PROFIT_COLUMNS } from '../jobs/sheet.js';
+import { findHeader, isCancelled, isTicked, PAID_COLUMNS, parseSheetDate, PAY_COLUMNS, PROFIT_COLUMNS } from '../jobs/sheet.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 
 /**
@@ -33,6 +33,8 @@ export interface SheetFlight {
   profitRaw: string | null;
   /** What is in the Pilot Pay cell, exactly as it is (not trimmed): empty only if the cell is. Null when the sheet has no such column. */
   payRaw: string | null;
+  /** Is the Pilot Paid box ticked (the pilot has been paid for this flight)? Null when the sheet has no such column; absent where it was not read. */
+  pilotPaid?: boolean | null;
 }
 
 export interface SheetFlights {
@@ -89,6 +91,7 @@ export function readSheetFlights(csv: string): SheetFlights | null {
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
   const iProfit = at((n) => PROFIT_COLUMNS.includes(n));
   const iPay = at((n) => PAY_COLUMNS.includes(n));
+  const iPaid = at((n) => PAID_COLUMNS.includes(n));
   const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
   if (iRoute < 0 || iDate < 0 || iPilot < 0 || iDone < 0) return null;
 
@@ -123,6 +126,7 @@ export function readSheetFlights(csv: string): SheetFlights | null {
       profit: iProfit >= 0 ? parseMoney(cell(iProfit)) : null,
       profitRaw: iProfit >= 0 ? (r[iProfit] ?? '') : null,
       payRaw: iPay >= 0 ? (r[iPay] ?? '') : null,
+      pilotPaid: iPaid >= 0 ? isTicked(cell(iPaid)) : null,
     });
   }
   return { flights, hasProfit: iProfit >= 0, hasPay: iPay >= 0 };

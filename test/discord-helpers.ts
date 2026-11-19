@@ -346,7 +346,7 @@ export function fakeComponent(user: FakeUser, customId: string, o: ComponentOpti
 
 /** A form (modal) the user filled in and sent: `fields` are the values of its text boxes by id. */
 export function fakeModal(user: FakeUser, customId: string, fields: Record<string, string>, o: ComponentOptions = {}) {
-  const calls = { defers: [] as any[], edits: [] as any[], replies: [] as any[] };
+  const calls = { defers: [] as any[], edits: [] as any[], replies: [] as any[], updates: [] as any[] };
   const i: any = {
     customId,
     user,
@@ -363,6 +363,11 @@ export function fakeModal(user: FakeUser, customId: string, fields: Record<strin
     isButton: () => false,
     isStringSelectMenu: () => false,
     isModalSubmit: () => true,
+    /** A form opened from a button or a menu on a message can replace that message; one opened any other way cannot. */
+    isFromMessage: () => true,
+    update: async (p: any) => {
+      calls.updates.push(p);
+    },
     deferReply: async (a: any) => {
       i.deferred = true;
       calls.defers.push(a);

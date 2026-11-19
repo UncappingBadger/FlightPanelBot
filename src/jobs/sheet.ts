@@ -202,6 +202,9 @@ export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofi
 /** Column titles that hold what the pilot is paid for the flight (not `Pilot Paid`, which is a box ticked once they have been). */
 export const PAY_COLUMNS = ['pilotpay'];
 
+/** Column titles of the box ticked once the pilot has been paid for the flight. */
+export const PAID_COLUMNS = ['pilotpaid'];
+
 /** Column titles that hold a flight's distance in nautical miles ("Distance (NM)"). */
 export const DISTANCE_COLUMNS = ['distancenm', 'distance', 'distancenmi'];
 

@@ -1,6 +1,7 @@
 import type { Panel } from '../db/store.js';
 import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js';
-import { colLetter, isCancelled, isTicked, parseScheduleValues, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
+import { parseLegChain } from '../jobs/import.js';
+import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
@@ -62,6 +63,23 @@ export interface ProfitFillResult {
   skipped: Array<{ sourceKey: string; reason: 'gone' | 'moved' | 'changed' | 'not-completed' | 'filled' }>;
 }
 
+/** A flight whose Pilot Paid box is to be ticked, and what its row looked like when the pilot was paid. */
+export interface PaidTick {
+  sourceKey: string;
+  /** The row and the pilot's name it had: if either has changed since, nothing is written to it. */
+  row: number;
+  pilot: string;
+}
+
+export interface PaidTickResult {
+  /** Boxes ticked just now. */
+  ticked: Array<{ sourceKey: string; cell: string }>;
+  /** Boxes that were already ticked (nothing was written). */
+  already: string[];
+  /** Boxes left alone, and why: the row is gone or is another flight now, its pilot changed, it is not ticked as completed, or the cell holds something other than an empty box. */
+  skipped: Array<{ sourceKey: string; reason: 'gone' | 'moved' | 'changed' | 'not-completed' | 'filled' }>;
+}
+
 interface Located {
   ref: SheetRef;
   title: string;
@@ -80,6 +98,7 @@ interface Located {
  *
  * The one other thing it can write is a blank Profit Made cell, and the pilot's pay in a blank Pilot Pay cell beside it, and only when an
  * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`). It never changes a cell that has anything in it.
+ * The one more is the Pilot Paid box of a flight whose pilot has just been paid (`markPilotsPaid`, from `/payroll`), which it only ever ticks.
  */
 export class SheetWriteBack {
   private readonly now: () => number;
@@ -217,6 +236,81 @@ export class SheetWriteBack {
         if (cells.length > 0) {
           await this.api.update(ref, tab.title, cells);
           this.log.info(`Wrote ${result.written.length} blank Profit Made cell${result.written.length === 1 ? '' : 's'} and ${result.paid.length} blank Pilot Pay cell${result.paid.length === 1 ? '' : 's'} in the airline's sheet (asked for by an admin): ${cells.map((c) => c.a1).join(', ')}`);
+        }
+        return result;
+      } catch (e) {
+        throw this.wrap(e);
+      }
+    });
+  }
+
+  /**
+   * Tick the Pilot Paid box of flights whose pilot has just been paid. The tab is read afresh, twice (what the cells show and what is stored
+   * in them), and each row is checked before its box is touched: it is still the same flight (its route and date), still names the same pilot,
+   * is ticked as completed, and the Pilot Paid cell is an empty box (nothing in it, or FALSE). A box that is already ticked is left as it is,
+   * and a cell with anything else in it (a note, a formula) is never replaced. A box is only ever ticked: this never unticks one, and it
+   * touches no other cell. Nothing is asked of Google when there is nothing to tick.
+   */
+  markPilotsPaid(panel: Panel, ticks: PaidTick[]): Promise<PaidTickResult> {
+    return this.serial(async () => {
+      const result: PaidTickResult = { ticked: [], already: [], skipped: [] };
+      if (ticks.length === 0) return result;
+      const ref = this.refOf(panel);
+      try {
+        const tab = await this.api.readTab(ref);
+        const stored = await this.api.readTab(ref, 'FORMULA');
+        const header = findHeader(tab.values);
+        const at = (pred: (n: string) => boolean) => (header ? header.names.findIndex(pred) : -1);
+        const iRoute = at((n) => n === 'route');
+        const iDate = at((n) => n === 'date');
+        const iPilot = at((n) => n === 'pilot');
+        const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
+        const iPaid = at((n) => PAID_COLUMNS.includes(n));
+        if (iRoute < 0 || iDate < 0 || iPilot < 0 || iDone < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find the Route, Date, Pilot and Flight Completed columns in that sheet.");
+        if (iPaid < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find a Pilot Paid column in that sheet.");
+        const cells: Cell[] = [];
+        for (const t of ticks) {
+          const values = tab.values[t.row - 1];
+          if (!values) {
+            result.skipped.push({ sourceKey: t.sourceKey, reason: 'gone' });
+            continue;
+          }
+          // The same flight is still on that row: a key is the route and the date (a repeat of them on a later row only adds `#2`).
+          const legs = parseLegChain((values[iRoute] ?? '').trim());
+          const day = parseSheetDate(values[iDate] ?? '');
+          const key = typeof legs !== 'string' && day ? `${legs.map((l) => `${l.dep}-${l.arr}`).join('+')}@${day.y}-${String(day.m).padStart(2, '0')}-${String(day.d).padStart(2, '0')}` : null;
+          if (key !== t.sourceKey.split('#')[0]) {
+            result.skipped.push({ sourceKey: t.sourceKey, reason: 'moved' });
+            continue;
+          }
+          const pilot = (values[iPilot] ?? '').trim();
+          if (!same(pilot, t.pilot)) {
+            result.skipped.push({ sourceKey: t.sourceKey, reason: 'changed' });
+            continue;
+          }
+          if (!isTicked(values[iDone] ?? '') || isCancelled(pilot)) {
+            result.skipped.push({ sourceKey: t.sourceKey, reason: 'not-completed' });
+            continue;
+          }
+          const shown = (values[iPaid] ?? '').trim();
+          const kept = (stored.values[t.row - 1]?.[iPaid] ?? '').trim();
+          if (isTicked(shown) && isTicked(kept)) {
+            result.already.push(t.sourceKey);
+            continue;
+          }
+          // An empty box is a cell with nothing in it or FALSE, as it shows and as it is stored. Anything else is somebody's, and is left alone.
+          const empty = (v: string) => v === '' || v.toUpperCase() === 'FALSE';
+          if (!empty(shown) || !empty(kept)) {
+            result.skipped.push({ sourceKey: t.sourceKey, reason: 'filled' });
+            continue;
+          }
+          const a1 = `${colLetter(iPaid)}${t.row}`;
+          cells.push({ a1, value: true });
+          result.ticked.push({ sourceKey: t.sourceKey, cell: a1 });
+        }
+        if (cells.length > 0) {
+          await this.api.update(ref, tab.title, cells);
+          this.log.info(`Ticked ${cells.length} Pilot Paid box${cells.length === 1 ? '' : 'es'} in the airline's sheet (pilots were paid): ${cells.map((c) => c.a1).join(', ')}`);
         }
         return result;
       } catch (e) {

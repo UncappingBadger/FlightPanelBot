@@ -9,6 +9,8 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type MessageActionRowComponentBuilder,
+  type ModalSubmitInteraction,
+  type StringSelectMenuInteraction,
 } from 'discord.js';
 import type { Panel, ProfitSendTo } from '../db/store.js';
 import { dayName, formatMoney } from '../services/contributions.js';
@@ -297,7 +299,7 @@ const REASON_TEXT: Record<string, string> = {
  * May this person press the buttons of a preview? The admin who asked, as long as they are still one, and members of the panel's
  * confirming role (when it has one). In a DM nobody but the admin it was sent to is there, so that is looked up in the server instead.
  */
-async function mayConfirm(interaction: ButtonInteraction, wanted: Pending, roleId: string | null): Promise<boolean> {
+export async function mayConfirm(interaction: ButtonInteraction | ModalSubmitInteraction | StringSelectMenuInteraction, wanted: { userId: string; guildId: string }, roleId: string | null): Promise<boolean> {
   if (interaction.guildId === null) {
     if (interaction.user.id !== wanted.userId) return false;
     try {

@@ -27,6 +27,8 @@ export interface SchedulerOptions {
   numbers?: { run(): Promise<unknown> };
   /** Sends the once-a-day note, when one is set up. Runs in the same lane, last. */
   daily?: { run(): Promise<unknown> };
+  /** Makes the day's list of pilot payments for an admin to check, at the time they chose. Nothing is paid by it. Runs in the same lane, last. */
+  payroll?: { run(): Promise<unknown> };
   /** Warns pilots (and their backups) shortly before the latest take-off that still makes a flight's window. Runs in the same lane, after the FsHub reads. */
   departures?: { run(): Promise<unknown> };
 }
@@ -50,6 +52,7 @@ export class Scheduler {
   private readonly etas: SchedulerOptions['etas'];
   private readonly numbers: SchedulerOptions['numbers'];
   private readonly daily: SchedulerOptions['daily'];
+  private readonly payroll: SchedulerOptions['payroll'];
   private readonly panels: SchedulerOptions['panels'];
   private laneRunning = false;
   private lane: Promise<void> = Promise.resolve();
@@ -71,6 +74,7 @@ export class Scheduler {
     this.etas = opts.etas;
     this.numbers = opts.numbers;
     this.daily = opts.daily;
+    this.payroll = opts.payroll;
     this.panels = opts.panels;
   }
 
@@ -92,7 +96,7 @@ export class Scheduler {
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.numbers && !this.departures && !this.daily)) return this.lane;
+    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.numbers && !this.departures && !this.daily && !this.payroll)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
       try {
@@ -108,6 +112,7 @@ export class Scheduler {
         // first look at an airport can mean a large download.
         await this.departures?.run().catch((e) => this.log.error('Departure warnings failed', e));
         await this.daily?.run().catch((e) => this.log.error('The daily note failed', e));
+        await this.payroll?.run().catch((e) => this.log.error('The daily pay list failed', e));
       } finally {
         this.laneRunning = false;
       }

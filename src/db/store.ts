@@ -1425,4 +1425,218 @@ export class Store {
   purgeSessions(now: number): void {
     this.run('DELETE FROM dm_sessions WHERE expires_at <= ?', now);
   }
+
+  /* ------------------------------------------------------------------ paying pilots */
+
+  /** What an admin set up for paying a panel's pilots, or null when nothing was ever set. */
+  getPayrollSettings(panelId: number): PayrollSettings | null {
+    const r = this.get('SELECT * FROM payroll_settings WHERE panel_id = ?', panelId);
+    return r ? toPayrollSettings(r) : null;
+  }
+
+  /** Every panel's settings that are switched on. */
+  listPayrollEnabled(): PayrollSettings[] {
+    return this.all('SELECT * FROM payroll_settings WHERE enabled = 1 ORDER BY panel_id').map(toPayrollSettings);
+  }
+
+  /** Change some of a panel's payroll settings (the rest are kept); the row is made on the first change. */
+  savePayrollSettings(panelId: number, patch: Partial<Omit<PayrollSettings, 'panelId'>>): PayrollSettings {
+    this.run('INSERT OR IGNORE INTO payroll_settings(panel_id) VALUES (?)', panelId);
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+    const set = (column: string, value: SQLInputValue) => (sets.push(`${column} = ?`), params.push(value));
+    if (patch.enabled !== undefined) set('enabled', patch.enabled ? 1 : 0);
+    if (patch.sourceAccount !== undefined) set('source_account', patch.sourceAccount);
+    if (patch.infoSheetId !== undefined) set('info_sheet_id', patch.infoSheetId);
+    if (patch.infoGid !== undefined) set('info_gid', patch.infoGid);
+    if (patch.startDay !== undefined) set('start_day', patch.startDay);
+    if (patch.runAtMinute !== undefined) {
+      if (!Number.isInteger(patch.runAtMinute) || patch.runAtMinute < 0 || patch.runAtMinute >= 1440) throw new Error('The time of day has to be a minute from 0 to 1439.');
+      set('run_at_minute', patch.runAtMinute);
+    }
+    if (patch.ownerId !== undefined) set('owner_id', patch.ownerId);
+    if (patch.lastRunDay !== undefined) set('last_run_day', patch.lastRunDay);
+    if (sets.length > 0) this.run(`UPDATE payroll_settings SET ${sets.join(', ')} WHERE panel_id = ?`, ...params, panelId);
+    return this.getPayrollSettings(panelId) as PayrollSettings;
+  }
+
+  /** The newest ledger row for a sheet flight (by its key), if the bot ever began paying it. */
+  ledgerBySourceKey(panelId: number, sourceKey: string): LedgerEntry | null {
+    const r = this.get('SELECT * FROM payroll_payments WHERE panel_id = ? AND source_key = ? ORDER BY id DESC LIMIT 1', panelId, sourceKey);
+    return r ? toLedgerEntry(r) : null;
+  }
+
+  ledgerByUniqueId(panelId: number, uniqueId: string): LedgerEntry | null {
+    const r = this.get('SELECT * FROM payroll_payments WHERE panel_id = ? AND unique_id = ?', panelId, uniqueId);
+    return r ? toLedgerEntry(r) : null;
+  }
+
+  /**
+   * Write down that a payment is about to be sent, before it is. False when that unique ID is already in the ledger and was not a failure (it is
+   * paid, or it is being sent, or was and nobody knows): then nothing is to be sent. A payment that failed is the one thing that may be tried again,
+   * under the same unique ID.
+   */
+  ledgerBegin(panelId: number, e: { uniqueId: string; sourceKey: string | null; pilot: string; fshubId: number | null; account: string; cents: number }, now: number): boolean {
+    return this.tx(() => {
+      const have = this.ledgerByUniqueId(panelId, e.uniqueId);
+      if (have && have.status !== 'failed') return false;
+      if (have) {
+        this.run(`UPDATE payroll_payments SET status = 'sending', source_key = ?, pilot = ?, fshub_id = ?, account = ?, cents = ?, detail = NULL, updated_at = ? WHERE id = ?`, e.sourceKey, e.pilot, e.fshubId, e.account, e.cents, now, have.id);
+        return true;
+      }
+      this.run(
+        `INSERT INTO payroll_payments(panel_id, unique_id, source_key, pilot, fshub_id, account, cents, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'sending',?,?)`,
+        panelId,
+        e.uniqueId,
+        e.sourceKey,
+        e.pilot,
+        e.fshubId,
+        e.account,
+        e.cents,
+        now,
+        now,
+      );
+      return true;
+    });
+  }
+
+  /** What became of a payment that was begun: the bank said yes (`paid`) or no (`failed`, with why). */
+  ledgerFinish(panelId: number, uniqueId: string, status: 'paid' | 'failed', detail: string | null, now: number): void {
+    this.run('UPDATE payroll_payments SET status = ?, detail = ?, updated_at = ? WHERE panel_id = ? AND unique_id = ?', status, detail, now, panelId, uniqueId);
+  }
+
+  /** The account this FsHub pilot was most recently paid into, or null if they never were. */
+  lastPaidAccount(panelId: number, fshubId: number): string | null {
+    const r = this.get(`SELECT account FROM payroll_payments WHERE panel_id = ? AND fshub_id = ? AND status = 'paid' ORDER BY updated_at DESC, id DESC LIMIT 1`, panelId, fshubId);
+    return r ? s(r.account) : null;
+  }
+
+  /** The newest ledger rows, newest first. */
+  listLedger(panelId: number, limit: number): LedgerEntry[] {
+    return this.all('SELECT * FROM payroll_payments WHERE panel_id = ? ORDER BY id DESC LIMIT ?', panelId, limit).map(toLedgerEntry);
+  }
+
+  /** Rows still marked as being sent, which nobody has settled. */
+  countUnsettledPayments(panelId: number): number {
+    return n(this.get(`SELECT count(*) AS c FROM payroll_payments WHERE panel_id = ? AND status = 'sending'`, panelId)?.c ?? 0);
+  }
+
+  /** The FsHub pilot IDs the bot ties to a name written in a sheet: by what the pilot told it, or by a flight it wrote that name on. */
+  fshubIdsForSheetName(name: string): number[] {
+    return this.all(
+      `SELECT DISTINCT fshub_id FROM pilot_ids WHERE discord_id IN (
+         SELECT discord_id FROM leg_reservations WHERE lower(sheet_name) = lower(?)
+         UNION SELECT discord_id FROM pilot_names WHERE lower(name) = lower(?))`,
+      name.trim(),
+      name.trim(),
+    ).map((r) => n(r.fshub_id));
+  }
+
+  /** The names the bot has for a FsHub pilot: what FsHub calls them, and what they were called on the airline's flights it has read. */
+  fshubNamesForId(panelId: number, fshubId: number): string[] {
+    const out = new Set<string>();
+    for (const r of this.all('SELECT fshub_name AS name FROM pilot_ids WHERE fshub_id = ? AND fshub_name IS NOT NULL', fshubId)) out.add(s(r.name));
+    for (const r of this.all('SELECT DISTINCT pilot_name AS name FROM fshub_flights WHERE panel_id = ? AND pilot_id = ? AND pilot_name IS NOT NULL', panelId, fshubId)) out.add(s(r.name));
+    return [...out];
+  }
+
+  /** Does the bot know this FsHub pilot at all (a pilot who told it, or one who flew one of the airline's flights it has read)? */
+  knowsFshubId(panelId: number, fshubId: number): boolean {
+    return (
+      this.get('SELECT 1 AS x FROM pilot_ids WHERE fshub_id = ?', fshubId) !== undefined ||
+      this.get('SELECT 1 AS x FROM fshub_flights WHERE panel_id = ? AND pilot_id = ? LIMIT 1', panelId, fshubId) !== undefined
+    );
+  }
+
+  /** A list of payments waiting for an admin to check it. Replaces any with the same token. */
+  savePayrollDraft(d: { token: string; panelId: number; askerId: string; place: string; body: string; createdAt: number; expiresAt: number }): void {
+    this.run(
+      `INSERT INTO payroll_drafts(token, panel_id, asker_id, place, body, created_at, expires_at) VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(token) DO UPDATE SET body = excluded.body, expires_at = excluded.expires_at`,
+      d.token,
+      d.panelId,
+      d.askerId,
+      d.place,
+      d.body,
+      d.createdAt,
+      d.expiresAt,
+    );
+  }
+
+  getPayrollDraft(token: string, now: number): { token: string; panelId: number; askerId: string; place: string; body: string; createdAt: number; expiresAt: number } | null {
+    const r = this.get('SELECT * FROM payroll_drafts WHERE token = ? AND expires_at > ?', token, now);
+    return r ? { token: s(r.token), panelId: n(r.panel_id), askerId: s(r.asker_id), place: s(r.place), body: s(r.body), createdAt: n(r.created_at), expiresAt: n(r.expires_at) } : null;
+  }
+
+  /** Take a list away. True only for the one call that did (so of two people pressing at once, one gets it). */
+  deletePayrollDraft(token: string): boolean {
+    return this.run('DELETE FROM payroll_drafts WHERE token = ?', token).changes > 0;
+  }
+
+  /** Drop a panel's older lists when a new one is made, and any that have run out. */
+  clearPayrollDrafts(panelId: number, now: number): void {
+    this.run('DELETE FROM payroll_drafts WHERE panel_id = ? OR expires_at <= ?', panelId, now);
+  }
 }
+
+/** What an admin set up for paying a panel's pilots. */
+export interface PayrollSettings {
+  panelId: number;
+  enabled: boolean;
+  /** The airline's account the pay comes out of. */
+  sourceAccount: string | null;
+  /** The tab of a sheet that lists the pilots (name, FsHub ID, bank account). */
+  infoSheetId: string | null;
+  infoGid: string | null;
+  /** Midnight (Zulu) of the first flight day that is ever paid: earlier flights are never put on a list. */
+  startDay: number | null;
+  /** Minutes after midnight (Zulu) at which each day's list is made. */
+  runAtMinute: number;
+  /** The admin who set it up last: a list made on its own, with nobody asking, goes to their DMs unless a channel is chosen. */
+  ownerId: string | null;
+  /** The Zulu day (midnight, epoch ms) a list was last made for. */
+  lastRunDay: number | null;
+}
+
+/** One payment the bot has begun to make. */
+export interface LedgerEntry {
+  id: number;
+  panelId: number;
+  uniqueId: string;
+  sourceKey: string | null;
+  pilot: string;
+  fshubId: number | null;
+  account: string;
+  cents: number;
+  status: 'sending' | 'paid' | 'failed';
+  detail: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const toPayrollSettings = (r: Row): PayrollSettings => ({
+  panelId: n(r.panel_id),
+  enabled: n(r.enabled) !== 0,
+  sourceAccount: sn(r.source_account),
+  infoSheetId: sn(r.info_sheet_id),
+  infoGid: sn(r.info_gid),
+  startDay: r.start_day === null || r.start_day === undefined ? null : n(r.start_day),
+  runAtMinute: n(r.run_at_minute),
+  ownerId: sn(r.owner_id),
+  lastRunDay: r.last_run_day === null || r.last_run_day === undefined ? null : n(r.last_run_day),
+});
+
+const toLedgerEntry = (r: Row): LedgerEntry => ({
+  id: n(r.id),
+  panelId: n(r.panel_id),
+  uniqueId: s(r.unique_id),
+  sourceKey: sn(r.source_key),
+  pilot: s(r.pilot),
+  fshubId: r.fshub_id === null || r.fshub_id === undefined ? null : n(r.fshub_id),
+  account: s(r.account),
+  cents: n(r.cents),
+  status: s(r.status) === 'paid' ? 'paid' : s(r.status) === 'failed' ? 'failed' : 'sending',
+  detail: sn(r.detail),
+  createdAt: n(r.created_at),
+  updatedAt: n(r.updated_at),
+});

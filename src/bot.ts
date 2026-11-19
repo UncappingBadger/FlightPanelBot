@@ -11,6 +11,8 @@ import type { BotContext } from './discord/context.js';
 import { Notifier } from './discord/notifier.js';
 import { MarketService } from './discord/market.js';
 import { PanelService } from './discord/panel.js';
+import { PayrollDaily } from './discord/payrollUi.js';
+import { PAYROLL_FLAG, payrollEnabled } from './features.js';
 import { registerInteractionRouter } from './discord/router.js';
 import { DEMO } from './discord/ui.js';
 import { loadServiceAccount, tokenProvider } from './google/serviceAccount.js';
@@ -33,6 +35,8 @@ import { JobService } from './services/jobs.js';
 import { AeroconomyAccountClient } from './aeroconomy/account.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
 import { AirlineProfits } from './services/airlineProfits.js';
+import { NotConnectedGateway } from './services/payGateway.js';
+import { Payroll } from './services/payrollService.js';
 import { AeroNumbers } from './services/aeroNumbers.js';
 import { HourlySlot } from './services/hourlySlot.js';
 import { FlightEtas } from './services/flightEtas.js';
@@ -192,8 +196,14 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const dailyNote = config.dailyNote
     ? new DailyNote({ store, target: config.dailyNote, send: async (userId, content) => (await notifier?.dm(userId, content)) === true, reachable: async (userId) => (await notifier?.sharesServerWith(userId)) !== false, airlineName: () => airlineOf(config.dailyNote!.userId), logger: log })
     : null;
+  // Paying pilots: the list of what is due is made from the airline's sheet, checked by an admin, and (once the bank is connected) paid. It is built
+  // but switched off (see src/features.ts) until the bank connection exists: unless a developer turns it on, nothing of it is registered or run.
+  const payroll = payrollEnabled() ? new Payroll({ store, gateway: new NotConnectedGateway(), writeback, logger: log }) : null;
+  if (payroll) log.info(`Paying pilots is switched on (${PAYROLL_FLAG}). There is no bank connection, so nothing can be paid.`);
+  let payrollDaily: PayrollDaily | null = null;
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
+    ...(payroll ? { payroll: { run: async () => void (await payrollDaily?.run()) } } : {}),
     reminders,
     markets: market,
     panels,
@@ -213,7 +223,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), logger: log })
     : null;
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({
@@ -225,6 +235,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   notifier = new Notifier(client, panels, log);
   notifier.subscribe(events);
   registerInteractionRouter(client, ctx);
+  if (payroll) payrollDaily = new PayrollDaily(ctx, client);
 
   const servers = new Map<string, ServerInfo>();
   const publish = () => opts.onServers?.([...servers.values()]);

@@ -20,6 +20,7 @@ import type { FlightEtas } from '../services/flightEtas.js';
 import type { FsHubSync } from '../services/fshubSync.js';
 import type { JobService } from '../services/jobs.js';
 import type { SourceRefresher } from '../services/refresh.js';
+import type { Payroll } from '../services/payrollService.js';
 import type { SheetWriteBack } from '../services/writeback.js';
 import type { Logger } from '../util/log.js';
 import type { MarketService } from './market.js';
@@ -54,6 +55,8 @@ export interface BotContext {
   numbers?: AeroNumbers | null;
   /** Compares Aeroconomy's profit per flight with the sheet's Profit Made, for `/setup profit`; null when the bot has no FsHub token. */
   profits?: AirlineProfits | null;
+  /** Makes the list of pilot payments and (once the bank is connected) pays it, for `/payroll`; absent or null in tests that do not use it. */
+  payroll?: Payroll | null;
   /** The one moment each hour at which all the hourly checks happen; absent in tests that do not use it. */
   slot?: HourlySlot;
   log: Logger;

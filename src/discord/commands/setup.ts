@@ -268,7 +268,7 @@ function setupAccess(ctx: BotContext, interaction: ChatInputCommandInteraction, 
 }
 
 /** Which panel an admin means: by name, abbreviation or flight prefix, or the only one if there is just one. */
-function pickPanel(ctx: BotContext, guildId: string, input: string | null): Panel {
+export function pickPanel(ctx: BotContext, guildId: string, input: string | null): Panel {
   const panels = ctx.store.listPanels(guildId);
   if (panels.length === 0) throw new UserError('This server has no flight panel yet. Create one with `/setup panel-add`.');
   if (!input) {
