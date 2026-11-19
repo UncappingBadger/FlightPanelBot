@@ -1,6 +1,7 @@
 import type { Panel } from '../db/store.js';
 import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js';
 import { parseLegChain } from '../jobs/import.js';
+import { normalizeFlightNumber, type NumberlessRow } from '../jobs/types.js';
 import { isUnsetPay } from './contributions.js';
 import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
@@ -100,8 +101,9 @@ interface Located {
  * the tab afresh and finds the row again by the flight's route and date, so a sheet that has been
  * edited or re-sorted in the meantime is never written to blindly.
  *
- * The one other thing it can write is a blank Profit Made cell, and the pilot's pay in a blank (or $0) Pilot Pay cell beside it, and only when an
- * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`). It never changes any other cell that has anything in it.
+ * Besides those it can write a blank Profit Made cell, and the pilot's pay in a blank (or $0) Pilot Pay cell beside it, and only when an
+ * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`); and blank Distance and Flight Number cells (`fillDistances`,
+ * `fillFlightNumbers`, as a schedule is read). It never changes any other cell that has anything in it.
  * The one more is the Pilot Paid box of a flight whose pilot has just been paid (`markPilotsPaid`, from `/payroll`), which it only ever ticks.
  */
 export class SheetWriteBack {
@@ -214,6 +216,28 @@ export class SheetWriteBack {
       else if (!same(at.pilot, name)) throw new WriteBackError('CONFLICT', `The sheet names **${at.pilot}** for that flight, so I haven't ticked it.`, at.pilot);
       if (!at.ticked) cells.push({ a1: at.doneCell, value: true });
       await this.write(at, cells);
+    });
+  }
+
+  /**
+   * Complete a flight for its backup pilot, who flew it in place of the pilot: the Pilot cell takes the backup's name, the Flight Completed box is
+   * ticked, and the backup's own name comes off the Backup Pilot cell, all in one write. The Pilot cell is only changed if it is empty or still holds
+   * `from` (the name this bot wrote for the pilot); a cell that names anyone else is never replaced. Refuses if the flight is cancelled or already
+   * shown as completed. Returns whether the backup's name was taken off the Backup Pilot cell (only where it still held `backupName`, the name this bot wrote).
+   */
+  completeAsBackup(panel: Panel, sourceKey: string, change: { from: string | null; to: string; backupName: string | null }): Promise<{ backupCleared: boolean }> {
+    return this.serial(async () => {
+      const at = await this.locate(panel, sourceKey);
+      if (isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet shows that flight as cancelled.');
+      if (at.ticked) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed.');
+      const cells: Cell[] = [];
+      if (at.pilot === '' || (change.from !== null && same(at.pilot, change.from))) cells.push({ a1: at.pilotCell, value: change.to });
+      else if (!same(at.pilot, change.to)) throw new WriteBackError('CONFLICT', `The sheet names **${at.pilot}** for that flight, so I haven't changed it.`, at.pilot);
+      cells.push({ a1: at.doneCell, value: true });
+      const backupCleared = at.backupCell !== null && change.backupName !== null && same(at.backup, change.backupName);
+      if (backupCleared) cells.push({ a1: at.backupCell as string, value: '' });
+      await this.write(at, cells);
+      return { backupCleared };
     });
   }
 
@@ -403,6 +427,51 @@ export class SheetWriteBack {
           if (misleading.length > 0) await this.api.setNumberFormat(ref, formats.sheetId, col, misleading, DISTANCE_FORMAT);
           await this.api.update(ref, tab.title, cells);
           this.log.info(`Wrote ${cells.length} blank Distance cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}${misleading.length > 0 ? ` (${misleading.length} of them were formatted as dates, money or the like, and were given a plain number format)` : ''}`);
+        }
+        return { written: cells.length };
+      } catch (e) {
+        throw this.wrap(e);
+      }
+    });
+  }
+
+  /**
+   * Write each flight's own flight number into its Flight Number cell, but only where that cell has nothing in it. The tab is read afresh, twice
+   * (what the cells show and what is stored in them, so a formula that shows nothing still counts as filled), and every row of it is looked at, however
+   * long ago it was flown. `numbersFor` is given the rows whose cell is empty and returns the number for each (null where it cannot say). A number is
+   * never written to a row when another row for the same flight (the same two airports on the same day) already shows that number, and nothing that is
+   * already in a cell is ever replaced. Nothing is asked of Google when there is nothing to write. Returns how many cells were written.
+   */
+  fillFlightNumbers(panel: Panel, numbersFor: (rows: NumberlessRow[]) => Array<string | null>): Promise<{ written: number }> {
+    return this.serial(async () => {
+      const ref = this.refOf(panel);
+      try {
+        const tab = await this.api.readTab(ref);
+        const stored = await this.api.readTab(ref, 'FORMULA');
+        const parsed = parseScheduleValues(tab.values, this.now(), true);
+        if (!parsed || parsed.cols.flightNo < 0) return { written: 0 };
+        const col = parsed.cols.flightNo;
+        const blank = (parsed.blankFlightNumbers ?? []).filter((r) => {
+          const row = parsed.rowOf.get(r.key);
+          return row !== undefined && (stored.values[row - 1]?.[col] ?? '') === '';
+        });
+        if (blank.length === 0) return { written: 0 };
+        const shown = new Set<string>();
+        for (const [key, row] of parsed.rowOf) {
+          const number = normalizeFlightNumber(tab.values[row - 1]?.[col] ?? '');
+          if (number) shown.add(`${key.split('#')[0]}|${number}`);
+        }
+        const numbers = numbersFor(blank);
+        const cells: Cell[] = [];
+        blank.forEach((r, i) => {
+          const number = numbers[i];
+          const row = parsed.rowOf.get(r.key);
+          if (!number || row === undefined || shown.has(`${r.key.split('#')[0]}|${number}`)) return;
+          cells.push({ a1: `${colLetter(col)}${row}`, value: number });
+        });
+        if (cells.length > 0) {
+          await this.api.update(ref, tab.title, cells);
+          this.log.info(`Wrote ${cells.length} blank Flight Number cell${cells.length === 1 ? '' : 's'} in the airline's sheet: ${cells.map((c) => c.a1).join(', ')}`);
         }
         return { written: cells.length };
       } catch (e) {

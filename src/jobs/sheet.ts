@@ -193,8 +193,11 @@ export interface ParsedSchedule extends FetchedJobs {
   /** The sheet row (1 = the first row) each flight's key was read from. */
   rowOf: Map<string, number>;
   /** Zero-based column positions, or -1 if the tab has no such column. */
-  cols: { pilot: number; done: number; profit: number; pay: number; distance: number };
+  cols: { pilot: number; done: number; profit: number; pay: number; distance: number; flightNo: number };
 }
+
+/** Column titles (as `canon` writes them) that hold the airline's own flight number of a flight. */
+export const FLIGHT_NUMBER_COLUMNS = ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'];
 
 /** Column titles (as `canon` writes them) that hold a flight's profit: the airline's own, not a pilot's pay. */
 export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofit'];
@@ -251,7 +254,7 @@ const hasWindowColumn = (names: string[]) => names.some((n) => n.includes('windo
  * Read a schedule tab: one flight per row, with a route, a date, a landing window and the pilot who
  * signed up. A row that can't be read is skipped and reported, never allowed to stop the others.
  */
-function parseScheduleRows(rows: string[][], header: { index: number; names: string[] }, now: number): ParsedSchedule {
+function parseScheduleRows(rows: string[][], header: { index: number; names: string[] }, now: number, keepOld = false): ParsedSchedule {
   const { names } = header;
   const at = (pred: (n: string) => boolean) => names.findIndex(pred);
   const iRoute = at((n) => n === 'route');
@@ -266,13 +269,14 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iDistance = at((n) => DISTANCE_COLUMNS.includes(n));
   const iSequence = at((n) => SEQUENCE_COLUMNS.includes(n));
   // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
-  const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
+  const iFlightNo = at((n) => FLIGHT_NUMBER_COLUMNS.includes(n));
 
   const warnings: string[] = [];
   const jobs: SourceJob[] = [];
   const rowOf = new Map<string, number>();
   const seenKeys = new Map<string, number>();
   const blankDistances: string[] = [];
+  const blankNumbers = new Set<string>();
 
   for (let i = header.index + 1; i < rows.length; i++) {
     const r = rows[i] as string[];
@@ -305,7 +309,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     } else {
       warnings.push(`${label}: couldn't read the landing window "${str(cell(iWindow), 30) ?? ''}", so the whole day is used`);
     }
-    if (deadline < now - KEEP_FINISHED_FOR_MS) continue; // long over; nothing to show
+    if (!keepOld && deadline < now - KEEP_FINISHED_FOR_MS) continue; // long over; nothing to show (unless every row is wanted, to find the empty ones)
 
     const pilot = cell(iPilot);
     const backup = cell(iBackup);
@@ -326,6 +330,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     rowOf.set(key, rowNo);
     // A Distance cell with nothing in it (not a space, not a zero) is one the bot can fill in. A cancelled flight is not worth it.
     if (iDistance >= 0 && !cancelled && (r[iDistance] ?? '') === '') blankDistances.push(key);
+    // The same for a Flight Number cell (nothing in it at all: not a space, not a note).
+    if (iFlightNo >= 0 && (r[iFlightNo] ?? '') === '') blankNumbers.add(key);
 
     let flightNumber: string | null = null;
     const rawNumber = cell(iFlightNo);
@@ -370,7 +376,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     for (const j of jobs) if (j.flightNumber === number) j.flightNumber = null;
   }
 
-  if (jobs.length > MAX_JOBS) {
+  if (jobs.length > MAX_JOBS && !keepOld) {
     warnings.push(`the sheet has ${jobs.length} flights; only the last ${MAX_JOBS} are used`);
     jobs.splice(0, jobs.length - MAX_JOBS);
   }
@@ -379,15 +385,21 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     jobs,
     warnings: capWarnings(warnings),
     rowOf,
-    cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, distance: iDistance },
+    cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, distance: iDistance, flightNo: iFlightNo },
     ...(iDistance >= 0 ? { blankDistances: blankDistances.filter((k) => kept.has(k)) } : {}),
+    ...(iFlightNo >= 0
+      ? { blankFlightNumbers: jobs.filter((j) => blankNumbers.has(j.key)).map((j) => ({ key: j.key, legs: j.legs.map((l) => ({ dep: l.dep, arr: l.arr })), availableFrom: j.availableFrom, deadline: j.deadline })) }
+      : {}),
   };
 }
 
-/** A schedule tab given as rows of cells (as the Sheets API returns it). Null if it isn't a schedule layout. */
-export function parseScheduleValues(values: string[][], now: number): ParsedSchedule | null {
+/**
+ * A schedule tab given as rows of cells (as the Sheets API returns it). Null if it isn't a schedule layout. Rows long over are left out, as the
+ * panel does not show them, unless `keepOld`: every row of the sheet is then read (for finding the empty cells of a column the bot fills in).
+ */
+export function parseScheduleValues(values: string[][], now: number, keepOld = false): ParsedSchedule | null {
   const header = findHeader(values);
-  return header && hasWindowColumn(header.names) ? parseScheduleRows(values, header, now) : null;
+  return header && hasWindowColumn(header.names) ? parseScheduleRows(values, header, now, keepOld) : null;
 }
 
 /**
@@ -400,7 +412,16 @@ export function parseSheetCsv(text: string, now: number): FetchedJobs {
   if (rows.length === 0) throw new ImportError('That sheet is empty.');
 
   const schedule = parseScheduleValues(rows, now);
-  if (schedule) return { jobs: schedule.jobs, warnings: schedule.warnings, ...(schedule.blankDistances ? { blankDistances: schedule.blankDistances } : {}) };
+  if (schedule) {
+    // The empty Flight Number cells are looked for in every row of the sheet, however long ago it was flown (the panel itself drops those).
+    const everyRow = schedule.blankFlightNumbers ? parseScheduleValues(rows, now, true)?.blankFlightNumbers : undefined;
+    return {
+      jobs: schedule.jobs,
+      warnings: schedule.warnings,
+      ...(schedule.blankDistances ? { blankDistances: schedule.blankDistances } : {}),
+      ...(everyRow ? { blankFlightNumbers: everyRow } : {}),
+    };
+  }
 
   try {
     return { jobs: parseJobsFile(text, 'sheet.csv'), warnings: [] };

@@ -1228,6 +1228,25 @@ export class Store {
   }
 
   /**
+   * Every flight on a panel that has a backup pilot, not yet completed, that is open or whose deadline is after `deadlineAfter` (with its
+   * legs and its backup). Soonest deadline first. Used to credit a flight to its backup when FsHub shows the backup flew it.
+   */
+  listBackedJobViews(panelId: number, deadlineAfter: number): JobView[] {
+    const jobs = this.all(
+      `SELECT DISTINCT j.* FROM jobs j JOIN job_backups b ON b.job_id = j.id
+       WHERE j.panel_id = ? AND j.completed_at IS NULL
+         AND (j.status = 'open' OR (j.status = 'expired' AND j.deadline IS NOT NULL AND j.deadline > ?))
+       ORDER BY (j.deadline IS NULL), j.deadline, j.id`,
+      panelId,
+      deadlineAfter,
+    ).map(toJob);
+    const ids = jobs.map((j) => j.id);
+    const legs = this.legViews(ids);
+    const backups = this.backupViews(ids);
+    return jobs.map((job) => ({ job, legs: legs.get(job.id) ?? [], backup: backups.get(job.id) ?? null }));
+  }
+
+  /**
    * Flights on a panel that the airline's sheet puts a name against while nobody holds any leg of them in Discord, not yet
    * completed, that are open or whose deadline is after `deadlineAfter`. Soonest deadline first. These are the flights a
    * pilot may be flying without having pressed Reserve.

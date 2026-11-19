@@ -38,7 +38,10 @@ export interface NumberedJob {
 export type NumberState = 'own' | 'numbered' | 'ambiguous' | 'none';
 export interface NumberMatch {
   state: NumberState;
+  /** The ID the flight takes (the number, with the day on the end when the same number is flown on several days). */
   code: string | null;
+  /** The flight number itself, as the airline writes it, for a flight that is exactly one published flight (what goes in a sheet's Flight Number cell). */
+  number: string | null;
 }
 
 /**
@@ -85,10 +88,10 @@ export function matchNumbers(jobs: NumberedJob[], flights: AeroFlight[]): Number
   const claimed = new Map<AeroFlight, number>();
   for (const p of proposals) if (typeof p === 'object') claimed.set(p, (claimed.get(p) ?? 0) + 1);
   return proposals.map((p): NumberMatch => {
-    if (p === 'own') return { state: 'own', code: null };
-    if (p === 'none') return { state: 'none', code: null };
-    if (p === 'ambiguous' || (claimed.get(p) ?? 0) > 1) return { state: 'ambiguous', code: null };
-    return { state: 'numbered', code: codes.get(p) ?? null };
+    if (p === 'own') return { state: 'own', code: null, number: null };
+    if (p === 'none') return { state: 'none', code: null, number: null };
+    if (p === 'ambiguous' || (claimed.get(p) ?? 0) > 1) return { state: 'ambiguous', code: null, number: null };
+    return { state: 'numbered', code: codes.get(p) ?? null, number: normalizeFlightNumber(p.number) };
   });
 }
 
@@ -173,6 +176,18 @@ export class AeroNumbers {
     if (!cache) return jobs;
     const matches = matchNumbers(jobs, cache.flights);
     return jobs.map((j, i) => (matches[i]?.code ? { ...j, flightNumber: matches[i]!.code } : j));
+  }
+
+  /**
+   * The flight number (as the airline writes it) of each of these flights, for a sheet's empty Flight Number cells: the same flights that
+   * `enrich` would give a number to, and null for the others. Nothing is known for a panel that does not follow Aeroconomy's numbers or has not
+   * read them yet.
+   */
+  numbersFor(panel: Panel, jobs: NumberedJob[]): Array<string | null> {
+    if (!panel.flightNumbers || panel.fshubAirlineId === null) return jobs.map(() => null);
+    const cache = this.cacheFor(panel.fshubAirlineId);
+    if (!cache) return jobs.map(() => null);
+    return matchNumbers(jobs, cache.flights).map((m) => m.number);
   }
 
   /** How a panel's open flights stand against what was read: for `/setup flight-numbers`. Null when the panel does not follow. */

@@ -980,9 +980,12 @@ export const setupCommand: Command = {
             ? "I haven't read Aeroconomy yet. The first read takes a few minutes (it goes slowly on purpose, so Aeroconomy is not hammered), and the flights are renamed as soon as it is done."
             : `Last read ${ts(cover.readAt, 'R')}: ${cover.flights} flights from ${cover.contracts} contract${cover.contracts === 1 ? '' : 's'}. Of the ${cover.open} open flights, ${cover.numbered} ${cover.numbered === 1 ? 'has' : 'have'} a number, ${cover.ambiguous} could be more than one Aeroconomy flight (left alone) and ${cover.none} match none.`,
           'A number that is flown on several days carries the day (`SKY330-17NOV`); pilots can type just the number when only one such flight is open. A flight with a number has its ID changed on the panel, once.',
+          current.sheetId !== null && ctx.writeback?.enabledFor(current)
+            ? "Where the sheet has a *Flight Number* column, I also write each flight's number into its empty cells there, flights long past included, and never over anything that is already in a cell."
+            : null,
           "Only Aeroconomy's public pages are read: no account or token, and nothing about anyone is sent. Switch it off with `/setup flight-numbers mode:off`.",
         ];
-        await interaction.editReply({ content: lines.join('\n'), allowedMentions: noPings });
+        await interaction.editReply({ content: lines.filter((l) => l !== null).join('\n'), allowedMentions: noPings });
         return;
       }
 

@@ -592,7 +592,7 @@ export function makeDiscordHarness(
   const notifier = new Notifier(client as unknown as Client, panels, silentLogger);
   // As in the real bot: the hourly completion, which tells each pilot in a DM (FakeUser records them).
   const autoComplete = fshubSync
-    ? new AutoCompleter({ store: h.store, jobs: h.jobs, sync: fshubSync, writeback: opts.writeback ?? null, logger: silentLogger, now, onCompleted: (discordId, done) => notifier.autoCompleted(discordId, done) })
+    ? new AutoCompleter({ store: h.store, jobs: h.jobs, sync: fshubSync, writeback: opts.writeback ?? null, logger: silentLogger, now, onCompleted: (discordId, done) => notifier.autoCompleted(discordId, done), onReplaced: (done) => notifier.backupTookOver(done) })
     : null;
   panels.fshubEnabled = fshub !== null;
   const ctx: BotContext = {

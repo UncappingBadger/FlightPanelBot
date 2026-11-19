@@ -1,6 +1,6 @@
-import type { FlownFlight, JobView, Panel, Store } from '../db/store.js';
+import type { FlownFlight, Holder, JobView, Panel, Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
-import { confirmationsFor } from './flightMatch.js';
+import { confirmationsFor, type Confirmations } from './flightMatch.js';
 import type { FsHubSync } from './fshubSync.js';
 import { HourlySlot } from './hourlySlot.js';
 import { COMPLETE_AFTER_DEADLINE_MS, JobError, type JobService } from './jobs.js';
@@ -45,6 +45,8 @@ export interface AutoCompleted {
   sheetTicked: boolean;
   /** For a flight nobody reserved here: the name the airline's sheet had against it, which was taken to be this pilot. */
   namedAs?: string | null;
+  /** For a flight the pilot flew as its backup: the pilot who held it, whom they replaced. */
+  replaced?: { discordId: string; username: string };
 }
 
 export interface AutoCompleteResult {
@@ -58,12 +60,14 @@ export interface AutoCompleteResult {
 
 export interface AutoCompleteDeps {
   store: Store;
-  jobs: Pick<JobService, 'complete' | 'completeNamed'>;
+  jobs: Pick<JobService, 'complete' | 'completeNamed' | 'completeAsBackup'>;
   sync: Pick<FsHubSync, 'refreshFlights'>;
   /** Writes the tick to the airline's sheet; null when the bot has no Google credentials. */
-  writeback: Pick<SheetWriteBack, 'enabledFor' | 'complete'> | null;
+  writeback: (Pick<SheetWriteBack, 'enabledFor' | 'complete'> & Partial<Pick<SheetWriteBack, 'completeAsBackup'>>) | null;
   /** Told, once per pilot, which of their flights were completed, so they can be told too. A failure here never undoes a completion. */
   onCompleted?: (discordId: string, done: AutoCompleted[]) => Promise<void>;
+  /** Told, for each flight that was completed for its backup, so the pilot who held it can be told (it was their reservation that was replaced). */
+  onReplaced?: (done: AutoCompleted) => Promise<void>;
   logger?: Logger;
   now?: () => number;
   /** The moment each hour at which the hourly checks happen together. */
@@ -81,7 +85,10 @@ export interface AutoCompleteDeps {
  * - a flight named only in the airline's sheet (no Discord holder) is completed only for a pilot who has told the bot that
  *   name (or had it written for them), whom no other account shares it with, and whom FsHub shows flying it: a name in a
  *   sheet is only someone's word, and a name two pilots answer to is nobody's;
- * - where write-back is on, the sheet is ticked first, and a flight the sheet will not accept is left alone.
+ * - where write-back is on, the sheet is ticked first, and a flight the sheet will not accept is left alone;
+ * - a flight that has a backup pilot, held by one pilot whom FsHub shows flying none of it, is completed for the backup instead when FsHub
+ *   shows the backup (a pilot whose FsHub ID the bot knows) flying every leg: the backup takes the pilot's place on the flight, and in the
+ *   sheet's Pilot cell where the bot wrote the pilot's name (never over any other name). If the pilot flew any of it, the pilot is the one credited.
  */
 export class AutoCompleter {
   constructor(private readonly d: AutoCompleteDeps) {}
@@ -116,7 +123,7 @@ export class AutoCompleter {
     }
 
     const current = store.getPanel(panel.id) ?? panel;
-    const started = (v: JobView) => v.job.availableFrom === null || v.job.availableFrom <= now;
+    const started = (v: JobView) => hasStarted(v, now);
     const held = store
       .listAllHeldJobViews(current.id, now - COMPLETE_AFTER_DEADLINE_MS)
       .filter(started)
@@ -167,6 +174,11 @@ export class AutoCompleter {
       completed.push(done);
       this.log.info(`Auto-completed ${view.job.code} for ${current.airlineName} from FsHub`);
     }
+
+    // Flights a backup pilot flew in place of the pilot who held them.
+    const credited = await this.creditBackups(current, scope, confirmed, new Set(completed.map((c) => c.view.job.id)), now);
+    completed.push(...credited.completed);
+
     if (!scope.only) {
       this.retryAt.delete(current.id);
       store.updatePanel(current.id, { fshubAutoCompleteAt: now });
@@ -184,7 +196,79 @@ export class AutoCompleter {
         this.log.debug(`Could not tell ${pilot} about ${done.length} completed flight${done.length === 1 ? '' : 's'}`, e);
       }
     }
-    return { ok: true, note: null, checked: candidates.length, completed };
+    // The pilot whose flight was taken over is always told: it was their reservation that was replaced, and that is never switched off.
+    for (const c of completed.filter((x) => x.replaced)) {
+      try {
+        await this.d.onReplaced?.(c);
+      } catch (e) {
+        this.log.debug(`Could not tell ${c.replaced?.discordId} that their flight ${c.view.job.code} was completed for its backup`, e);
+      }
+    }
+    return { ok: true, note: null, checked: candidates.length + credited.checked, completed };
+  }
+
+  /**
+   * Flights with a backup pilot that FsHub shows the backup flew, and the pilot who held them did not: each is completed for the backup, who
+   * takes the pilot's place on it (in the airline's sheet too, where the bot writes to it and the sheet still has the name the bot wrote for the
+   * pilot). Only where every leg is held by one pilot and both pilots' FsHub IDs are known, and the pilot flew none of it: a flight both of them
+   * flew is the pilot's, and one flown in part by each is left for an admin. Returns what was completed and how many flights were looked at.
+   */
+  private async creditBackups(current: Panel, scope: AutoCompleteScope, confirmed: Confirmations, alreadyDone: ReadonlySet<number>, now: number): Promise<{ completed: AutoCompleted[]; checked: number }> {
+    const { store } = this.d;
+    const candidates = store
+      .listBackedJobViews(current.id, now - COMPLETE_AFTER_DEADLINE_MS)
+      .filter((v) => hasStarted(v, now) && !alreadyDone.has(v.job.id))
+      .flatMap((view) => {
+        const holder = soleHolder(view);
+        const backup = view.backup;
+        return holder !== null && backup && backup.discordId !== holder && this.trusted(holder) && this.trusted(backup.discordId) ? [{ view, holder, backup }] : [];
+      })
+      .filter((c) => !scope.only || scope.only.has(c.backup.discordId));
+    if (candidates.length === 0) return { completed: [], checked: 0 };
+
+    // The pilot first: a flight they flew any of is theirs, however the backup stood by.
+    const pilotFlew = confirmationsFor(store, current, candidates.map((c) => c.view), now, { strict: true });
+    const open = candidates.filter((c) => (pilotFlew.get(c.view.job.id)?.size ?? 0) === 0);
+    const backupPilots = new Map<number, number>();
+    for (const c of open) backupPilots.set(c.view.job.id, trustedFshubId(store, c.backup.discordId) as number);
+    const taken = [...confirmed.values()].flatMap((legs) => [...legs.values()].map((f) => f.flightId));
+    const flown = confirmationsFor(store, current, open.map((c) => c.view), now, { strict: true, backupPilots, taken });
+
+    const completed: AutoCompleted[] = [];
+    for (const { view, holder, backup } of open) {
+      const legs = flown.get(view.job.id);
+      if (!legs || legs.size < view.legs.length) continue; // FsHub has not shown the backup flying every leg
+      const heldBy = view.legs[0]?.holder as Holder;
+      const backupName = store.getPilotName(backup.discordId) ?? backup.username;
+
+      // The airline's sheet first, where the bot writes to it: the backup takes the pilot's place in the Pilot cell, and the flight is ticked.
+      let wroteName: string | null = null;
+      if (current.sheetId && this.d.writeback?.enabledFor(current) && view.legs.length === 1) {
+        if (!this.d.writeback.completeAsBackup) continue;
+        const written = store.getBackupSheetName(view.job.id);
+        try {
+          await this.d.writeback.completeAsBackup(current, view.job.sourceKey, {
+            from: heldBy.sheetName ?? store.getPilotName(holder) ?? heldBy.username,
+            to: backupName,
+            backupName: written && written.discordId === backup.discordId ? written.name : null,
+          });
+          wroteName = backupName;
+        } catch (e) {
+          if (!(e instanceof WriteBackError)) throw e;
+          this.log.warn(`Auto-complete: ${view.job.code} was flown by its backup but not completed: ${e.message}`);
+          continue;
+        }
+      }
+      try {
+        this.d.jobs.completeAsBackup(view.job.id, { discordId: backup.discordId, username: backup.username }, wroteName, 'fshub');
+      } catch (e) {
+        if (!(e instanceof JobError)) throw e;
+        continue; // completed or changed meanwhile
+      }
+      completed.push({ panel: current, view, discordId: backup.discordId, flights: legs, sheetTicked: wroteName !== null, replaced: { discordId: holder, username: heldBy.username } });
+      this.log.info(`Auto-completed ${view.job.code} for ${current.airlineName} from FsHub, for its backup pilot`);
+    }
+    return { completed, checked: open.length };
   }
 
   /** Check every FsHub-linked panel that is due (once in each hourly slot, and not at all where an admin switched it off). */
@@ -202,6 +286,11 @@ export class AutoCompleter {
   private trusted(discordId: string): boolean {
     return trustedFshubId(this.d.store, discordId) !== null;
   }
+}
+
+/** Whether a flight's window has opened: a flight is not looked for in FsHub before it can be flown. */
+function hasStarted(view: JobView, now: number): boolean {
+  return view.job.availableFrom === null || view.job.availableFrom <= now;
 }
 
 /** Who answers to each name (lower case): the Discord accounts that have given the bot that name or had it written for them. */

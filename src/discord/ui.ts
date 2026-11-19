@@ -139,7 +139,8 @@ export function autoCompletedMessage(done: AutoCompleted[]): string {
         ? flightFacts(legs[0]![1], c.view.job.aircraft)
         : legs.map(([no, f]) => `leg ${no}: ${flightFacts(f, c.view.job.aircraft)}`).join('; ');
     const named = c.namedAs ? ` · the airline's sheet had **${plainText(truncate(c.namedAs, 40))}** against it, a name I know you by` : '';
-    return `✅ **${c.view.job.code}** (${routeText(c.view.legs)}): ${facts}${c.sheetTicked ? " · ticked in the airline's sheet" : ''}${named}`;
+    const instead = c.replaced ? ` · you were its backup, so it is yours now, in place of ${plainText(truncate(c.replaced.username, 40))}` : '';
+    return `✅ **${c.view.job.code}** (${routeText(c.view.legs)}): ${facts}${c.sheetTicked ? " · ticked in the airline's sheet" : ''}${named}${instead}`;
   });
   const airline = plainText(truncate(done[0]?.panel.airlineName ?? 'the airline', 60));
   const many = done.length > 1;
@@ -148,6 +149,18 @@ export function autoCompletedMessage(done: AutoCompleted[]): string {
     ...lines,
     'There is nothing for you to do. I check FsHub for your landings every hour.',
     NOTICE_HINT,
+  ].join('\n');
+}
+
+/**
+ * The DM telling a pilot that a flight they held was completed for its backup instead: FsHub showed the backup flew it and the pilot did not.
+ * It is about their own reservation, so it is always sent.
+ */
+export function backupTookOverMessage(c: AutoCompleted): string {
+  const airline = plainText(truncate(c.panel.airlineName, 60));
+  return [
+    `FsHub shows <@${c.discordId}>, who was down as backup for **${c.view.job.code}** (${routeText(c.view.legs)}) with **${airline}**, flew it, and it doesn't show you flying it. I marked it completed for them, so it is no longer yours.${c.sheetTicked ? " The airline's sheet has their name against it now and the flight is ticked." : ''}`,
+    'If that is wrong (you did fly it, or it should stay yours), tell an admin.',
   ].join('\n');
 }
 

@@ -24,6 +24,7 @@ import { LiveFeed } from './fshub/liveFeed.js';
 import { TwitchBridge } from './twitch/bridge.js';
 import { AirportDirectory } from './services/airports.js';
 import { DistanceFiller } from './services/distanceFill.js';
+import { FlightNumberFiller } from './services/flightNumberFill.js';
 import { AutoCompleter } from './services/autoComplete.js';
 import { DailyNote } from './services/dailyNote.js';
 import { DepartureWarnings } from './services/departureWarnings.js';
@@ -119,7 +120,11 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // A schedule sheet with a Distance column gets the distance of each flight filled in as the schedule is read (set up once the sheet
   // write-back and the airport positions exist, below).
   let distances: DistanceFiller | null = null;
-  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null, ...(DEBUG_BUILD ? { fetchFn: localSheetFetch(debugSheets, fetch, log) } : {}) }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, (panel, fetched) => distances?.run(panel, fetched));
+  // The same sheet's empty Flight Number cells get the flights' numbers written in, once the numbers are read (set up with the write-back, below).
+  let flightNumbers: FlightNumberFiller | null = null;
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null, ...(DEBUG_BUILD ? { fetchFn: localSheetFetch(debugSheets, fetch, log) } : {}) }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, async (panel, fetched) => {
+    await Promise.all([distances?.run(panel, fetched), flightNumbers?.run(panel, fetched)]);
+  });
   const panels = new PanelService(store, jobs, log);
   // AeroDAQ's in-game market and fuel prices: public and read-only. It is only asked when someone uses /fuel or a server has a market board.
   const aerodaq = new AeroDaqClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
@@ -154,7 +159,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
 
   // With FsHub, flights it shows flown are completed by themselves once an hour (the pilot is told in a DM).
   const autoComplete = fshubSync
-    ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, slot, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)) })
+    ? new AutoCompleter({ store, jobs, sync: fshubSync, writeback, logger: log, slot, onCompleted: async (discordId, done) => void (await notifier?.autoCompleted(discordId, done)), onReplaced: async (done) => void (await notifier?.backupTookOver(done)) })
     : null;
   panels.fshubEnabled = fshub !== null;
   // A pilot is warned shortly before the latest take-off that still makes a flight's window. How long the flight takes comes from the
@@ -162,6 +167,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // from the public OurAirports list) otherwise.
   const airports = new AirportDirectory(store, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
   distances = new DistanceFiller({ writeback, airports, positions: (codes) => store.getAirportCoords(codes), getPanel: (id) => store.getPanel(id), logger: log });
+  flightNumbers = new FlightNumberFiller({ writeback, numbers: aeroNumbers, logger: log });
   // FsHub's public live feed (no token): who is flying now, so a warning skips a pilot already in the air, and a flight is looked for in
   // FsHub's own record the minute its pilot lands (it is only completed when FsHub shows it flown).
   const liveFeed = new LiveFeed({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });

@@ -478,6 +478,26 @@ describe('following pilots live', () => {
       assert.match(String(alice.dms[0].content), /TST-001/);
     });
 
+    it('follows a flight\'s backup pilot too, and completes it for them the minute they land when FsHub shows they flew it', async () => {
+      hold('s'); // Alice holds it; Bob is its backup
+      h.jobs.addBackup(jobId('s'), { discordId: bob.id, username: bob.username });
+      feed.fly(1002, { dep: 'EGLL', arr: 'EGKK' });
+      await tracker.run();
+      assert.equal(tracker.statusOf(bob.id)!.state, 'airborne', 'the backup is followed');
+      await minute();
+      feed.land(1002);
+      await minute();
+      assert.equal(job('s').completedAt, null, 'FsHub has not registered the flight yet');
+      flown({ pilotId: 1002, pilotName: 'Bob', arrivedAt: h.clock.now - MIN });
+      await minute();
+      const j = job('s');
+      assert.deepEqual([j.status, j.completedBy, j.completedVia], ['expired', bob.id, 'fshub']);
+      assert.equal(tracker.waiting, 0);
+      await settle(60);
+      assert.match(String(bob.dms[0].content), /you were its backup/);
+      assert.match(String(alice.dms[0].content), /who was down as backup for \*\*TST-001\*\*/);
+    });
+
     it('never completes a flight FsHub does not show, however long the pilot has been down', async () => {
       await flyAndLand();
       for (let i = 0; i < 20; i++) await minute();

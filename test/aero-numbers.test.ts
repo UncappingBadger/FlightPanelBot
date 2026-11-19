@@ -223,8 +223,8 @@ describe('finding a flight\'s number', () => {
   const codeOf = (j: NumberedJob, f: AeroFlight[] = flights) => matchNumbers([j], f)[0]!;
 
   it('takes the number of the one flight with the same two airports and landing window, whichever way the minute falls', () => {
-    assert.deepEqual(codeOf(job('EGLL-EGKK', 0, 6)), { state: 'numbered', code: 'TST290' }, 'the sheet says :00, Aeroconomy :59');
-    assert.deepEqual(codeOf({ ...job('EGLL-EGKK', 0, 6), deadline: T0 + 6 * HOUR - 1000 }), { state: 'numbered', code: 'TST290' });
+    assert.deepEqual(codeOf(job('EGLL-EGKK', 0, 6)), { state: 'numbered', code: 'TST290', number: 'TST290' }, 'the sheet says :00, Aeroconomy :59');
+    assert.deepEqual(codeOf({ ...job('EGLL-EGKK', 0, 6), deadline: T0 + 6 * HOUR - 1000 }), { state: 'numbered', code: 'TST290', number: 'TST290' });
     assert.equal(codeOf({ ...job('EGLL-EGKK', 0, 6), deadline: T0 + 6 * HOUR + 3 * MIN }).state, 'none', 'three minutes out is another window');
     assert.equal(codeOf({ ...job('EGLL-EGKK', 0, 6), availableFrom: T0 + 3 * MIN }).state, 'none');
   });
@@ -242,7 +242,7 @@ describe('finding a flight\'s number', () => {
   });
 
   it('never replaces a number the source gave', () => {
-    assert.deepEqual(codeOf({ ...job('EGLL-EGKK', 0, 6), flightNumber: 'MINE1' }), { state: 'own', code: null });
+    assert.deepEqual(codeOf({ ...job('EGLL-EGKK', 0, 6), flightNumber: 'MINE1' }), { state: 'own', code: null, number: null });
   });
 
   it('does not use a cancelled flight', () => {
@@ -261,7 +261,7 @@ describe('finding a flight\'s number', () => {
 
   it('finds each of several rows its own flight', () => {
     const got = matchNumbers([job('EGLL-EGKK', 0, 6), job('EGKK-EGCC', 0, 6), job('EGCC-EGPH', 24, 30), job('EGPH-EGLL', 0, 6)], flights);
-    assert.deepEqual(got, [{ state: 'numbered', code: 'TST290' }, { state: 'numbered', code: 'TST400' }, { state: 'numbered', code: 'TST500' }, { state: 'none', code: null }]);
+    assert.deepEqual(got, [{ state: 'numbered', code: 'TST290', number: 'TST290' }, { state: 'numbered', code: 'TST400', number: 'TST400' }, { state: 'numbered', code: 'TST500', number: 'TST500' }, { state: 'none', code: null, number: null }]);
   });
 });
 

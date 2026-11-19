@@ -94,16 +94,16 @@ export class LiveTracker {
     for (const panel of this.d.store.listAllPanels()) {
       if (!panel.liveTracking) continue;
       const seen = new Set<string>();
-      for (const view of this.d.store.listAllHeldJobViews(panel.id, now - 2 * 86_400_000)) {
-        for (const leg of view.legs) {
-          const who = leg.holder?.discordId;
-          if (!who || seen.has(who)) continue;
-          seen.add(who);
-          const fshubId = trustedFshubId(this.d.store, who);
-          if (fshubId === null) continue;
-          out.set(fshubId, [...(out.get(fshubId) ?? []), { panel, discordId: who }]);
-        }
-      }
+      const follow = (who: string | undefined): void => {
+        if (!who || seen.has(who)) return;
+        seen.add(who);
+        const fshubId = trustedFshubId(this.d.store, who);
+        if (fshubId === null) return;
+        out.set(fshubId, [...(out.get(fshubId) ?? []), { panel, discordId: who }]);
+      };
+      for (const view of this.d.store.listAllHeldJobViews(panel.id, now - 2 * 86_400_000)) for (const leg of view.legs) follow(leg.holder?.discordId);
+      // A backup pilot may fly the flight in place of the pilot who holds it, so they are followed too.
+      for (const view of this.d.store.listBackedJobViews(panel.id, now - 2 * 86_400_000)) follow(view.backup?.discordId);
     }
     return out;
   }

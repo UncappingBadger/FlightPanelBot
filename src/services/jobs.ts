@@ -595,6 +595,35 @@ export class JobService {
     return view;
   }
 
+  /**
+   * Complete a flight for its backup pilot, in place of the pilot who held it: FsHub showed the backup flew it. The flight becomes the
+   * backup's (the pilot's reservation is replaced by theirs, on every leg, with `sheetName` as the name written for them in the airline's
+   * sheet, if it was), the backup spot is taken off, and the flight is completed as `complete` does. The caller has the proof (FsHub's record of
+   * the backup's own landing, and that the pilot flew none of it); the checks here are that this person is still the flight's backup, that one
+   * pilot still holds every leg, and that the flight is still open. Returns the flight as it now is and the pilot it was taken from.
+   */
+  completeAsBackup(jobId: number, backup: { discordId: string; username: string }, sheetName: string | null, via: 'fshub'): { view: JobView; replaced: Holder } {
+    const now = this.now();
+    const out = this.store.tx(() => {
+      const current = this.store.getJobView(jobId);
+      if (!current || !this.completableNow(current.job, now)) throw new JobError('NOT_FOUND', "That flight is no longer open, so it can't be completed from here.");
+      if (current.backup?.discordId !== backup.discordId) throw new JobError('BAD_INPUT', `You are not down as the backup for ${current.job.code} any more.`);
+      const replaced = current.legs[0]?.holder ?? null;
+      if (!replaced || current.legs.some((l) => l.holder?.discordId !== replaced.discordId)) throw new JobError('BAD_INPUT', `${current.job.code} is not held by one pilot on every leg, so it can't be given to its backup.`);
+      if (replaced.discordId === backup.discordId) throw new JobError('BAD_INPUT', `You are flying ${current.job.code} yourself.`);
+      for (const leg of current.legs) {
+        this.store.deleteReservation(jobId, leg.legNo);
+        this.store.insertReservation(jobId, leg.legNo, backup.discordId, backup.username, now);
+        if (sheetName !== null) this.store.setReservationSheetName(jobId, leg.legNo, sheetName);
+      }
+      this.store.deleteBackup(jobId);
+      this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: backup.discordId, completedVia: via });
+      return { view: this.store.getJobView(jobId) as JobView, replaced };
+    });
+    this.events.emit({ type: 'changed', panelId: out.view.job.panelId });
+    return out;
+  }
+
   /** Give legs back. With `legNos` omitted, releases everything the person holds on that job. Returns the legs freed. */
   release(jobId: number, discordId: string, legNos?: number[]): number[] {
     const ended: BackupNotice[] = [];

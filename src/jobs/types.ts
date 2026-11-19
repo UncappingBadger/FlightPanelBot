@@ -53,10 +53,24 @@ export interface SourceJob {
   completed?: boolean;
 }
 
+/** A flight row of a schedule sheet whose Flight Number cell is empty: what is needed to find the flight's number. */
+export interface NumberlessRow {
+  /** The row's key, the same as a `SourceJob`'s. */
+  key: string;
+  legs: Array<{ dep: string; arr: string }>;
+  availableFrom: number | null;
+  deadline: number | null;
+}
+
 /** What a source returns: the jobs, plus anything an admin should hear about (rows it had to skip). */
 export interface FetchedJobs {
   jobs: SourceJob[];
   warnings: string[];
+  /**
+   * A schedule sheet that has a Flight Number column: every flight row in it (however long ago it was flown, and whether or not the flight
+   * is cancelled) whose Flight Number cell is empty, which is what the bot can fill in. Missing when the sheet has no such column.
+   */
+  blankFlightNumbers?: NumberlessRow[];
   /**
    * A schedule sheet that has a Distance column: the keys of the flights whose Distance cell is empty (a cancelled flight is not one),
    * which is what the bot can fill in. Missing when the sheet has no such column.

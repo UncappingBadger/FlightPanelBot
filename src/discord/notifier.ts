@@ -5,7 +5,7 @@ import type { JobEvent, JobEvents, ReleasedNotice } from '../services/events.js'
 import { legList, truncate } from '../util/format.js';
 import type { PanelService } from './panel.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
-import { autoCompletedMessage, noPings } from './ui.js';
+import { autoCompletedMessage, backupTookOverMessage, noPings } from './ui.js';
 
 const REASON: Record<ReleasedNotice['reason'], string> = {
   removed: 'is no longer listed, so your reservation was released',
@@ -33,6 +33,17 @@ export class Notifier {
       await user.send({ content: autoCompletedMessage(done), allowedMentions: noPings });
     } catch (e) {
       this.log.debug(`Could not tell ${discordId} about flights completed from FsHub`, e);
+    }
+  }
+
+  /** Tell the pilot who held a flight that it was completed for its backup instead. Best effort, and never switched off (it is about their own reservation). */
+  async backupTookOver(done: AutoCompleted): Promise<void> {
+    if (!done.replaced) return;
+    try {
+      const user = await this.client.users.fetch(done.replaced.discordId);
+      await user.send({ content: backupTookOverMessage(done), allowedMentions: noPings });
+    } catch (e) {
+      this.log.debug(`Could not tell ${done.replaced.discordId} that ${done.view.job.code} was completed for its backup`, e);
     }
   }
 

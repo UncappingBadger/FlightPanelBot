@@ -53,20 +53,28 @@ export function confirmationsFor(
      * sheet's name is taken to be. A leg of such a flight counts only when that pilot's own flight confirms it.
      */
     namedPilots?: Map<number, number>;
+    /**
+     * For flights whose backup pilot is being checked: job ID to the FsHub pilot ID of its backup. A leg of such a flight counts only
+     * when that pilot's own flight confirms it, whoever holds the leg.
+     */
+    backupPilots?: Map<number, number>;
+    /** FsHub flights already taken as confirming something else, which no leg here may use. */
+    taken?: Iterable<number>;
   } = {},
 ): Confirmations {
   const out: Confirmations = new Map();
   if (!panel.fshubConfirm || panel.fshubAirlineId === null || views.length === 0) return out;
   if (store.countFshubFlights(panel.id) === 0) return out;
 
-  const claimed = new Set<number>();
+  const claimed = new Set<number>(opts.taken ?? []);
   for (const view of views) {
     const { from, to } = landingWindow(view.job, now);
     for (const leg of view.legs) {
       const candidates = store
         .listFshubFlights(panel.id, leg.dep.toUpperCase(), leg.arr.toUpperCase(), from, to)
         .filter((f) => !claimed.has(f.flightId));
-      const flight = pick(candidates, leg, opts.strict === true, opts.namedPilots?.get(view.job.id) ?? null);
+      const backup = opts.backupPilots?.get(view.job.id);
+      const flight = backup !== undefined ? candidates.filter((f) => f.pilotId === backup).at(-1) ?? null : pick(candidates, leg, opts.strict === true, opts.namedPilots?.get(view.job.id) ?? null);
       if (!flight) continue;
       claimed.add(flight.flightId);
       const legs = out.get(view.job.id) ?? new Map<number, FlownFlight>();

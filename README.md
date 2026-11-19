@@ -115,8 +115,9 @@ off again, if it is still the name the bot wrote, when they stand down, give the
 name>` changes it. A backup named in the sheet's *Backup Pilot* column by a person still shows as a note on the flight. Once an hour
 the bot also **goes back over every backup already down for a flight** and writes in any whose name never reached the sheet (they
 were put down before the bot wrote backups there, or the sheet could not be reached at the time), leaving alone any cell that
-names someone else or any finished flight, and never undoing the backup itself. Where a role is needed to reserve, it is needed
-to be a backup too.
+names someone else or any finished flight, and never undoing the backup itself. **If the backup flies the flight in the pilot's
+place**, the bot completes it for them (see [Completing automatically](#completing-automatically-every-hour)). Where a role is needed
+to reserve, it is needed to be a backup too.
 
 **My contributions.** **DM the bot `my contributions`** to see what the flights you completed made for the airline over the
 last 7 days (today and the six days before it, Zulu). The bot reads the airline's linked Google Sheet, finds the flights
@@ -297,7 +298,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 | `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
 | `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
 | `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
-| `/setup flight-numbers [mode] [airline]` | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (`/setup fshub`). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. |
+| `/setup flight-numbers [mode] [airline]` | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (`/setup fshub`). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. Where the bot writes to the sheet and the sheet has a *Flight Number* column, it also writes each flight's number into the column's empty cells. |
 | `/setup profit [action] [send-to] [channel] [who-can-write] [role] [airline] [business]` | Compare what Aeroconomy says each flight **made** (its aircraft logbooks) with the sheet's **Profit Made** column. By default it only **reports** (what agrees, what differs, what is blank) and changes nothing. `action:fill` shows the blank cells it would fill in and writes them only after someone presses **Write** on that preview. `send-to` chooses where that preview appears (only to you in the reply, your DMs, or a channel) and `who-can-write` / `role` lets the members of a role press **Write** too; `action:settings` shows what is set. Needs the bot's FsHub token, the panel linked to FsHub, and (to write) write-back on. Admins only. |
 | `/setup layout [mode] [dates] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
@@ -412,6 +413,17 @@ the name with, and whom FsHub shows flying every leg. It does not guess from Dis
   themselves by DMing the bot `notifications` (the flight is still completed), and the message ends with a line saying so.
 - **The sheet is ticked too** where write-back is set up, before the flight is marked completed. If the sheet won't
   accept it (it names someone else for that flight, say) the flight is left alone.
+- **A flight its backup flew is the backup's.** A flight that has a backup pilot, held by one pilot, is checked for the
+  backup as well: if FsHub shows the **backup** flying every leg between the right airports inside the window, and shows the
+  pilot who held it flying **none** of it, the flight is completed for the backup, who takes the pilot's place on it. The pilot
+  who held it is told in a DM (always: it was their reservation that was replaced), and so is the backup. Where write-back is
+  set up and the flight has one leg, the sheet follows in a single write: the **Pilot** cell takes the backup's name (only if
+  it still holds the name the bot wrote for the pilot, or is empty; any other name is never replaced, and then the flight is
+  left alone), the **Flight Completed** box is ticked, and the backup's own name comes off the **Backup Pilot** cell (if it is
+  still the name the bot wrote). So the profit fill and payroll, which find a flight's pilot by the sheet's **Pilot** name,
+  see the pilot who actually flew it. If the pilot flew any of it, the pilot is the one credited, as always; if each flew
+  a part, nothing is changed and an admin sorts it out. Both pilots' FsHub IDs must be known, since the bot can't say a pilot
+  did not fly a flight it can't look up. A backup is followed live like a pilot, so this happens the minute they land.
 - **If FsHub can't be read** nothing is completed and the check is tried again in ten minutes rather than an hour.
 - **Pressing Complete still works** and is instant; the hourly check is for pilots who don't press it.
 - **An admin can switch it off** per panel: `/setup fshub autocomplete:off` (pilots can still press Complete, and
@@ -533,7 +545,7 @@ The tab is found by its column headings, in any order. The layout it understands
 | `Backup Pilot` | shown as a note on the flight (the bot also writes a backup pilot's name here when they stand by, see [Writing to the sheet](#writing-to-the-sheet)) |
 | `Aircraft` | the required airframe |
 | `Flight Completed (by Pilot)` | `TRUE` takes the flight off the open list and shows it on the panel as ✅ completed, with the pilot's name, for 24 hours (see below). A `CANCELLED` pilot is never shown as completed. |
-| `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
+| `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. With `/setup flight-numbers` on and write-back set up, the bot writes the number into empty cells itself (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
 
 | `Daily Flight Sequence` (optional) | for flights that depend on one another (the same aircraft flies them one after another): where the flight stands in the day's run, `1`, `2`, `3`... (also headed `Flight Sequence`, `Daily Sequence` or `Sequence`). It is shown on the flight with its other notes, as *Flight sequence: 2*, so nobody needs a colour to see it. The bot only shows it; it does not hold a flight back for another. |
 | `Distance (NM)` (optional) | the distance of the flight in nautical miles (also headed `Distance`). **The bot fills this in itself**, see below. |
@@ -739,6 +751,13 @@ two airports and landing window (the end of a window may differ by up to two min
   `SKY330` when only one such flight is open.
 - **It never guesses.** A flight of several legs, a row with no landing window, a flight that two Aeroconomy flights could be, or two rows
   that want the same flight keep their automatic ID. A number the sheet gives itself (a *Flight Number* column) is never replaced.
+- **It fills the sheet's Flight Number column in.** Where the bot writes to the sheet and the sheet has a *Flight Number* column, each
+  row whose cell is **empty** and that is exactly one Aeroconomy flight (the same rules as above) gets that flight's number written
+  into it, as the schedule is read: every such row in the sheet, past flights as well as future ones. The number written is the plain
+  flight number (`SKY330`, never `SKY330-17NOV`; the bot adds the day itself when a number is on several rows). Only a cell with
+  nothing in it is ever written (not a space, a note or a formula), the sheet is read afresh just before, and a number is not written
+  to a row when another row for the same flight (the same two airports on the same day) already has it. A row with no match is left
+  empty. The next read then finds the numbers as the rows' own, so they are the flights' IDs by the sheet's say-so.
 - **It goes slowly, in the background.** Aeroconomy limits how fast it can be asked, so the bot reads one page every two and a half
   seconds (a first read takes a few minutes), waits as long as a "slow down" says, and reads again every six hours. What it read is kept
   in the bot's database, so a restart does not start over. Nothing else the bot does waits for it.
@@ -925,7 +944,10 @@ column; cleared again when their spot ends). It touches only those three cells o
 re-reads the tab and finds the row by route and date before every write. The only other things it writes are *blank* cells:
 the **Distance (NM)** of a flight, if the sheet has that column (see [The Distance column](#the-distance-column)), and a *blank*
 **Profit Made** cell (and the pilot's pay in a blank or `$0` **Pilot Pay** cell beside it), which only happens when an admin asks for exactly that and confirms it (see
-[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)). It never changes any other cell that has anything in it. It refuses rather than overwrite if the
+[Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)), and the *blank* cells of the **Flight Number** column when
+`/setup flight-numbers` is on (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). One more case changes the **Pilot** cell of a
+flight that already has a pilot: when the flight's backup flew it instead, the cell takes the backup's name, but only if it still holds the name the bot
+wrote for the pilot. It never changes any other cell that has anything in it. It refuses rather than overwrite if the
 sheet already names someone else or shows the flight finished, and a *completion* is never recorded if the sheet
 can't be updated, so the two never disagree. Names are written as plain text, never as formulas.
 
