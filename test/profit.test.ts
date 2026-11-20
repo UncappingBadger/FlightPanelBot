@@ -708,6 +708,25 @@ describe('filling blank Profit Made cells in the sheet', () => {
     assert.equal(g.writes.length, 0);
   });
 
+  it('fills a flight from long ago as well: the check reads every row of the sheet, so the fill must find every row too', async () => {
+    g.values.push(row('EGKK-EGLL', '11/2/2026', 'Dana', true, '')); // row 8: nine days before "now"
+    g.values.push(row('EGKK-EGCC', '10/1/2026', 'Dana', true, '$1.00')); // row 9: more than a month before, already filled
+    const key = 'EGKK-EGLL@2026-11-02';
+    const got = await wb.fillProfits(panel(), [fill(8, 777, 'Dana', key), fill(9, 5, 'Dana', 'EGKK-EGCC@2026-10-01')]);
+    assert.deepEqual(got.written.map((w) => [w.cell, w.value]), [['J8', 777]]);
+    assert.deepEqual(got.skipped, [{ sourceKey: 'EGKK-EGCC@2026-10-01', reason: 'filled' }], 'found, and left alone because it has something in it');
+    assert.equal(g.cell('J8'), '777');
+  });
+
+  it('fills a row of a sheet with more than a thousand flights, however far up it is', async () => {
+    const many = Array.from({ length: 1100 }, (_, i) => row('EGLL-EGKK', `12/${1 + (i % 28)}/2026`, `Pilot${i}`, true, '$5.00'));
+    g.values = [GRID_HEADER, ...many, row('EGPH-EGLL', '12/3/2026', 'Last', true, '')];
+    g.values.splice(1, 0, row('EGSS-EGLL', '12/3/2026', 'First', true, '')); // row 2, far above the last thousand
+    const got = await wb.fillProfits(panel(), [fill(2, 9, 'First', 'EGSS-EGLL@2026-12-03')]);
+    assert.deepEqual(got.skipped, []);
+    assert.deepEqual(got.written.map((w) => w.cell), ['J2']);
+  });
+
   it('does not write to a row the pilot of which is cancelled', async () => {
     g.values[2]![4] = 'CANCELLED';
     assert.deepEqual((await wb.fillProfits(panel(), [fill(3, 1, 'CANCELLED', K.open)])).skipped, [{ sourceKey: K.open, reason: 'not-completed' }]);
@@ -1002,6 +1021,9 @@ describe('/setup profit', () => {
     assert.match(report, /…and \d+ more\./);
     assert.match(report, /\*\*3\*\* have something in Profit Made that is not an amount \(like TBD\): left exactly as it is/);
     assert.doesNotMatch(profitReport('Test Air', { ...many, unreadable: 0 }), /not an amount/);
+    // Aeroconomy only gives the newest 100 entries of a logbook, so flights it cannot match may simply be older: said when there are any, and only then.
+    assert.match(report, /\*\*5\*\* I found no logbook flight for \(Aeroconomy only lets me read the newest 100 entries of each aircraft's logbook, so older flights are out of reach\)/);
+    assert.doesNotMatch(profitReport('Test Air', { ...many, unmatched: 0 }), /newest 100/);
     assert.ok(previewText('Test Air', many.fills).length <= 1990);
     assert.match(previewText('Test Air', many.fills), /Nothing is written unless you press \*\*Write\*\*/, 'the closing words are never the part that is cut');
   });

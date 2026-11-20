@@ -11,6 +11,11 @@ export interface SchedulerOptions {
   reminders?: Pick<ReminderService, 'run'>;
   /** Redraws the servers' AeroDAQ market boards when they are due. */
   markets?: { run(): Promise<void> };
+  /**
+   * Redraws the servers' weather boards when they are due (every ten minutes). It asks VATSIM for a report for each airport, which can be slow,
+   * so it goes on beside the main pass, not inside it, and an overlapping run is skipped.
+   */
+  weather?: { run(): Promise<void> };
   /** Deletes the "pilots needed" announcements from before today (the midnight tidy-up). */
   cleanup?: { run(): Promise<unknown> };
   /** Redraws the panels whose list changed only because time passed (a flight came within the panel's period, a completed one aged out). */
@@ -46,6 +51,8 @@ export class Scheduler {
   private readonly log: Logger;
   private readonly reminders: SchedulerOptions['reminders'];
   private readonly markets: SchedulerOptions['markets'];
+  private readonly weather: SchedulerOptions['weather'];
+  private weatherRun: Promise<unknown> = Promise.resolve();
   private readonly cleanup: SchedulerOptions['cleanup'];
   private readonly fshub: SchedulerOptions['fshub'];
   private readonly autoComplete: SchedulerOptions['autoComplete'];
@@ -69,6 +76,7 @@ export class Scheduler {
     this.log = opts.logger ?? silentLogger;
     this.reminders = opts.reminders;
     this.markets = opts.markets;
+    this.weather = opts.weather;
     this.cleanup = opts.cleanup;
     this.fshub = opts.fshub;
     this.autoComplete = opts.autoComplete;
@@ -126,9 +134,9 @@ export class Scheduler {
     return this.lane;
   }
 
-  /** Resolves once the FsHub lane has finished what it is doing (for tests, and for a tidy shutdown). */
-  idle(): Promise<void> {
-    return this.lane;
+  /** Resolves once the FsHub lane, and the weather boards' redraw, have finished what they are doing (for tests, and for a tidy shutdown). */
+  async idle(): Promise<void> {
+    await Promise.all([this.lane, this.weatherRun]);
   }
 
   /** One pass of background work. Overlapping passes are skipped rather than queued. */
@@ -152,6 +160,8 @@ export class Scheduler {
       await this.reminders?.run().catch((e) => this.log.error('Pilot reminders failed', e));
       // And keep any AeroDAQ market boards fresh.
       await this.markets?.run().catch((e) => this.log.error('Market boards failed', e));
+      // The weather boards, beside this pass for the same reason as FsHub's work: they ask VATSIM once for each airport.
+      if (this.weather) this.weatherRun = this.weather.run().catch((e) => this.log.error('Weather boards failed', e));
       // FsHub's work goes on beside this pass, not inside it.
       void this.startLane();
     } catch (e) {

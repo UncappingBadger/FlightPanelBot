@@ -254,7 +254,9 @@ export class SheetWriteBack {
         const tab = await this.api.readTab(ref);
         // What is really in the cells as well as what they show: a cell with a formula that shows nothing is still filled in.
         const stored = await this.api.readTab(ref, 'FORMULA');
-        const parsed = parseScheduleValues(tab.values, this.now());
+        // Every row of the tab, old ones included: the check that offered these fills read every row, and a flight a manager has not entered the
+        // profit for yet is as likely to be last week's as yesterday's. (Without this, a row more than three days past its window was "gone".)
+        const parsed = parseScheduleValues(tab.values, this.now(), true);
         if (!parsed || parsed.cols.pilot < 0 || parsed.cols.done < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find the Pilot and Flight Completed columns in that sheet.");
         if (parsed.cols.profit < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find a Profit Made column in that sheet.");
         const cells: Cell[] = [];

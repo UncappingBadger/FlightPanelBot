@@ -50,15 +50,26 @@ export interface SheetFlights {
  * isn't an amount (`TBD`, `#N/A`, a dash).
  */
 export function parseMoney(text: string | null | undefined): number | null {
-  const t = (text ?? '').trim();
+  let t = (text ?? '').trim();
   if (!t) return null;
-  const negative = /^\(.*\)$/.test(t) || /^[^0-9.]*[-−–]/.test(t);
-  // What is left once the currency sign, thousands separators, brackets and sign are gone has to be a plain number.
-  const core = t.replace(/[()\s,'$£€¥+−–-]/g, '');
+  const bracketed = /^\(.*\)$/.test(t);
+  if (bracketed) t = t.slice(1, -1).trim();
+  // A sign belongs at the front, before or after the currency sign (`-$5`, `$-5`); a dash anywhere else is not a sign (`2026-11-20` is a date, `0-0`
+  // a note, `8,131-` and `1.234,50` are not written the way this reads amounts), so those are not amounts rather than the wrong amount.
+  const m = MONEY.exec(t);
+  if (!m) return null;
+  const [, lead, afterCurrency, digits] = m as unknown as [string, string | undefined, string | undefined, string];
+  if (lead && afterCurrency) return null;
+  // Thousands separators and the spaces between digit groups go; what is left has to be a plain number.
+  const core = digits.replace(/[,'\s]/g, '');
   if (!/^(\d+\.?\d*|\.\d+)$/.test(core)) return null;
   const n = Number(core);
-  return Number.isFinite(n) ? (negative ? -n : n) : null;
+  if (!Number.isFinite(n)) return null;
+  return bracketed || /[-−–]/.test(lead ?? afterCurrency ?? '') ? -n : n;
 }
+
+/** A money cell: an optional sign, an optional currency sign, an optional sign, the digits (thousands separators and spaces allowed), an optional currency sign. */
+const MONEY = /^([+\-−–])?\s*[$£€¥]?\s*([+\-−–])?\s*(\d[\d,'\s]*(?:\.\d*)?|\.\d+)\s*[$£€¥]?$/;
 
 /**
  * Whether a Pilot Pay cell, as it shows or is stored, has no pay in it: nothing at all, or a plain zero (`$0`, `0`, `$0.00`). A column

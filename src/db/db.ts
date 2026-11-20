@@ -615,6 +615,21 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE job_backups ADD COLUMN sheet_name TEXT;
   `,
+
+  /* v37: a server can show a weather board (METARs for a few chosen airports, then for the airports of the flights in the next 24 hours) in one channel,
+     kept up to date. One per server: its channel, its messages, the airports shown at the top (empty: the built-in list), and how the last refresh went. */
+  `
+  CREATE TABLE weather_boards (
+    guild_id        TEXT PRIMARY KEY,
+    channel_id      TEXT NOT NULL,
+    message_ids     TEXT NOT NULL DEFAULT '[]',
+    airports        TEXT NOT NULL DEFAULT '',
+    last_attempt_at INTEGER,
+    last_ok_at      INTEGER,
+    last_error      TEXT,
+    created_at      INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { CONTRIBUTIONS_REQUEST } from '../src/discord/contributions.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { parseSheetCsv } from '../src/jobs/sheet.js';
-import { CONTRIBUTION_DAYS, contributionPeriod, contributionsOf, dayName, formatMoney, parseMoney, readSheetFlights } from '../src/services/contributions.js';
+import { CONTRIBUTION_DAYS, contributionPeriod, contributionsOf, dayName, formatMoney, isUnsetPay, parseMoney, readSheetFlights } from '../src/services/contributions.js';
 import { GUILD, HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpers.js';
 import { FakeUser, fakeDm, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
 
@@ -58,6 +58,27 @@ describe('reading a money cell', () => {
     assert.equal(parseMoney(' £3.50 '), 3.5);
     assert.equal(parseMoney('$0'), 0, 'zero is an amount: it was entered');
     assert.equal(parseMoney('$0.00'), 0);
+  });
+
+  it('takes a minus sign only at the front, so a date, a range or a note with a dash in it is not read as an amount', () => {
+    for (const text of ['2026-11-20', '0-0', '1-0', '$1-0', '8,131-', '$-5-', '--5', '-$-5', '5-', '1.234,50', '12/20/2026', '1 - 2']) {
+      assert.equal(parseMoney(text), null, text);
+    }
+    // ... and what is written the usual ways still is.
+    assert.equal(parseMoney('- 5'), -5);
+    assert.equal(parseMoney('$ -5'), -5);
+    assert.equal(parseMoney('+$5'), 5);
+    assert.equal(parseMoney('(5)'), -5);
+    assert.equal(parseMoney('1 234'), 1234);
+    assert.equal(parseMoney("1'234.50"), 1234.5);
+    assert.equal(parseMoney('5 $'), 5);
+    assert.equal(parseMoney('.5'), 0.5);
+    assert.equal(parseMoney('5.'), 5);
+  });
+
+  it('does not take a note with a zero in it for "no pay", or a dated cell for an amount', () => {
+    for (const text of ['0-0', '0 TBD', '$0 (TBD)', ' ', '-', '$ -', '=0', '0%']) assert.equal(isUnsetPay(text), false, JSON.stringify(text));
+    for (const text of ['', '$0', '0', '$0.00', ' $0 ', '($0)', '-0', '$ 0']) assert.equal(isUnsetPay(text), true, JSON.stringify(text));
   });
 
   it('reads nothing from a cell that is empty or is not an amount', () => {

@@ -1107,8 +1107,8 @@ describe('paying pilots is switched off by default', () => {
     const prefixes = (on: boolean) => handlerSet(on).map((h) => h.prefix).sort();
     assert.deepEqual(names(false), ['eta', 'fuel', 'help', 'hideunavailable', 'setup']);
     assert.deepEqual(names(true), ['eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
-    assert.deepEqual(prefixes(false), ['dm', 'notices', 'panel', 'profit']);
-    assert.deepEqual(prefixes(true), ['dm', 'notices', 'panel', 'payroll', 'profit']);
+    assert.deepEqual(prefixes(false), ['dm', 'notices', 'panel', 'profit', 'weather']);
+    assert.deepEqual(prefixes(true), ['dm', 'notices', 'panel', 'payroll', 'profit', 'weather']);
   });
 
   it('is off in the set the bot actually uses, when nobody has turned it on', () => {

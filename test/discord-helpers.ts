@@ -11,6 +11,7 @@ import { HardLandings } from '../src/services/hardLanding.js';
 import { MarketService } from '../src/discord/market.js';
 import { Notifier } from '../src/discord/notifier.js';
 import { PanelService } from '../src/discord/panel.js';
+import { WeatherBoardService } from '../src/discord/weatherBoard.js';
 import type { JobSource } from '../src/jobs/types.js';
 import { sourceSelector } from '../src/jobs/sheet.js';
 import type { SheetWriteBack } from '../src/services/writeback.js';
@@ -479,9 +480,16 @@ export class FakeMetar {
   /** When set, every call throws it. */
   error: Error | null = null;
   calls: string[] = [];
-  async report(station: string): Promise<string | null> {
+  /** The age limit each call asked for (a board asks for a young one). */
+  maxAges: Array<number | undefined> = [];
+  /** An error for one airport only. */
+  errors = new Map<string, Error>();
+  async report(station: string, maxAgeMs?: number): Promise<string | null> {
     this.calls.push(station);
+    this.maxAges.push(maxAgeMs);
     if (this.error) throw this.error;
+    const own = this.errors.get(station);
+    if (own) throw own;
     return this.reports.get(station) ?? null;
   }
 }
@@ -559,6 +567,7 @@ export interface DiscordHarness {
   aerodaq: FakeAeroDaq;
   metar: FakeMetar;
   market: MarketService;
+  weather: WeatherBoardService;
   notifier: Notifier;
   /** Present when the test asked for FsHub (`fshub: true`); otherwise ctx.fshub is null, as for a host with no token. */
   fshub: FakeFsHub | null;
@@ -585,6 +594,8 @@ export function makeDiscordHarness(
   const metar = opts.metar ?? new FakeMetar();
   const market = new MarketService(h.store, aerodaq, silentLogger, now);
   market.attach(client as unknown as Client);
+  const weather = new WeatherBoardService(h.store, metar, silentLogger, now);
+  weather.attach(client as unknown as Client);
   const fshub = opts.fshub ? (opts.fshub === true ? new FakeFsHub() : opts.fshub) : null;
   // As in the real bot, a very hard landing in the flights FsHub shows is remarked on in a DM.
   const hardLandings = new HardLandings(h.store, (discordId, content) => notifier.dm(discordId, content), { now, logger: silentLogger });
@@ -604,6 +615,7 @@ export function makeDiscordHarness(
     aerodaq: aerodaq as unknown as AeroDaqClient,
     market,
     metar: metar as unknown as MetarClient,
+    weather,
     writeback: opts.writeback ?? null,
     fshub,
     fshubSync,
@@ -613,7 +625,7 @@ export function makeDiscordHarness(
     fetchFn: opts.fetchFn ?? fetch,
   };
   notifier.subscribe(h.events);
-  return { ctx, client, panels, refresher, aerodaq, metar, market, notifier, fshub };
+  return { ctx, client, panels, refresher, aerodaq, metar, market, weather, notifier, fshub };
 }
 
 /** Let fire-and-forget event listeners and debounce timers finish. */

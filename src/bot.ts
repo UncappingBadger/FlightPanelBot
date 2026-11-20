@@ -11,6 +11,7 @@ import type { BotContext } from './discord/context.js';
 import { Notifier } from './discord/notifier.js';
 import { MarketService } from './discord/market.js';
 import { PanelService } from './discord/panel.js';
+import { WeatherBoardService } from './discord/weatherBoard.js';
 import { PayrollDaily } from './discord/payrollUi.js';
 import { PAYROLL_FLAG, payrollEnabled } from './features.js';
 import { registerInteractionRouter } from './discord/router.js';
@@ -131,6 +132,8 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const market = new MarketService(store, aerodaq, log);
   // VATSIM's public METAR service: only asked when someone sends the bot `metar <airport>` in a DM, and only ever sent the airport code.
   const metar = new MetarClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` });
+  // A server's weather board (`/setup weather`) asks the same service, once every ten minutes, for the airports it shows.
+  const weather = new WeatherBoardService(store, metar, log);
   // A flight with no pilot a day before it starts is announced in the panel's channel.
   const reminders = new ReminderService(store, jobs, async (panel, due) => (await panels.remind(panel, due)) === 'sent', { logger: log });
   // Optional: with a FsHub token, typed pilot IDs are checked, and a panel linked to its airline's FsHub roster
@@ -213,6 +216,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ...(payroll ? { payroll: { run: async () => void (await payrollDaily?.run()) } } : {}),
     reminders,
     markets: market,
+    weather,
     panels,
     cleanup: { run: () => panels.cleanReminders() },
     live,
@@ -231,7 +235,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), logger: log })
     : null;
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({
@@ -240,6 +244,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   });
   panels.attach(client);
   market.attach(client);
+  weather.attach(client);
   notifier = new Notifier(client, panels, log);
   notifier.subscribe(events);
   events.subscribe(backupSheetCleaner({ store, writeback, logger: log }));

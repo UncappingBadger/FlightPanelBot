@@ -118,7 +118,7 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
     `• ⬜ **${a.fills.length}** have a blank Profit Made that Aeroconomy can fill in`,
     ...(a.fills.length > 0 ? [payBullet(a.fills)] : []),
     ...(a.unreadable > 0 ? [`• 🔒 **${a.unreadable}** have something in Profit Made that is not an amount (like TBD): left exactly as it is`] : []),
-    `• ❔ **${a.unmatched}** I found no logbook flight for, and **${a.ambiguous}** could be more than one flight (left alone)`,
+    `• ❔ **${a.unmatched}** I found no logbook flight for${a.unmatched > 0 ? " (Aeroconomy only lets me read the newest 100 entries of each aircraft's logbook, so older flights are out of reach)" : ''}, and **${a.ambiguous}** could be more than one flight (left alone)`,
   ];
   if (a.different.length > 0) {
     lines.push('', '**Different** (the sheet is not changed; a manager should look):');

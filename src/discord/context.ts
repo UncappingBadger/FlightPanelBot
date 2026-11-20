@@ -25,6 +25,7 @@ import type { SheetWriteBack } from '../services/writeback.js';
 import type { Logger } from '../util/log.js';
 import type { MarketService } from './market.js';
 import type { PanelService } from './panel.js';
+import type { WeatherBoardService } from './weatherBoard.js';
 
 /** Everything a command handler needs, created once at startup. */
 export interface BotContext {
@@ -39,6 +40,8 @@ export interface BotContext {
   market: MarketService;
   /** VATSIM's public METAR service, for the `metar` message to the bot. Only asked when someone asks for a weather report. */
   metar: MetarClient;
+  /** Keeps each server's weather board (METARs for the chosen airports and the airports of the next 24 hours' flights) up to date. */
+  weather: WeatherBoardService;
   /** Writes pilots' names and completions into a linked Google Sheet; null when the bot has no Google credentials. */
   writeback: SheetWriteBack | null;
   /** FsHub, for checking pilot IDs and reading an airline's roster; null when the host saved no FsHub token. */

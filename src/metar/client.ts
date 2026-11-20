@@ -85,12 +85,13 @@ export class MetarClient {
   /**
    * The current METAR for an airport, as a line starting with its code (`EGLL 161350Z 26008KT ...`), or null if VATSIM has none
    * for it. `station` must already be a valid code (see `normalizeStation`), so nothing a person types is put into the address
-   * unchecked.
+   * unchecked. An answer is reused for ten minutes unless `maxAgeMs` asks for a younger one (a board that redraws every ten minutes asks
+   * for one a little younger than that, so the answer it reused is never one from its own last redraw).
    */
-  report(station: string): Promise<string | null> {
+  report(station: string, maxAgeMs: number = METAR_TTL_MS): Promise<string | null> {
     if (normalizeStation(station) !== station) return Promise.reject(new Error(`Not an airport code: ${station}`));
     const cached = this.cache.get(station);
-    if (cached && this.now() - cached.at < METAR_TTL_MS) return Promise.resolve(cached.report);
+    if (cached && this.now() - cached.at < maxAgeMs) return Promise.resolve(cached.report);
     const running = this.inFlight.get(station);
     if (running) return running;
     const p = this.fetchReport(station)

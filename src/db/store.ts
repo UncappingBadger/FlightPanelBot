@@ -165,6 +165,21 @@ export interface MarketBoard {
   createdAt: number;
 }
 
+/** The weather board of a server: METARs in one channel, kept up to date. */
+export interface WeatherBoard {
+  guildId: string;
+  channelId: string;
+  /** The Discord messages it is drawn in, in order (a long board spans several). */
+  messageIds: string[];
+  /** The airports shown at the top (ICAO codes); empty means the built-in list. */
+  airports: string[];
+  /** When a refresh was last tried (successful or not), so a failing service is not hammered. */
+  lastAttemptAt: number | null;
+  lastOkAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+}
+
 export type JobStatus = 'open' | 'expired' | 'removed';
 
 export interface Job {
@@ -368,6 +383,17 @@ const toMarketBoard = (r: Row): MarketBoard => ({
   guildId: s(r.guild_id),
   channelId: s(r.channel_id),
   messageIds: parseJsonArray<string>(r.message_ids, []).map(String),
+  lastAttemptAt: nn(r.last_attempt_at),
+  lastOkAt: nn(r.last_ok_at),
+  lastError: sn(r.last_error),
+  createdAt: n(r.created_at),
+});
+
+const toWeatherBoard = (r: Row): WeatherBoard => ({
+  guildId: s(r.guild_id),
+  channelId: s(r.channel_id),
+  messageIds: parseJsonArray<string>(r.message_ids, []).map(String),
+  airports: s(r.airports).split(/\s+/).filter(Boolean),
   lastAttemptAt: nn(r.last_attempt_at),
   lastOkAt: nn(r.last_ok_at),
   lastError: sn(r.last_error),
@@ -1431,6 +1457,44 @@ export class Store {
 
   deleteMarketBoard(guildId: string): boolean {
     return this.run('DELETE FROM market_boards WHERE guild_id = ?', guildId).changes > 0;
+  }
+
+  /* ------------------------------------------------------------------ the weather board */
+
+  getWeatherBoard(guildId: string): WeatherBoard | null {
+    const r = this.get('SELECT * FROM weather_boards WHERE guild_id = ?', guildId);
+    return r ? toWeatherBoard(r) : null;
+  }
+
+  listWeatherBoards(): WeatherBoard[] {
+    return this.all('SELECT * FROM weather_boards ORDER BY created_at, guild_id').map(toWeatherBoard);
+  }
+
+  /** Turn the board on for a server, or move it to another channel (which forgets its old messages). The airports at the top are kept. */
+  setWeatherBoard(guildId: string, channelId: string, now: number): WeatherBoard {
+    const existing = this.getWeatherBoard(guildId);
+    if (!existing) {
+      this.run('INSERT INTO weather_boards(guild_id, channel_id, created_at) VALUES (?,?,?)', guildId, channelId, now);
+    } else if (existing.channelId !== channelId) {
+      this.run("UPDATE weather_boards SET channel_id = ?, message_ids = '[]', last_attempt_at = NULL, last_ok_at = NULL, last_error = NULL WHERE guild_id = ?", channelId, guildId);
+    }
+    return this.getWeatherBoard(guildId) as WeatherBoard;
+  }
+
+  updateWeatherBoard(guildId: string, patch: Partial<Pick<WeatherBoard, 'messageIds' | 'airports' | 'lastAttemptAt' | 'lastOkAt' | 'lastError'>>): void {
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (patch.messageIds !== undefined) (sets.push('message_ids = ?'), params.push(JSON.stringify(patch.messageIds)));
+    if (patch.airports !== undefined) (sets.push('airports = ?'), params.push(patch.airports.join(' ')));
+    if (patch.lastAttemptAt !== undefined) (sets.push('last_attempt_at = ?'), params.push(patch.lastAttemptAt));
+    if (patch.lastOkAt !== undefined) (sets.push('last_ok_at = ?'), params.push(patch.lastOkAt));
+    if (patch.lastError !== undefined) (sets.push('last_error = ?'), params.push(patch.lastError));
+    if (sets.length === 0) return;
+    this.run(`UPDATE weather_boards SET ${sets.join(', ')} WHERE guild_id = ?`, ...params, guildId);
+  }
+
+  deleteWeatherBoard(guildId: string): boolean {
+    return this.run('DELETE FROM weather_boards WHERE guild_id = ?', guildId).changes > 0;
   }
 
   /* ------------------------------------------------------------------ DM sessions */

@@ -22,6 +22,7 @@ import { callsignCode } from '../../services/flightEtas.js';
 import { parsePilotId } from '../../services/pilotId.js';
 import type { FlightSyncResult, RosterSyncResult } from '../../services/fshubSync.js';
 import { defaultPrefix, PANEL_DAYS_MAX, PANEL_DAYS_MIN, panelHorizonMs } from '../../services/jobs.js';
+import { DEFAULT_WEATHER_AIRPORTS, MAX_TOP_AIRPORTS, parseAirportList } from '../../services/weatherAirports.js';
 import { airlineLabel, legList, plainText, truncate, ts } from '../../util/format.js';
 import { DEBUG_BUILD, dbg } from '../../util/debugBuild.js';
 import type { BotContext, Command } from '../context.js';
@@ -537,6 +538,21 @@ export const setupCommand: Command = {
             .addChoices({ name: 'On: post the market board and keep it up to date', value: 'on' }, { name: 'Off: remove the board', value: 'off' }),
         )
         .addChannelOption((o) => o.setName('channel').setDescription('Channel for the board').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('weather')
+        .setDescription('Show METARs (airports you choose, then the next 24 hours of flights) in a channel (empty: check)')
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Turn the weather board on or off')
+            .addChoices({ name: 'On: post the weather board and keep it up to date', value: 'on' }, { name: 'Off: remove the board', value: 'off' }),
+        )
+        .addChannelOption((o) => o.setName('channel').setDescription('Channel for the board').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+        .addStringOption((o) =>
+          o.setName('airports').setDescription('Airports at the top, four-letter codes, up to 8 (KBOS KMIA SKBO EGLL). "default" resets').setMaxLength(100),
+        ),
     )
     .addSubcommand((s) =>
       s
@@ -1183,6 +1199,91 @@ export const setupCommand: Command = {
         await interaction.editReply({
           content: [
             `The AeroDAQ market board is **on** in <#${board.channelId}>${board.lastOkAt ? `, last drawn ${ts(board.lastOkAt, 'R')}` : ', not drawn yet'}. It is redrawn every 15 minutes.`,
+            board.lastError ? `⚠️ The last try failed: ${board.lastError}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'weather': {
+        const mode = interaction.options.getString('mode');
+        const picked = interaction.options.getChannel('channel');
+        const airportsText = interaction.options.getString('airports')?.trim() ?? '';
+        const board = ctx.store.getWeatherBoard(guildId);
+
+        if (mode === 'off') {
+          if (!board) {
+            await interaction.editReply({ content: 'The weather board is already off.' });
+            return;
+          }
+          await ctx.weather.deleteMessages(board);
+          ctx.store.deleteWeatherBoard(guildId);
+          await interaction.editReply({ content: 'Removed the weather board. Turn it back on with `/setup weather mode:on`.' });
+          return;
+        }
+
+        // The airports at the top: the four-letter codes typed (up to 8), or the built-in list again for `default`.
+        let airports: string[] | null = null;
+        if (airportsText) {
+          if (/^(default|reset)$/i.test(airportsText)) airports = [];
+          else {
+            const parsed = parseAirportList(airportsText);
+            if (parsed.refused.length > 0) {
+              throw new UserError(`I couldn't use ${parsed.refused.map((r) => `\`${r}\``).join(', ')} as an airport code. I need four-letter ICAO codes, like \`EGLL\` for London Heathrow or \`KBOS\` for Boston (US airports start with a K).`);
+            }
+            if (parsed.codes.length > MAX_TOP_AIRPORTS) throw new UserError(`That is ${parsed.codes.length} airports. Up to ${MAX_TOP_AIRPORTS} can go at the top.`);
+            airports = parsed.codes;
+          }
+        }
+        const topOf = (b: { airports: string[] }) => (b.airports.length > 0 ? `${b.airports.join(' ')}` : `${DEFAULT_WEATHER_AIRPORTS.join(' ')} (the built-in list)`);
+
+        if (mode === 'on' || picked || airports !== null) {
+          const guild = interaction.guild;
+          if (!guild) throw new UserError('This only works inside a server.');
+          const channelId = picked?.id ?? board?.channelId;
+          if (!channelId) throw new UserError('Choose the channel for the board with the `channel` option.');
+          const channel = await guild.channels.fetch(channelId);
+          if (!channel) throw new UserError("I can't see that channel.");
+          const me = guild.members.me ?? (await guild.members.fetchMe());
+          const perms = channel.permissionsFor(me);
+          const missing = REQUIRED_CHANNEL_PERMS.filter((p) => !perms?.has(p));
+          if (missing.length > 0) {
+            throw new UserError(`I'm missing permissions in <#${channel.id}>: ${new PermissionsBitField(missing).toArray().join(', ')}. Grant those and run this again.`);
+          }
+          if (board && board.channelId !== channel.id) await ctx.weather.deleteMessages(board);
+          ctx.store.setWeatherBoard(guildId, channel.id, ctx.now());
+          if (airports !== null) ctx.store.updateWeatherBoard(guildId, { airports });
+
+          const result = await ctx.weather.refresh(guildId);
+          const saved = ctx.store.getWeatherBoard(guildId)!;
+          let line: string;
+          if (result === 'updated' || result === 'posted') {
+            line = `✅ The weather board is in <#${channel.id}>. At the top: **${topOf(saved)}**. Below them are the airports of every flight whose landing window is in the next 24 hours (from your schedule). I check VATSIM every 10 minutes, and pilots can look up any airport with its **Search airport** button. Turn it off with \`/setup weather mode:off\`.`;
+          } else if (result === 'unavailable') {
+            line = `⚠️ I couldn't get the weather from VATSIM just now (${saved.lastError ?? 'no answer'}). The board will appear in <#${channel.id}> once it answers; I try again every 10 minutes.`;
+          } else if (result === 'no-access') {
+            line = `⚠️ I couldn't post in <#${channel.id}>: ${saved.lastError ?? 'no access'} I need View Channel, Send Messages, Embed Links and Read Message History there.`;
+          } else {
+            line = "⚠️ I couldn't draw the board because of an unexpected error (it's in my log). It will be tried again in 10 minutes.";
+          }
+          await interaction.editReply({
+            content: [line, 'These are weather reports from VATSIM for flight simulation, not for real-world flying.'].join('\n'),
+            allowedMentions: noPings,
+          });
+          return;
+        }
+
+        // Nothing to change: say how it stands.
+        if (!board) {
+          await interaction.editReply({ content: 'The weather board is **off**. Turn it on with `/setup weather mode:on channel:#your-channel`. Add `airports:` to choose the airports shown at the top (the default is KBOS KMIA SKBO EGLL).' });
+          return;
+        }
+        await interaction.editReply({
+          content: [
+            `The weather board is **on** in <#${board.channelId}>${board.lastOkAt ? `, last checked ${ts(board.lastOkAt, 'R')}` : ', not drawn yet'}. At the top: **${topOf(board)}**. It is redrawn every 10 minutes.`,
             board.lastError ? `⚠️ The last try failed: ${board.lastError}` : '',
           ]
             .filter(Boolean)

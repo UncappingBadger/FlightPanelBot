@@ -4,7 +4,7 @@ A Discord bot for virtual-airline communities. An admin names the airline; the b
 channel listing the airline's open flights (route, required airframe, when it must be completed by). Pilots
 press **Reserve**, the bot DMs them, they reply with the flight's ID, and the panel shows their name (and
 FsHub pilot ID) next to the flight. Multi-leg flights can be split between pilots leg by leg. It can also look
-up fuel prices (`/fuel`) and show the AeroDAQ in-game market in a channel.
+up fuel prices (`/fuel`), show the AeroDAQ in-game market in a channel, and keep a weather board of METARs in a channel.
 
 By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy, AeroDAQ or VATSIM.
 
@@ -286,6 +286,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 |---|---|
 | `/setup panel-add airline channel [prefix] [role]` | Name the airline (just type it, 2 to 60 characters, no `@`) and post its panel in a channel. Flight IDs look like `DMO-001`; the prefix is made from the name (initials) unless you set one. Optionally require a role to reserve. Typing a name already used here (any capitals) updates that panel instead of adding another; a server can host several airlines. |
 | `/setup market [mode] [channel]` | Show the AeroDAQ in-game market in a channel, kept up to date (see [below](#aerodaq-fuel-prices-and-the-market)). With nothing given it says how things stand. |
+| `/setup weather [mode] [channel] [airports]` | Show METARs in a channel, kept up to date: the airports you choose (default KBOS KMIA SKBO EGLL), then the airports of the flights in the next 24 hours, with a **Search airport** button (see [below](#the-weather-board)). With nothing given it says how things stand. |
 | `/setup fshub [link] [confirm] [autocomplete] [airline]` | Link a panel to your airline's FsHub roster so pilots are matched to their pilot IDs without being asked, and completed flights show the aircraft FsHub recorded (needs a [FsHub token](#fshub-optional)). `link` is the airline's short name (e.g. `SKY`), its FsHub number or a link to its page; `link:none` stops. `confirm:off` stops reading the airline's flights, which also returns **Complete** to the pilot-picks mode. `autocomplete:off` stops the [hourly automatic completion](#completing-automatically-every-hour) (on by default); `autocomplete:on` turns it back on and checks now. With no options it reads the roster and flights now and runs the check. |
 | `/setup panel-role [role] [airline]` | Change which role can reserve on a panel. Leave the role empty to open it to everyone. |
 | `/setup sheet link [airline]` | Read the panel's flights from your airline's Google Sheet schedule, every hour. `link:none` stops. |
@@ -510,6 +511,35 @@ as written is shown at the bottom. It is for flight simulation only, and says so
   requests share one call, one person can ask about every few seconds, answers are size-capped, redirects are not followed,
   and only the airport code and the bot's name and version are ever sent. The service is only contacted when someone asks.
 - It leaves an open Reserve conversation alone, so asking for the weather halfway through reserving a flight costs nothing.
+
+### The weather board
+
+**`/setup weather mode:on channel:#weather`** (admins) posts a board of METARs in a channel and keeps it up to date. It is
+the reports **as written** (`KBOS 111154Z 27012KT 10SM FEW250 12/03 A3012 ...`), without the explanation the DM `metar` card
+gives, and is read top to bottom:
+
+1. **The airports at the top**, each with its current METAR. Out of the box these are **KBOS KMIA SKBO EGLL**; an admin can
+   choose up to eight others with `airports:` (four-letter ICAO codes, `airports:default` goes back to the four).
+2. **The flights in the next 24 hours**, from the schedule: every open flight of every panel in the server whose landing window
+   overlaps the next 24 hours (one already open and not yet flown counts; a flight with no time, a completed one, and one whose
+   window is over do not). Each is one line: its ID, its route and its landing window in Zulu (`SKY330 KJFK → KBOS · 20 Nov 1400-1800Z`).
+3. **The METARs of those flights' airports**, each airport once (the ones at the top are not repeated), in the order the flights come.
+   An airport VATSIM has no report for says so (`no METAR available`); a code that is not four characters is named, and not asked for.
+
+- **It follows VATSIM.** The board is redrawn every ten minutes, which is as often as VATSIM's service (which asks caches to keep an
+  answer for ten minutes) has anything new, and it asks for reports a little younger than that, so a redraw never reuses its own
+  previous answer. Its first line says when it was last checked. The messages are edited in place, and only the ones whose words changed.
+  Flights come and go as the 24 hours move.
+- **If VATSIM cannot be reached,** the board stays as it was, `/setup weather` says why, and it tries again at the next redraw. One
+  report that is too odd to read is shown as unreadable and does not stop the rest.
+- **It fits Discord.** A long board spans up to eight messages (up to 60 flights and 40 airports of flights are shown, and it says how
+  many more there were); if someone deletes a message, or the number of messages changes, the board is posted again. The bot needs View
+  Channel, Send Messages, Embed Links and Read Message History in the channel, and never pings anyone.
+- **Search airport.** The button under the board's last message opens a box for an airport's four-letter ICAO code (or several, up to
+  five) and answers only to the person who asked, with the METAR as written and a pointer to the DM `metar` for the plain-language
+  version. A three-letter code is explained rather than guessed (`KJFK`, not `JFK`). One person can search every few seconds.
+- **Kind to VATSIM.** One request per airport per redraw (four at a time), answers shared with the DM `metar` and with other servers'
+  boards, and only the airport code is ever sent. `/setup weather mode:off` removes the board and its messages.
 
 ### Who can reserve
 
@@ -808,6 +838,10 @@ sheet's numbers, unless an admin asks.
   before it, or up to a day and a half after it begins), flown under the airline's own callsign (the code and a number, as for landing times); if
   several flights could be it, the pilot's name decides, and if that does not, the row is left alone. A flight cannot belong to two rows, and a flight of
   several legs is never matched.
+- **How far back it can see.** Aeroconomy gives only the **newest 100 entries of each aircraft's logbook** (no paging), so a completed flight older than that
+  shows as one the bot found no logbook flight for, and the report says so when there are any. The sheet side has no such limit: *Write* finds a row
+  wherever it is in the sheet, however long ago it was flown, and a number or date that only looks like an amount (`2026-11-20`, `0-0`, `8,131-`) is
+  never read as one.
 - **What it needs.** The bot's FsHub token (Aeroconomy accepts it), the panel linked to its airline's FsHub roster (`/setup fshub`), a sheet with a
   *Profit Made* column, and, to write, the Google key and `/setup writeback` on. The airline's Aeroconomy business is found the first time from an aircraft
   that is out right now, either attached to a flight of the airline's contracts or flown by one of its recent pilots (public Aeroconomy pages, plus a read
@@ -980,7 +1014,7 @@ this order: the sheets first (so the flights are current), then the FsHub roster
 - **A failure waits for the next slot**: a sheet that could not be read is tried again in the next slot. A FsHub roster or completing check that
   failed for a reason that may pass by itself (FsHub down or busy) is tried again after ten minutes, and then waits for the next slot.
 - Not hourly, and so not part of this: the FsHub flight read (every five minutes), live tracking (every 45 seconds), expected landing times
-  (every minute), late-departure warnings (every minute), the AeroDAQ market boards (every 15 minutes), the midnight (UTC) list of flights
+  (every minute), late-departure warnings (every minute), the AeroDAQ market boards (every 15 minutes), the weather boards (every 10 minutes), the midnight (UTC) list of flights
   with no pilot, and the daily check for a new version.
 
 ## Demo mode
@@ -1008,7 +1042,7 @@ key only as a file path in `.env`; the key file itself stays wherever you put it
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
 (shown beside their name on flights they hold), per Discord user their own settings (whether `/hideunavailable` is on, and
 which of the three optional private messages they have switched off with `notifications`, and which very hard landings they have been sent a remark about), and per server the channel and message of an AeroDAQ market
-board if one is switched on. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
+board if one is switched on, and the channel, messages and chosen airports of a weather board if one is. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
 account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no tokens or passwords from users. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
@@ -1016,7 +1050,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
-`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`; only the airport code is sent; read-only; see *Weather reports*);
+`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>` or uses a weather board's Search button, and, for a server with a weather board, once every ten minutes for each airport on it; only the airport code is sent; read-only; see *Weather reports* and *The weather board*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the

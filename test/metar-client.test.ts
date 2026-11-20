@@ -110,6 +110,19 @@ describe('asking VATSIM for a weather report', () => {
     assert.equal(METAR_TTL_MS, 10 * 60_000);
   });
 
+  it('asks again when the caller wants a report younger than ten minutes (a board that redraws every ten minutes does)', async () => {
+    const f = fakeFetch(() => ({ raw: EGLL }));
+    const c = client(f);
+    await c.report('EGLL');
+    now += 9 * 60_000 + 30_000;
+    await c.report('EGLL');
+    assert.equal(f.seen.length, 1, 'nine and a half minutes old is still fine for the usual ten');
+    await c.report('EGLL', 9 * 60_000);
+    assert.equal(f.seen.length, 2, 'but not for nine');
+    await c.report('EGLL', 9 * 60_000);
+    assert.equal(f.seen.length, 2, 'and that fresh answer is then remembered');
+  });
+
   it('overlapping requests for one airport share one call', async () => {
     const f = fakeFetch(() => ({ raw: EGLL }));
     const c = client(f);
