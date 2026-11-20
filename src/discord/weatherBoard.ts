@@ -1,19 +1,15 @@
-import { MessageFlags, type Client, type ModalSubmitInteraction } from 'discord.js';
+import { MessageFlags, type ButtonInteraction, type Client, type ModalSubmitInteraction } from 'discord.js';
 import type { Store, WeatherBoard } from '../db/store.js';
-import { MetarError, type MetarClient } from '../metar/client.js';
-import {
-  DEFAULT_WEATHER_AIRPORTS,
-  flightAirports,
-  flightsInWindow,
-  MAX_BOARD_FLIGHTS,
-  MAX_FLIGHT_AIRPORTS,
-  parseAirportList,
-} from '../services/weatherAirports.js';
+import { MetarError, normalizeStation, type MetarClient, type StationReport } from '../metar/client.js';
+import { decodeMetar } from '../services/metar.js';
+import { DEFAULT_WEATHER_AIRPORTS, flightAirports, flightsInWindow, MAX_FLIGHT_AIRPORTS, parseAirportList } from '../services/weatherAirports.js';
+import { ts } from '../util/format.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import type { BotContext, ComponentHandler } from './context.js';
 import { isMissingAccess, isUnknownMessage, UserError } from './errors.js';
+import { metarEmbed } from './metarUi.js';
 import { noPings } from './ui.js';
-import { metarBlocks, renderWeather, searchModal, WEATHER_FOOTER, weatherButtons } from './weatherUi.js';
+import { metarBlocks, renderWeather, searchModal, WEATHER_FOOTER, type GridAirport } from './weatherUi.js';
 
 /**
  * - `updated`: edited the existing messages in place
@@ -31,22 +27,26 @@ const FRESH_ENOUGH_MS = WEATHER_REFRESH_MS - 60_000;
 /** A search by one person, and how many airports it may name. */
 export const SEARCH_COOLDOWN_MS = 3_000;
 export const MAX_SEARCH_AIRPORTS = 5;
+/** How many airports' last reports are kept to fall back on when VATSIM cannot be reached. */
+const MAX_REMEMBERED = 300;
 
-/** What the board says for an airport that VATSIM has no report for, or whose report could not be read. */
+/** What a search says for an airport that VATSIM has no report for, or whose report could not be read. */
 const none = (code: string): string => `${code} no METAR available`;
 const unreadable = (code: string): string => `${code} report could not be read`;
 
 /**
- * Keeps each server's weather board up to date. The board is a few messages in one channel, edited in place while their number stays the
- * same (posted again if it changes, or if one is deleted). When VATSIM can't be reached the old board stays as it was.
+ * Keeps each server's weather board up to date. The board is a grid of buttons, one for each airport (see `renderWeather`), in a few messages in one channel,
+ * edited in place while their number stays the same (posted again if it changes, or if one is deleted). When VATSIM can't be reached the old board stays as it was.
  */
 export class WeatherBoardService {
   private client: Client | null = null;
   private running = false;
   /** The redraw of each server's board that is under way or queued. */
   private readonly chains = new Map<string, Promise<unknown>>();
-  /** What each message of a board says, so an edit that would change nothing is not sent. */
+  /** What each message of a board says (its cards and buttons), so an edit that would change nothing is not sent. */
   private readonly shown = new Map<string, string>();
+  /** The last report read for each airport, however old, for pressing an airport while VATSIM cannot be reached. */
+  private readonly latest = new Map<string, { line: string; at: number }>();
   private current: Promise<void> = Promise.resolve();
 
   constructor(
@@ -58,6 +58,17 @@ export class WeatherBoardService {
 
   attach(client: Client): void {
     this.client = client;
+  }
+
+  /** The last report read for an airport (by a redraw or by someone pressing it), and when; null if none has been. */
+  lastKnown(code: string): { line: string; at: number } | null {
+    return this.latest.get(code) ?? null;
+  }
+
+  /** Remember a report just read, to fall back on. */
+  remember(code: string, line: string, at: number = this.now()): void {
+    if (!this.latest.has(code) && this.latest.size >= MAX_REMEMBERED) this.latest.delete(this.latest.keys().next().value as string);
+    this.latest.set(code, { line, at });
   }
 
   /**
@@ -78,17 +89,6 @@ export class WeatherBoardService {
     return run;
   }
 
-  /**
-   * The reports for these airports, as one line each, asked of VATSIM together in ONE request (it limits how often it can be asked, and a board has dozens of
-   * airports). If VATSIM could not be asked at all, or has asked to be left alone, this throws, and the board is left as it was.
-   */
-  private async reports(codes: string[]): Promise<Map<string, string>> {
-    const got = await this.metar.reports([...new Set(codes)], FRESH_ENOUGH_MS);
-    const lines = new Map<string, string>();
-    for (const [code, report] of got) lines.set(code, report instanceof MetarError ? unreadable(code) : report === null ? none(code) : report);
-    return lines;
-  }
-
   private async redraw(guildId: string): Promise<WeatherRefreshResult> {
     const board = this.store.getWeatherBoard(guildId);
     if (!board || !this.client) return 'skipped';
@@ -96,16 +96,16 @@ export class WeatherBoardService {
     this.store.updateWeatherBoard(guildId, { lastAttemptAt: now });
 
     const top = board.airports.length > 0 ? board.airports : [...DEFAULT_WEATHER_AIRPORTS];
-    // The flights of every panel in this server whose landing window is in the next 24 hours.
+    // The airports of the flights of every panel in this server whose landing window is in the next 24 hours: those the flights come to first, shown in order of code.
     const views = this.store.listPanels(guildId).flatMap((p) => this.store.listOpenJobViews(p.id));
-    const inWindow = flightsInWindow(views, now);
-    const shown = inWindow.slice(0, MAX_BOARD_FLIGHTS);
-    const { codes, skipped } = flightAirports(shown, top);
-    const wanted = codes.slice(0, MAX_FLIGHT_AIRPORTS);
+    const { codes, skipped } = flightAirports(flightsInWindow(views, now), top);
+    const wanted = codes.slice(0, MAX_FLIGHT_AIRPORTS).sort((a, b) => a.localeCompare(b));
 
-    let lines: Map<string, string>;
+    // Everything is asked of VATSIM together, in ONE request (it limits how often it can be asked, and a board can have dozens of airports). If VATSIM could not
+    // be asked at all, or has asked to be left alone, the board is left as it was.
+    let got: Map<string, StationReport>;
     try {
-      lines = await this.reports([...top, ...wanted]);
+      got = await this.metar.reports([...new Set([...top, ...wanted])], FRESH_ENOUGH_MS);
     } catch (e) {
       if (e instanceof MetarError) {
         this.note(board, e.message);
@@ -115,19 +115,24 @@ export class WeatherBoardService {
       this.log.warn(`Could not read the weather for server ${guildId}`, e);
       return 'failed';
     }
-    const lineOf = (code: string) => lines.get(code) ?? none(code);
+    const airport = (code: string): GridAirport => {
+      const report = got.get(code);
+      if (typeof report !== 'string') return { code, category: null };
+      this.remember(code, report, now);
+      return { code, category: decodeMetar(report, { now, station: code })?.category ?? null };
+    };
 
-    const texts = renderWeather({
+    const messages = renderWeather({
       now,
-      top: top.map(lineOf),
-      flights: shown,
-      moreFlights: inWindow.length - shown.length,
-      flightAirports: wanted.map(lineOf),
+      monitored: top.map(airport),
+      ofFlights: wanted.map(airport),
       moreAirports: codes.length - wanted.length,
       skipped,
       everyMinutes: WEATHER_REFRESH_MS / 60_000,
     });
-    const payloads = texts.map((content, i) => ({ content, components: i === texts.length - 1 ? [weatherButtons()] : [], allowedMentions: noPings }));
+    // `content: ''` so a board drawn by an earlier version, which wrote the reports in the message, loses its text when it is edited.
+    const payloads = messages.map((m) => ({ content: '', embeds: m.embeds, components: m.components, allowedMentions: noPings }));
+    const signatures = messages.map((m) => JSON.stringify({ e: m.embeds.map((x) => x.toJSON()), c: m.components.map((r) => r.toJSON()) }));
 
     try {
       const channel = await this.client.channels.fetch(board.channelId).catch(() => null);
@@ -145,9 +150,9 @@ export class WeatherBoardService {
           try {
             for (let i = 0; i < payloads.length; i++) {
               const id = board.messageIds[i]!;
-              if (this.shown.get(id) === texts[i]) continue; // already says exactly this
+              if (this.shown.get(id) === signatures[i]) continue; // already says exactly this
               await existing[i]!.edit(payloads[i]!);
-              this.shown.set(id, texts[i]!);
+              this.shown.set(id, signatures[i]!);
             }
             result = 'updated';
           } catch (e) {
@@ -167,7 +172,7 @@ export class WeatherBoardService {
           for (const [i, payload] of payloads.entries()) {
             const sent = await channel.send(payload);
             fresh.push(sent.id);
-            this.shown.set(sent.id, texts[i]!);
+            this.shown.set(sent.id, signatures[i]!);
           }
         } finally {
           // Even if posting stops halfway, what was posted is remembered, so the next redraw clears it away.
@@ -229,6 +234,40 @@ export class WeatherBoardService {
   }
 }
 
+/* ------------------------------------------------------------------ pressing an airport */
+
+/**
+ * An airport on the board was pressed: its full METAR, privately, as a card (the report in plain language with the report as written at the bottom). The report
+ * is the one VATSIM gave in the last ten minutes (usually the one the board was drawn from, so pressing it asks nobody). If VATSIM cannot be reached the last
+ * report this bot read for the airport is shown, and said to be that.
+ */
+async function showAirport(ctx: BotContext, interaction: ButtonInteraction, code: string): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let line: string | null;
+  let note = '';
+  try {
+    line = await ctx.metar.report(code);
+  } catch (e) {
+    if (!(e instanceof MetarError)) throw e;
+    if (e.kind === 'bad-response') throw new UserError(`VATSIM sent a report for **${code}** that I couldn't read.`);
+    const known = ctx.weather.lastKnown(code);
+    if (!known) throw new UserError(e.message);
+    line = known.line;
+    note = `⚠️ ${e.message} This is the last report I had for **${code}**, from ${ts(known.at, 'R')}:`;
+  }
+  if (line === null) {
+    await interaction.editReply({ content: `VATSIM has no weather report for **${code}** right now. Small airfields often have no weather station.`, allowedMentions: noPings });
+    return;
+  }
+  if (!note) ctx.weather.remember(code, line, ctx.now());
+  const decoded = decodeMetar(line, { now: ctx.now(), station: code });
+  if (!decoded) {
+    await interaction.editReply({ content: `${note ? `${note}\n` : ''}I couldn't read the report for **${code}**: \`${line.replace(/`/g, "'").slice(0, 300)}\``, allowedMentions: noPings });
+    return;
+  }
+  await interaction.editReply({ ...(note ? { content: note } : {}), embeds: [metarEmbed(decoded, 'vatsim')], allowedMentions: noPings });
+}
+
 /* ------------------------------------------------------------------ the Search button */
 
 const lastSearch = new Map<string, number>();
@@ -273,11 +312,16 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction): 
   });
 }
 
-/** `weather:search` (the board's button, which opens the form) and `weather:searchgo` (the form sent). */
+/** `weather:metar:<ICAO>` (an airport on the board), `weather:search` (the board's button, which opens the form) and `weather:searchgo` (the form sent). */
 export const weatherHandler: ComponentHandler = {
   prefix: 'weather',
   async handle(ctx, interaction) {
-    const action = interaction.customId.split(':')[1];
+    const [, action, arg] = interaction.customId.split(':');
+    if (action === 'metar' && interaction.isButton()) {
+      const code = normalizeStation(arg ?? '');
+      if (code === null) throw new UserError('That button is out of date.');
+      return showAirport(ctx, interaction, code);
+    }
     if (action === 'search' && interaction.isButton()) {
       await interaction.showModal(searchModal());
       return;

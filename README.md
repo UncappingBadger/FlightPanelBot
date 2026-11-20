@@ -4,7 +4,7 @@ A Discord bot for virtual-airline communities. An admin names the airline; the b
 channel listing the airline's open flights (route, required airframe, when it must be completed by). Pilots
 press **Reserve**, the bot DMs them, they reply with the flight's ID, and the panel shows their name (and
 FsHub pilot ID) next to the flight. Multi-leg flights can be split between pilots leg by leg. It can also look
-up fuel prices (`/fuel`), show the AeroDAQ in-game market in a channel, and keep a weather board of METARs in a channel.
+up fuel prices (`/fuel`), show the AeroDAQ in-game market in a channel, and keep a weather board in a channel: a grid of airports, press one for its METAR.
 
 By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored by FsHub, Aeroconomy, AeroDAQ or VATSIM.
 
@@ -286,7 +286,7 @@ matches pilots to their IDs; it never decides who may use the bot).
 |---|---|
 | `/setup panel-add airline channel [prefix] [role]` | Name the airline (just type it, 2 to 60 characters, no `@`) and post its panel in a channel. Flight IDs look like `DMO-001`; the prefix is made from the name (initials) unless you set one. Optionally require a role to reserve. Typing a name already used here (any capitals) updates that panel instead of adding another; a server can host several airlines. |
 | `/setup market [mode] [channel]` | Show the AeroDAQ in-game market in a channel, kept up to date (see [below](#aerodaq-fuel-prices-and-the-market)). With nothing given it says how things stand. |
-| `/setup weather [mode] [channel] [airports]` | Show METARs in a channel, kept up to date: the airports you choose (default KBOS KMIA SKBO EGLL), then the airports of the flights in the next 24 hours, with a **Search airport** button (see [below](#the-weather-board)). With nothing given it says how things stand. |
+| `/setup weather [mode] [channel] [airports]` | Keep a weather board in a channel: a grid of buttons, one per airport (just its code, with a dot for how its weather rates), for the airports you choose (default KBOS KMIA SKBO EGLL) and then the airports of the flights in the next 24 hours; pressing one shows its METAR to that person only, and a **Search airport** button finds any other (see [below](#the-weather-board)). With nothing given it says how things stand. |
 | `/setup fshub [link] [confirm] [autocomplete] [airline]` | Link a panel to your airline's FsHub roster so pilots are matched to their pilot IDs without being asked, and completed flights show the aircraft FsHub recorded (needs a [FsHub token](#fshub-optional)). `link` is the airline's short name (e.g. `SKY`), its FsHub number or a link to its page; `link:none` stops. `confirm:off` stops reading the airline's flights, which also returns **Complete** to the pilot-picks mode. `autocomplete:off` stops the [hourly automatic completion](#completing-automatically-every-hour) (on by default); `autocomplete:on` turns it back on and checks now. With no options it reads the roster and flights now and runs the check. |
 | `/setup panel-role [role] [airline]` | Change which role can reserve on a panel. Leave the role empty to open it to everyone. |
 | `/setup sheet link [airline]` | Read the panel's flights from your airline's Google Sheet schedule, every hour. `link:none` stops. |
@@ -517,32 +517,37 @@ as written is shown at the bottom. It is for flight simulation only, and says so
 
 ### The weather board
 
-**`/setup weather mode:on channel:#weather`** (admins) posts a board of METARs in a channel and keeps it up to date. It is
-the reports **as written** (`KBOS 111154Z 27012KT 10SM FEW250 12/03 A3012 ...`), without the explanation the DM `metar` card
-gives, and is read top to bottom:
+**`/setup weather mode:on channel:#weather`** (admins) posts a weather board in a channel and keeps it up to date. It is a **grid of
+buttons, laid out like the Reserve panel**: one button for each airport, saying only its four-letter ICAO code, so a channel with dozens of
+airports stays short and easy to read. **Pressing an airport shows its full METAR**, to the person who pressed it and nobody else. No report is
+written out in the channel.
 
-1. **The airports at the top**, each with its current METAR. Out of the box these are **KBOS KMIA SKBO EGLL**; an admin can
-   choose up to eight others with `airports:` (four-letter ICAO codes, `airports:default` goes back to the four).
-2. **The flights in the next 24 hours**, from the schedule: every open flight of every panel in the server whose landing window
-   overlaps the next 24 hours (one already open and not yet flown counts; a flight with no time, a completed one, and one whose
-   window is over do not). Each is one line: its ID, its route and its landing window in Zulu (`SKY330 KJFK → KBOS · 20 Nov 1400-1800Z`).
-3. **The METARs of those flights' airports**, each airport once (the ones at the top are not repeated), in the order the flights come.
-   An airport VATSIM has no report for says so (`no METAR available`); a code that is not four characters is named, and not asked for.
+1. **The airports followed**, in the first message, with the **Search airport** button under them. Out of the box these are
+   **KBOS KMIA SKBO EGLL**; an admin can choose up to eight others with `airports:` (four-letter ICAO codes, `airports:default` goes back to the four).
+2. **The airports of the flights in the next 24 hours**, in messages of their own, 25 buttons to a message, in order of code. They come
+   from the schedule: every open flight of every panel in the server whose landing window overlaps the next 24 hours (one already open and
+   not yet flown counts; a flight with no time, a completed one, and one whose window is over do not). The flights themselves are **not**
+   listed; an airport the server already follows is not repeated, and one that several flights use is there once. A code that is not four
+   characters is named under the buttons, and not asked for.
 
+- **The dot on a button is the weather's rating:** 🟢 VFR, 🔵 MVFR, 🔴 IFR, 🟣 LIFR (US-style flying conditions, worked out from the report's
+  visibility and cloud ceiling), ⚪ no report. A key is in the board's header.
+- **What pressing one shows** is the DM `metar` card: the report in plain language (*In short*, wind, visibility, weather, clouds,
+  temperature, pressure) with **the report as written at the bottom**. If VATSIM has no report for the airport it says so (small airfields often
+  have none). If VATSIM cannot be reached it shows the last report the bot had for that airport, and says when that was.
 - **It follows VATSIM.** The board is redrawn every ten minutes, which is as often as VATSIM's service (which asks caches to keep an
   answer for ten minutes) has anything new, and it asks for reports a little younger than that, so a redraw never reuses its own
-  previous answer. Its first line says when it was last checked. The messages are edited in place, and only the ones whose words changed.
-  Flights come and go as the 24 hours move.
+  previous answer. Its header says when it was last checked. The messages are edited in place, and only the ones whose buttons or dots changed.
+  Airports come and go as the 24 hours move.
 - **If VATSIM cannot be reached,** the board stays as it was, `/setup weather` says why, and it tries again at the next redraw. One
-  report that is too odd to read is shown as unreadable and does not stop the rest.
-- **It fits Discord.** A long board spans up to eight messages (up to 60 flights and 40 airports of flights are shown, and it says how
-  many more there were); if someone deletes a message, or the number of messages changes, the board is posted again. The bot needs View
-  Channel, Send Messages, Embed Links and Read Message History in the channel, and never pings anyone.
-- **Search airport.** The button under the board's last message opens a box for an airport's four-letter ICAO code (or several, up to
+  report that is too odd to read gets a grey dot and does not stop the rest.
+- **It fits Discord.** Up to 40 airports of flights are shown, and it says how many more there were; if someone deletes a message, or the number
+  of messages changes, the board is posted again. The bot needs View Channel, Send Messages, Embed Links and Read Message History in the channel, and never pings anyone.
+- **Search airport.** The button under the first message opens a box for an airport's four-letter ICAO code (or several, up to
   five) and answers only to the person who asked, with the METAR as written and a pointer to the DM `metar` for the plain-language
   version. A three-letter code is explained rather than guessed (`KJFK`, not `JFK`). One person can search every few seconds.
 - **Kind to VATSIM.** **One request per redraw, for all of the board's airports together** (up to 50 in a request, a few dozen in practice), answers shared with the DM
-  `metar` and with other servers' boards, and only the airport codes are ever sent. (The first version asked for each airport separately, which
+  `metar`, with pressing an airport and with other servers' boards, and only the airport codes are ever sent. (The first version asked for each airport separately, which
   was refused as too many requests at once: a board with a day of flights has dozens of airports.) When VATSIM says it is busy the bot waits as long
   as it asks (at most 15 minutes) before asking again, leaves the board as it was, and `/setup weather` says how long. `/setup weather mode:off` removes the board and its messages.
 
@@ -1113,7 +1118,7 @@ server members for the Reserve conversation to work; if they haven't, the bot sa
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `aeroconomy.com` banking (`/banking/accounts` and each account's transactions, read with a pilot's own token, in plain `GET` requests, only for a pilot who turned on `/banking`, every five minutes for each account they chose; see *Payment messages*); `movements.fshub.io` is also asked for the airline of any flight someone is watching with `/monitor`, once a minute (see *Watching a flight*);
-`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>` or uses a weather board's Search button, and, for a server with a weather board, once every ten minutes, all its airports in one request; only the airport codes are sent; read-only; see *Weather reports* and *The weather board*);
+`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`, presses an airport on a weather board or uses its Search button, and, for a server with a weather board, once every ten minutes, all its airports in one request; only the airport codes are sent; read-only; see *Weather reports* and *The weather board*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the

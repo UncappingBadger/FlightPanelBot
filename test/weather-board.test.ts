@@ -6,7 +6,7 @@ import { commands, componentHandlers } from '../src/discord/commands/index.js';
 import { UserError } from '../src/discord/errors.js';
 import { registerInteractionRouter } from '../src/discord/router.js';
 import { MAX_SEARCH_AIRPORTS, SEARCH_COOLDOWN_MS, WEATHER_REFRESH_MS, weatherHandler } from '../src/discord/weatherBoard.js';
-import { MAX_BOARD_MESSAGES, metarBlocks, renderWeather, WEATHER_FOOTER, windowText, type WeatherView } from '../src/discord/weatherUi.js';
+import { metarBlocks, renderWeather, WEATHER_FOOTER, type GridAirport, type WeatherView } from '../src/discord/weatherUi.js';
 import { MetarError } from '../src/metar/client.js';
 import { Scheduler } from '../src/services/scheduler.js';
 import { DEFAULT_WEATHER_AIRPORTS, flightAirports, flightsInWindow, MAX_TOP_AIRPORTS, parseAirportList, WEATHER_WINDOW_MS, type BoardFlight } from '../src/services/weatherAirports.js';
@@ -121,78 +121,100 @@ describe('reading the airports an admin types', () => {
 
 /* ------------------------------------------------------------------ how it looks */
 
-describe('the weather board text', () => {
+/** The buttons of a message, as Discord is sent them. */
+const buttonsOf = (components: Array<{ toJSON(): any }>): any[] => components.flatMap((r) => r.toJSON().components as any[]);
+/** The airport buttons of a message (not the Search button), as `[code, dot]`. */
+const airportsOn = (components: Array<{ toJSON(): any }>): Array<[string, string]> =>
+  buttonsOf(components)
+    .filter((b) => String(b.custom_id).startsWith('weather:metar:'))
+    .map((b) => [String(b.label), String(b.emoji?.name)]);
+const codesOn = (components: Array<{ toJSON(): any }>): string[] => airportsOn(components).map(([c]) => c);
+/** Everything a message's cards say, as one piece of text. */
+const embedsText = (embeds: Array<{ toJSON(): any }>): string =>
+  embeds
+    .map((e) => {
+      const j = e.toJSON();
+      return [j.title, j.description, j.footer?.text].filter(Boolean).join('\n');
+    })
+    .join('\n');
+
+describe('the weather board layout', () => {
+  const ap = (code: string, category: GridAirport['category'] = null): GridAirport => ({ code, category });
   const base = (over: Partial<WeatherView> = {}): WeatherView => ({
     now: T0,
-    top: DEFAULT_WEATHER_AIRPORTS.map((c) => REPORTS[c]!),
-    flights: [],
-    moreFlights: 0,
-    flightAirports: [],
+    monitored: DEFAULT_WEATHER_AIRPORTS.map((c) => ap(c)),
+    ofFlights: [],
     moreAirports: 0,
     skipped: [],
     everyMinutes: 10,
     ...over,
   });
-  const flight = (code: string, route: Array<[string, string]>, from: number, to: number): BoardFlight => ({ code, legs: route.map(([dep, arr]) => ({ dep, arr })), from, to });
+  const many = (n: number, from = 0): GridAirport[] => Array.from({ length: n }, (_, i) => ap(`K${String.fromCharCode(65 + ((from + i) % 26))}${String(from + i).padStart(2, '0')}`));
 
-  it('shows the airports first, then the flights, then the weather of the flights\' airports, with only the abbreviations', () => {
-    const [text] = renderWeather(base({ flights: [flight('SKY330', [['KJFK', 'KBOS']], T0 + 2 * HOUR, T0 + 6 * HOUR)], flightAirports: [REPORTS.KJFK!] }));
-    assert.ok(text!.startsWith('🌦️ **Weather** · METARs from VATSIM · checked <t:'));
-    const at = (s: string) => text!.indexOf(s);
-    assert.ok(at('**Airports**') < at(REPORTS.KBOS!) && at(REPORTS.KBOS!) < at(REPORTS.KMIA!) && at(REPORTS.KMIA!) < at(REPORTS.SKBO!) && at(REPORTS.SKBO!) < at(REPORTS.EGLL!), 'the four, in the order given');
-    assert.ok(at(REPORTS.EGLL!) < at('**Flights in the next 24 hours** (1)'));
-    assert.ok(at('**Flights in the next 24 hours** (1)') < at('**Airports of those flights**'));
-    assert.ok(at('**Airports of those flights**') < at(REPORTS.KJFK!));
-    assert.match(text!, /`SKY330` KJFK → KBOS · 11 Nov 1400-1800Z/);
-    assert.doesNotMatch(text!, /In short|knots|statute|Flying conditions|Visibility|Wind/, 'the abbreviations, not the plain-language explanation');
-    assert.ok(text!.endsWith(`*${WEATHER_FOOTER}*`));
+  it('is a grid of buttons that say only the airport\'s code, with a header and the Search button, and writes no report out', () => {
+    const [m, ...rest] = renderWeather(base());
+    assert.equal(rest.length, 0);
+    assert.deepEqual(codesOn(m!.components), ['KBOS', 'KMIA', 'SKBO', 'EGLL'], 'the airports followed, in the order given');
+    assert.deepEqual(buttonsOf(m!.components).slice(0, 4).map((b) => b.custom_id), ['weather:metar:KBOS', 'weather:metar:KMIA', 'weather:metar:SKBO', 'weather:metar:EGLL']);
+    assert.deepEqual(m!.components.map((r) => r.toJSON().components.length), [4, 1], 'a row of airports, then the Search button on its own');
+    const search = buttonsOf(m!.components).at(-1);
+    assert.deepEqual([search.custom_id, search.label], ['weather:search', 'Search airport']);
+    const text = embedsText(m!.embeds);
+    assert.match(text, /^🌦️ Weather · METARs from VATSIM\nPress an airport to see its METAR, or \*\*Search airport\*\* for any other\.\n\*\*Key:\*\* 🟢 VFR · 🔵 MVFR · 🔴 IFR · 🟣 LIFR \(US-style flying conditions\) · ⚪ no report\nChecked <t:\d+:R> · redrawn every 10 minutes\n\*\*Airports followed\*\* \(4\)/);
+    assert.ok(text.endsWith(WEATHER_FOOTER), 'the disclaimer closes the board');
+    assert.doesNotMatch(text, /\d{6}Z|\d{3}\d{2}KT|Q\d{4}|A\d{4}/, 'no METAR in the channel');
   });
 
-  it('says so when there are no flights, and leaves the flights\' airports out', () => {
-    const [text] = renderWeather(base());
-    assert.match(text!, /\*\*Flights in the next 24 hours\*\*\nNone in the schedule\./);
-    assert.doesNotMatch(text!, /Airports of those flights/);
+  it('shows how each airport rates by the dot on its button, and a grey one when there is no report', () => {
+    const [m] = renderWeather(base({ monitored: [ap('KAAA', 'VFR'), ap('KBBB', 'MVFR'), ap('KCCC', 'IFR'), ap('KDDD', 'LIFR'), ap('KEEE', null)] }));
+    assert.deepEqual(airportsOn(m!.components), [['KAAA', '🟢'], ['KBBB', '🔵'], ['KCCC', '🔴'], ['KDDD', '🟣'], ['KEEE', '⚪']]);
+    assert.ok(buttonsOf(m!.components).filter((b) => String(b.custom_id).startsWith('weather:metar:')).every((b) => b.style === 2), 'grey buttons, like the reserve panel\'s grid');
   });
 
-  it('writes a multi-leg flight as a chain, and a window across midnight with both days', () => {
-    const [text] = renderWeather(base({ flights: [flight('ABC', [['EGLL', 'EGKK'], ['EGKK', 'EGCC']], T0 + 10 * HOUR, T0 + 16 * HOUR)] }));
-    assert.match(text!, /`ABC` EGLL → EGKK → EGCC · 11 Nov 2200Z to 12 Nov 0400Z/);
-    assert.equal(windowText(T0, T0 + 6 * HOUR), '11 Nov 1200-1800Z');
-    assert.equal(windowText(T0 + 11 * HOUR + 59 * 60_000, T0 + 11 * HOUR + 59 * 60_000), '11 Nov by 2359Z');
+  it('puts the airports of the flights in messages of their own, twenty-five to a message, five to a row', () => {
+    const messages = renderWeather(base({ ofFlights: many(30) }));
+    assert.equal(messages.length, 3);
+    assert.deepEqual(codesOn(messages[1]!.components).length, 25);
+    assert.deepEqual(messages[1]!.components.map((r) => r.toJSON().components.length), [5, 5, 5, 5, 5]);
+    assert.deepEqual(messages[2]!.components.map((r) => r.toJSON().components.length), [5]);
+    assert.match(embedsText(messages[1]!.embeds), /^\*\*Airports of the flights in the next 24 hours\*\* \(30\)$/);
+    assert.match(embedsText(messages[2]!.embeds), /^\*\*…continued\*\* \(26–30\)\n/);
+    assert.ok(embedsText(messages[2]!.embeds).endsWith(WEATHER_FOOTER), 'the disclaimer is on the last message');
+    assert.ok(!embedsText(messages[1]!.embeds).includes(WEATHER_FOOTER) && !embedsText(messages[0]!.embeds).includes(WEATHER_FOOTER));
   });
 
-  it('counts the flights it could not list, and the airports it could not show, and the codes it did not ask about', () => {
-    const [text] = renderWeather(base({ flights: [flight('A', [['KJFK', 'KBOS']], T0, T0 + HOUR)], moreFlights: 4, flightAirports: [REPORTS.KJFK!], moreAirports: 1, skipped: ['JFK', 'LHR'] }));
-    assert.match(text!, /\(5\)/);
-    assert.match(text!, /…and 4 more flights\./);
-    assert.match(text!, /…and 1 more airport not shown\./);
-    assert.match(text!, /No report asked for `JFK`, `LHR`: not four-letter airport codes\./);
+  it('has only the one message when no flight needs another airport, and says nothing about flights then', () => {
+    const messages = renderWeather(base());
+    assert.equal(messages.length, 1);
+    assert.doesNotMatch(embedsText(messages[0]!.embeds), /next 24 hours/);
   });
 
-  it('keeps nothing in a METAR able to end its block, start a mention or break a line', () => {
+  it('says how many more airports there were than are shown, and which codes it did not ask about', () => {
+    const messages = renderWeather(base({ ofFlights: many(3), moreAirports: 4, skipped: ['JFK', 'LHR'] }));
+    const text = embedsText(messages[1]!.embeds);
+    assert.match(text, /\(7\)/);
+    assert.match(text, /…and 4 more airports not shown\./);
+    assert.match(text, /No report asked for `JFK`, `LHR`: not four-letter airport codes\./);
+    assert.match(embedsText(renderWeather(base({ ofFlights: many(1), moreAirports: 1 }))[1]!.embeds), /…and 1 more airport not shown\./);
+  });
+
+  it('stays inside what Discord allows: five rows of five, a header that fits, the airport code as the whole label', () => {
+    const messages = renderWeather(base({ monitored: many(8), ofFlights: many(40, 8) }));
+    for (const m of messages) {
+      assert.ok(m.components.length <= 5, `${m.components.length} rows`);
+      for (const r of m.components) assert.ok(r.toJSON().components.length <= 5);
+      assert.ok(buttonsOf(m.components).length <= 25);
+      assert.ok(embedsText(m.embeds).length < 4000);
+    }
+    assert.equal(messages[0]!.components.length, 3, 'eight airports make two rows, and the Search button a third');
+    for (const b of buttonsOf(messages.flatMap((m) => m.components)).filter((x) => String(x.custom_id).startsWith('weather:metar:'))) assert.match(String(b.label), /^[A-Z0-9]{4}$/);
+  });
+
+  it('keeps nothing in a METAR able to end its block, start a mention or break a line (what a search shows)', () => {
     const blocks = metarBlocks(['KBOS 111154Z ``` @everyone <@123>\nRMK AO2']);
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.split('```').length, 3, 'only the two fences are fences');
     assert.equal(blocks[0]!.split('\n').length, 3, 'one line of text between them');
-  });
-
-  it('spreads a long board over several messages, each inside Discord\'s limit with its code blocks closed', () => {
-    const many = Array.from({ length: 40 }, (_, i) => `KA${String(i).padStart(2, '0')} 111150Z ${'AUTO 26008KT 9999 NCD 08/01 Q1006 NOSIG '.repeat(2).trim()}`);
-    const messages = renderWeather(base({ flights: Array.from({ length: 30 }, (_, i) => flight(`F${i}`, [['KJFK', 'KBOS']], T0 + i * HOUR / 2, T0 + 6 * HOUR)), flightAirports: many }));
-    assert.ok(messages.length > 1 && messages.length <= MAX_BOARD_MESSAGES, `${messages.length} messages`);
-    for (const m of messages) {
-      assert.ok(m.length <= 2000, `a message of ${m.length} characters`);
-      assert.equal(m.split('```').length % 2, 1, 'every code block is closed');
-    }
-    assert.ok(messages.join('\n').includes(many.at(-1)!), 'nothing lost on the way');
-  });
-
-  it('never needs more than eight messages, even for reports that are as long as one can be', () => {
-    const huge = Array.from({ length: 40 }, (_, i) => `KB${String(i).padStart(2, '0')} ${'X'.repeat(790)}`);
-    const messages = renderWeather(base({ flightAirports: huge }));
-    assert.equal(messages.length, MAX_BOARD_MESSAGES);
-    assert.ok(messages.every((m) => m.length <= 2000));
-    assert.match(messages.at(-1)!, /…and more that did not fit\./);
   });
 });
 
@@ -213,22 +235,27 @@ describe('the weather board in a channel', () => {
   });
   const board = () => h.store.getWeatherBoard(GUILD)!;
   const live = () => d.client.channel(WX).live;
-  const text = () => live().map((m) => String(m.payload.content)).join('\n');
+  const everything = () => live().map((m) => embedsText(m.payload.embeds)).join('\n');
   const flight = (key: string, chain: string, fromH: number, toH: number) => sj(key, chain, { availableFrom: T0 + fromH * HOUR, deadline: T0 + toH * HOUR });
+  const dots = () => new Map(live().flatMap((m) => airportsOn(m.payload.components)));
 
-  it('posts the four airports at the top as written, with the Search button under it and no pings', async () => {
+  it('posts the four airports as a grid of buttons, with the Search button, no report written out and no pings', async () => {
     assert.equal(await d.weather.refresh(GUILD), 'posted');
     assert.equal(live().length, 1);
-    const content = String(live()[0]!.payload.content);
-    for (const code of ['KBOS', 'KMIA', 'SKBO', 'EGLL']) assert.ok(content.includes(REPORTS[code]!), code);
+    const message = live()[0]!;
+    assert.deepEqual(codesOn(message.payload.components), ['KBOS', 'KMIA', 'SKBO', 'EGLL']);
+    assert.equal(message.payload.content, '', 'no text in the message itself');
+    assert.doesNotMatch(everything(), /\d{6}Z/, 'no METAR is written in the channel');
     assert.deepEqual(d.metar.calls.sort(), ['EGLL', 'KBOS', 'KMIA', 'SKBO'], 'only those four are asked for');
-    const rows = live()[0]!.payload.components.map((r: { toJSON(): any }) => r.toJSON());
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].components[0].custom_id, 'weather:search');
-    assert.equal(rows[0].components[0].label, 'Search airport');
-    assert.deepEqual(live()[0]!.payload.allowedMentions, { parse: [] });
-    assert.deepEqual(board().messageIds, [live()[0]!.id]);
+    assert.equal(buttonsOf(message.payload.components).at(-1).custom_id, 'weather:search');
+    assert.deepEqual(message.payload.allowedMentions, { parse: [] });
+    assert.deepEqual(board().messageIds, [message.id]);
     assert.deepEqual([board().lastOkAt, board().lastError], [h.clock.now, null]);
+  });
+
+  it('marks each airport with the rating of its report: green for fine weather here', async () => {
+    await d.weather.refresh(GUILD);
+    assert.deepEqual([...dots()], [['KBOS', '🟢'], ['KMIA', '🟢'], ['SKBO', '🟢'], ['EGLL', '🟢']]);
   });
 
   it('asks VATSIM for reports a little younger than its own redraws, so it never reuses its previous answer', async () => {
@@ -236,7 +263,7 @@ describe('the weather board in a channel', () => {
     assert.ok(d.metar.maxAges.length > 0 && d.metar.maxAges.every((a) => a !== undefined && a < WEATHER_REFRESH_MS));
   });
 
-  it('adds the airports of the flights in the next 24 hours, each once, and not those of flights outside them', async () => {
+  it('adds the airports of the flights in the next 24 hours, each once, in order of code, and none for flights outside them', async () => {
     h.jobs.sync(h.panel.id, [
       flight('soon', 'KJFK-KBOS', 2, 6),
       flight('open', 'EGKK-EGLL', -3, 3),
@@ -246,17 +273,16 @@ describe('the weather board in a channel', () => {
     ]);
     await d.weather.refresh(GUILD);
     assert.deepEqual([...new Set(d.metar.calls)].sort(), ['EGKK', 'EGLL', 'KBOS', 'KJFK', 'KMIA', 'SKBO'], 'no report for the flights outside the 24 hours');
-    assert.equal(d.metar.calls.length, 6, 'one request for each airport');
-    const t = text();
-    assert.match(t, /\*\*Flights in the next 24 hours\*\* \(3\)/);
-    assert.match(t, /EGKK → EGLL · 11 Nov 0900-1500Z/);
-    assert.match(t, /KJFK → KBOS · 11 Nov 1400-1800Z/);
-    assert.doesNotMatch(t, /LFPG|LFMN|EDDF|EHAM/);
-    const theirs = t.slice(t.indexOf('**Airports of those flights**'));
-    assert.equal(theirs.split(REPORTS.KJFK!).length, 2, 'KJFK is there once though two flights use it');
-    assert.ok(theirs.includes(REPORTS.EGKK!));
-    assert.ok(!theirs.includes(REPORTS.KBOS!), 'the airports at the top are not repeated');
-    assert.ok(theirs.indexOf(REPORTS.EGKK!) < theirs.indexOf(REPORTS.KJFK!), 'in the order the flights come');
+    assert.equal(live().length, 2);
+    assert.deepEqual(codesOn(live()[1]!.payload.components), ['EGKK', 'KJFK'], 'each once, though two flights use KJFK; the airports followed are not repeated');
+    assert.match(embedsText(live()[1]!.payload.embeds), /^\*\*Airports of the flights in the next 24 hours\*\* \(2\)/);
+  });
+
+  it('lists no flights: the flights themselves are not written in the channel', async () => {
+    h.jobs.sync(h.panel.id, [flight('soon', 'KJFK-KBOS', 2, 6), flight('open', 'EGKK-EGLL', -3, 3)]);
+    await d.weather.refresh(GUILD);
+    const t = everything();
+    assert.doesNotMatch(t, /Flights in the next 24 hours|→|TST-\d+|Nov 1[0-9]/);
   });
 
   it('asks VATSIM for the whole board in ONE request, however many airports the flights use (many requests at once got a server rate-limited)', async () => {
@@ -264,7 +290,8 @@ describe('the weather board in a channel', () => {
     h.jobs.sync(h.panel.id, codes.map((c, i) => flight(`j${i}`, `${c}-${codes[(i + 1) % 30]}`, 1, 5)));
     assert.equal(await d.weather.refresh(GUILD), 'posted');
     assert.equal(d.metar.batches.length, 1, 'one request');
-    assert.equal(d.metar.batches[0]!.length, 4 + 30, 'for the four at the top and every airport of the flights');
+    assert.equal(d.metar.batches[0]!.length, 4 + 30, 'for the four followed and every airport of the flights');
+    assert.equal(live().length, 3, 'the four, then the thirty in two messages');
     h.clock.advance(WEATHER_REFRESH_MS);
     await d.weather.refresh(GUILD);
     assert.equal(d.metar.batches.length, 2, 'and one more at the next redraw');
@@ -280,78 +307,91 @@ describe('the weather board in a channel', () => {
     assert.match(board().lastError!, /busy right now\. Try again in about 3 minutes\./);
   });
 
-  it('shows the flights of every panel in the server, and none of another server\'s', async () => {
+  it('shows the airports of the flights of every panel in the server, and none of another server\'s', async () => {
     const second = h.store.createPanel({ guildId: GUILD, name: 'Second Air', abbr: 'SEC', prefix: 'SEC', channelId: '700000000000000099', now: T0 });
     const foreign = h.store.createPanel({ guildId: 'another-server', name: 'Far Air', abbr: 'FAR', prefix: 'FAR', channelId: '700000000000000098', now: T0 });
     h.jobs.sync(h.panel.id, [flight('a', 'KJFK-KBOS', 1, 5)]);
     h.jobs.sync(second.id, [flight('b', 'EGKK-EGLL', 1, 5)]);
     h.jobs.sync(foreign.id, [flight('c', 'LFPG-LFMN', 1, 5)]);
     await d.weather.refresh(GUILD);
-    assert.match(text(), /\*\*Flights in the next 24 hours\*\* \(2\)/);
-    assert.match(text(), /`SEC-\d+` EGKK → EGLL/);
-    assert.doesNotMatch(text(), /LFPG|FAR-/);
+    assert.deepEqual(codesOn(live()[1]!.payload.components), ['EGKK', 'KJFK']);
     assert.ok(!d.metar.calls.includes('LFPG'));
   });
 
-  it('uses the board\'s own airports at the top when it has some', async () => {
+  it('uses the board\'s own airports when it has some', async () => {
     h.store.updateWeatherBoard(GUILD, { airports: ['EGKK', 'KJFK'] });
     await d.weather.refresh(GUILD);
     assert.deepEqual(d.metar.calls.sort(), ['EGKK', 'KJFK']);
-    assert.ok(text().includes(REPORTS.EGKK!) && !text().includes(REPORTS.KBOS!));
+    assert.deepEqual(codesOn(live()[0]!.payload.components), ['EGKK', 'KJFK']);
   });
 
-  it('says so for an airport VATSIM has no report for, and for one whose report could not be read', async () => {
+  it('shows a grey button for an airport VATSIM has no report for, and for one whose report could not be read', async () => {
     d.metar.known.delete('SKBO');
     d.metar.errors.set('EGLL', new MetarError('bad-response', 'VATSIM sent a weather report I could not read.'));
     assert.equal(await d.weather.refresh(GUILD), 'posted');
-    assert.match(text(), /^SKBO no METAR available$/m);
-    assert.match(text(), /^EGLL report could not be read$/m);
-    assert.ok(text().includes(REPORTS.KBOS!), 'the rest are there');
+    assert.deepEqual([...dots()], [['KBOS', '🟢'], ['KMIA', '🟢'], ['SKBO', '⚪'], ['EGLL', '⚪']]);
   });
 
-  it('does not ask for a code that is not four letters, and says so', async () => {
+  it('rates an airport by its report: bad weather is red', async () => {
+    d.metar.known.set('KMIA', 'KMIA 111153Z 09008KT 2SM BR OVC006 24/23 A2995');
+    d.metar.known.set('KBOS', 'KBOS 111154Z 27012KT 4SM BKN020 12/03 A3012');
+    d.metar.known.set('EGLL', 'EGLL 111150Z 26008KT 0400 FG VV001 08/08 Q1006');
+    await d.weather.refresh(GUILD);
+    assert.deepEqual([...dots()], [['KBOS', '🔵'], ['KMIA', '🔴'], ['SKBO', '🟢'], ['EGLL', '🟣']]);
+  });
+
+  it('does not ask for a code that is not four letters, and says so with the flights\' airports', async () => {
     h.jobs.sync(h.panel.id, [flight('x', 'JFK-EGKK', 1, 5)]);
     await d.weather.refresh(GUILD);
     assert.ok(!d.metar.calls.includes('JFK'));
-    assert.match(text(), /No report asked for `JFK`: not four-letter airport codes\./);
-    assert.ok(text().includes(REPORTS.EGKK!));
+    assert.match(embedsText(live()[1]!.payload.embeds), /No report asked for `JFK`: not four-letter airport codes\./);
+    assert.deepEqual(codesOn(live()[1]!.payload.components), ['EGKK']);
   });
 
-  it('edits the messages in place, and only those whose words changed', async () => {
+  it('edits the messages in place, and only those whose airports or ratings changed', async () => {
     const codes = Array.from({ length: 50 }, (_, i) => `K${String.fromCharCode(65 + (i % 26))}${String(i).padStart(2, '0')}`);
     h.jobs.sync(h.panel.id, codes.map((c, i) => flight(`j${i}`, `${c}-${codes[(i + 1) % 50]}`, 1, 5)));
     await d.weather.refresh(GUILD);
-    assert.ok(live().length >= 2, `${live().length} messages`);
+    assert.ok(live().length >= 3, `${live().length} messages`);
     const ids = live().map((m) => m.id);
     h.clock.advance(WEATHER_REFRESH_MS);
     assert.equal(await d.weather.refresh(GUILD), 'updated');
     assert.deepEqual(live().map((m) => m.id), ids, 'the same messages');
     assert.equal(live()[0]!.edits.length, 1, 'the first says when it was checked, so it changes');
-    for (const m of live().slice(1)) assert.equal(m.edits.length, 0, 'the rest say the same, so they are not touched');
-    assert.equal(live().filter((m) => m.payload.components.length > 0).length, 1, 'one Search button');
-    assert.equal(live().at(-1)!.payload.components.length, 1, 'under the last message');
+    for (const m of live().slice(1)) assert.equal(m.edits.length, 0, 'the rest look the same, so they are not touched');
+    assert.equal(live().filter((m) => buttonsOf(m.payload.components).some((b) => b.custom_id === 'weather:search')).length, 1, 'one Search button, on the first');
   });
 
-  it('shows a new report when VATSIM has one', async () => {
+  it('shows a changed rating when VATSIM\'s report changes, and touches only the message it is on', async () => {
+    const codes = Array.from({ length: 30 }, (_, i) => `K${String.fromCharCode(65 + (i % 26))}${String(i).padStart(2, '0')}`);
+    h.jobs.sync(h.panel.id, codes.map((c, i) => flight(`j${i}`, `${c}-${codes[(i + 1) % 30]}`, 1, 5)));
     await d.weather.refresh(GUILD);
-    const newer = 'KBOS 111254Z 28015G25KT 10SM BKN040 11/02 A3010 RMK AO2';
-    d.metar.known.set('KBOS', newer);
+    assert.equal(dots().get('KBOS'), '🟢');
+    d.metar.known.set('KBOS', 'KBOS 111254Z 28015KT 2SM BR OVC006 11/10 A3010');
     h.clock.advance(WEATHER_REFRESH_MS);
     assert.equal(await d.weather.refresh(GUILD), 'updated');
-    assert.ok(text().includes(newer) && !text().includes(REPORTS.KBOS!));
+    assert.equal(dots().get('KBOS'), '🔴');
+    assert.deepEqual(live().map((m) => m.edits.length), [1, 0, 0], 'the first, which has KBOS and the time it was checked');
   });
 
   it('posts the board again when it needs a different number of messages', async () => {
     const codes = Array.from({ length: 50 }, (_, i) => `K${String.fromCharCode(65 + (i % 26))}${String(i).padStart(2, '0')}`);
     h.jobs.sync(h.panel.id, codes.map((c, i) => flight(`j${i}`, `${c}-${codes[(i + 1) % 50]}`, 1, 5)));
     await d.weather.refresh(GUILD);
-    const first = live().length;
-    assert.ok(first >= 2);
+    assert.ok(live().length >= 3);
     h.jobs.sync(h.panel.id, []);
     h.clock.advance(WEATHER_REFRESH_MS);
     assert.equal(await d.weather.refresh(GUILD), 'posted');
     assert.equal(live().length, 1);
     assert.deepEqual(board().messageIds, [live()[0]!.id], 'and the old ones are gone');
+  });
+
+  it('rewrites a board drawn by the first version, which had the reports written in its message, without that text', async () => {
+    const old = await d.client.channel(WX).send({ content: 'KBOS 111154Z 27012KT 10SM FEW250 12/03 A3012\nEGLL 111150Z AUTO 26008KT 9999 NCD 08/01 Q1006', embeds: [], components: [] });
+    h.store.updateWeatherBoard(GUILD, { messageIds: [old.id] });
+    assert.equal(await d.weather.refresh(GUILD), 'updated');
+    assert.equal(old.payload.content, '', 'the old text is gone');
+    assert.deepEqual(codesOn(old.payload.components), ['KBOS', 'KMIA', 'SKBO', 'EGLL']);
   });
 
   it('never posts two boards when redraws overlap (the schedule and /setup weather can ask at the same moment)', async () => {
@@ -430,11 +470,10 @@ describe('the weather board in a channel', () => {
       await d.weather.run();
       h.clock.advance(5 * 60_000);
       await d.weather.run();
-      assert.equal(new Set(d.metar.calls).size > 0 && d.metar.calls.length <= 4, true, 'one try (up to four airports asked before the failure was seen)');
-      const asked = d.metar.calls.length;
+      assert.equal(d.metar.batches.length, 1, 'one try');
       h.clock.advance(WEATHER_REFRESH_MS);
       await d.weather.run();
-      assert.ok(d.metar.calls.length > asked);
+      assert.equal(d.metar.batches.length, 2);
     });
 
     it('serves several servers', async () => {
@@ -467,6 +506,92 @@ describe('the weather board in a channel', () => {
       await settle(10);
       assert.equal(waited, true);
     });
+  });
+});
+
+/* ------------------------------------------------------------------ pressing an airport */
+
+describe('pressing an airport on the board', () => {
+  let h: Harness;
+  let d: DiscordHarness;
+  let counter = 0;
+  const person = () => new FakeUser(`7${String(++counter).padStart(17, '0')}`, `pilot${counter}`);
+  beforeEach(async () => {
+    h = await makeHarness();
+    d = makeDiscordHarness(h);
+    for (const [code, report] of Object.entries(REPORTS)) d.metar.known.set(code, report);
+    h.store.setWeatherBoard(GUILD, WX, h.clock.now);
+  });
+  afterEach(async () => {
+    await settle(20);
+    await h.close();
+  });
+  const press = async (code: string) => {
+    const f = fakeComponent(person(), `weather:metar:${code}`);
+    await weatherHandler.handle(d.ctx, f.i);
+    return f.calls;
+  };
+  const card = (calls: { edits: any[] }) => calls.edits.at(-1)?.embeds?.[0]?.toJSON() as { title?: string; description?: string; fields?: Array<{ name: string; value: string }>; footer?: { text: string } };
+
+  it('shows the full METAR to that person only: the report in plain language, and as written at the bottom', async () => {
+    const calls = await press('KJFK');
+    assert.equal(calls.defers[0].flags, 64, 'only they see it');
+    const c = card(calls);
+    assert.equal(c.title, '🌦️ Weather at KJFK');
+    assert.match(c.description!, /In short:/);
+    assert.ok(c.fields!.some((f) => f.name === 'Wind'), 'the decoded parts');
+    assert.ok(c.fields!.some((f) => f.name === 'The report as written' && f.value.includes(REPORTS.KJFK!)), 'the report as written');
+    assert.match(c.footer!.text, /for flight simulation only/);
+    assert.deepEqual(calls.edits.at(-1).allowedMentions, { parse: [] });
+    assert.deepEqual(d.metar.calls, ['KJFK']);
+  });
+
+  it('says plainly when VATSIM has no report for the airport', async () => {
+    const calls = await press('ZZZZ');
+    assert.match(String(calls.edits.at(-1).content), /^VATSIM has no weather report for \*\*ZZZZ\*\* right now\. Small airfields often have no weather station\.$/);
+    assert.equal(calls.edits.at(-1).embeds, undefined);
+  });
+
+  it('says so when the report cannot be read, and shows it as sent', async () => {
+    d.metar.known.set('KBAD', 'KBAD NIL junk');
+    const calls = await press('KBAD');
+    assert.match(String(calls.edits.at(-1).content), /I couldn't read the report for \*\*KBAD\*\*: `KBAD NIL junk`/);
+  });
+
+  it('shows the last report it had, and says so, when VATSIM cannot be reached; and the plain reason when it never had one', async () => {
+    h.jobs.sync(h.panel.id, []);
+    await d.weather.refresh(GUILD);
+    assert.equal(d.weather.lastKnown('KBOS')?.line, REPORTS.KBOS, 'the board remembers what it drew');
+    d.metar.error = new MetarError('unavailable', "VATSIM's weather service is busy right now. Try again in about 3 minutes.", 161_000);
+    const calls = await press('KBOS');
+    assert.match(String(calls.edits.at(-1).content), /^⚠️ VATSIM's weather service is busy right now\. Try again in about 3 minutes\. This is the last report I had for \*\*KBOS\*\*, from <t:\d+:R>:$/);
+    assert.ok(card(calls).fields!.some((f) => f.value.includes(REPORTS.KBOS!)));
+    await assert.rejects(press('EGKK'), /busy right now\. Try again in about 3 minutes\./);
+  });
+
+  it('remembers a report it showed, to fall back on', async () => {
+    assert.equal(d.weather.lastKnown('KJFK'), null);
+    await press('KJFK');
+    assert.equal(d.weather.lastKnown('KJFK')?.line, REPORTS.KJFK);
+  });
+
+  it('says a report VATSIM sent that cannot be used is that, rather than failing', async () => {
+    d.metar.errors.set('KJFK', new MetarError('bad-response', 'VATSIM sent a weather report I could not read.'));
+    await assert.rejects(press('KJFK'), /VATSIM sent a report for \*\*KJFK\*\* that I couldn't read/);
+  });
+
+  it('refuses a button whose code is not an airport, as out of date', async () => {
+    for (const bad of ['xx', 'KJ', '../x', '']) await assert.rejects(weatherHandler.handle(d.ctx, fakeComponent(person(), `weather:metar:${bad}`).i), /out of date/, bad);
+    assert.deepEqual(d.metar.calls, []);
+  });
+
+  it('goes through the router like the other buttons', async () => {
+    const client = new EventEmitter();
+    registerInteractionRouter(client as never, d.ctx);
+    const f = fakeComponent(person(), 'weather:metar:EGLL');
+    client.emit('interactionCreate', f.i);
+    await settle();
+    assert.ok(card(f.calls).fields!.some((x) => x.value.includes(REPORTS.EGLL!)));
   });
 });
 
@@ -625,18 +750,18 @@ describe('/setup weather', () => {
     assert.equal(h.store.getWeatherBoard(GUILD), null);
   });
 
-  it('starts off, and says how to turn it on and what is shown at the top', async () => {
+  it('starts off, and says how to turn it on and which airports it follows', async () => {
     assert.match(text(await run()), /weather board is \*\*off\*\*.*\/setup weather mode:on channel:.*KBOS KMIA SKBO EGLL/);
   });
 
   it('turns on with a channel: posts the board and says what it shows and how often it updates', async () => {
     const calls = await run({ mode: 'on', channel: { id: WX } });
-    assert.match(text(calls), new RegExp(`weather board is in <#${WX}>. At the top: \\*\\*KBOS KMIA SKBO EGLL \\(the built-in list\\)\\*\\*`));
-    assert.match(text(calls), /next 24 hours.*every 10 minutes.*Search airport/);
+    assert.match(text(calls), new RegExp(`weather board is in <#${WX}>, a grid of buttons with one for each airport\\. Airports followed: \\*\\*KBOS KMIA SKBO EGLL \\(the built-in list\\)\\*\\*`));
+    assert.match(text(calls), /next 24 hours.*Pressing an airport shows its METAR to that person only.*Search airport.*every 10 minutes/);
     assert.match(text(calls), /not for real-world flying/);
     assert.equal(h.store.getWeatherBoard(GUILD)!.channelId, WX);
     assert.equal(live().length, 1);
-    assert.ok(String(live()[0]!.payload.content).includes(REPORTS.KBOS!));
+    assert.deepEqual(codesOn(live()[0]!.payload.components), ['KBOS', 'KMIA', 'SKBO', 'EGLL']);
   });
 
   it('a channel alone is enough to turn it on', async () => {
@@ -655,12 +780,11 @@ describe('/setup weather', () => {
     assert.equal(h.store.getWeatherBoard(GUILD), null);
   });
 
-  it('takes the airports for the top: four-letter codes in any case, which are then the ones shown', async () => {
+  it('takes the airports to follow: four-letter codes in any case, which are then the ones shown', async () => {
     const calls = await run({ mode: 'on', channel: { id: WX }, airports: 'egkk, kjfk' });
     assert.deepEqual(h.store.getWeatherBoard(GUILD)!.airports, ['EGKK', 'KJFK']);
-    assert.match(text(calls), /At the top: \*\*EGKK KJFK\*\*/);
-    assert.ok(String(live()[0]!.payload.content).includes(REPORTS.EGKK!));
-    assert.ok(!String(live()[0]!.payload.content).includes(REPORTS.KBOS!));
+    assert.match(text(calls), /Airports followed: \*\*EGKK KJFK\*\*/);
+    assert.deepEqual(codesOn(live()[0]!.payload.components), ['EGKK', 'KJFK']);
   });
 
   it('refuses codes that are not four letters, and more than eight, and stores nothing', async () => {
@@ -673,9 +797,9 @@ describe('/setup weather', () => {
   it('changes the airports of a board that is already on, and redraws it', async () => {
     await run({ mode: 'on', channel: { id: WX } });
     const calls = await run({ airports: 'LFPG' });
-    assert.match(text(calls), /At the top: \*\*LFPG\*\*/);
+    assert.match(text(calls), /Airports followed: \*\*LFPG\*\*/);
     assert.equal(live().length, 1, 'still one board');
-    assert.ok(!String(live()[0]!.payload.content).includes(REPORTS.KBOS!));
+    assert.deepEqual(codesOn(live()[0]!.payload.components), ['LFPG']);
     assert.equal(live()[0]!.edits.length, 1, 'edited in place');
   });
 
@@ -711,7 +835,7 @@ describe('/setup weather', () => {
 
   it('says how it stands when given nothing to change', async () => {
     await run({ mode: 'on', channel: { id: WX }, airports: 'EGKK' });
-    assert.match(text(await run()), new RegExp(`weather board is \\*\\*on\\*\\* in <#${WX}>, last checked <t:\\d+:R>. At the top: \\*\\*EGKK\\*\\*. It is redrawn every 10 minutes`));
+    assert.match(text(await run()), new RegExp(`weather board is \\*\\*on\\*\\* in <#${WX}>, last checked <t:\\d+:R>. Airports followed: \\*\\*EGKK\\*\\*. It is redrawn every 10 minutes`));
     d.metar.error = new MetarError('unavailable', "VATSIM's weather service is busy right now. Try again in a minute.");
     h.clock.advance(HOUR);
     await d.weather.refresh(GUILD);

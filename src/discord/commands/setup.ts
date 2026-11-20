@@ -551,7 +551,7 @@ export const setupCommand: Command = {
         )
         .addChannelOption((o) => o.setName('channel').setDescription('Channel for the board').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
         .addStringOption((o) =>
-          o.setName('airports').setDescription('Airports at the top, four-letter codes, up to 8 (KBOS KMIA SKBO EGLL). "default" resets').setMaxLength(100),
+          o.setName('airports').setDescription('Airports to follow, four-letter codes, up to 8 (KBOS KMIA SKBO EGLL). "default" resets').setMaxLength(100),
         ),
     )
     .addSubcommand((s) =>
@@ -1225,7 +1225,7 @@ export const setupCommand: Command = {
           return;
         }
 
-        // The airports at the top: the four-letter codes typed (up to 8), or the built-in list again for `default`.
+        // The airports the board follows: the four-letter codes typed (up to 8), or the built-in list again for `default`.
         let airports: string[] | null = null;
         if (airportsText) {
           if (/^(default|reset)$/i.test(airportsText)) airports = [];
@@ -1234,7 +1234,7 @@ export const setupCommand: Command = {
             if (parsed.refused.length > 0) {
               throw new UserError(`I couldn't use ${parsed.refused.map((r) => `\`${r}\``).join(', ')} as an airport code. I need four-letter ICAO codes, like \`EGLL\` for London Heathrow or \`KBOS\` for Boston (US airports start with a K).`);
             }
-            if (parsed.codes.length > MAX_TOP_AIRPORTS) throw new UserError(`That is ${parsed.codes.length} airports. Up to ${MAX_TOP_AIRPORTS} can go at the top.`);
+            if (parsed.codes.length > MAX_TOP_AIRPORTS) throw new UserError(`That is ${parsed.codes.length} airports. Up to ${MAX_TOP_AIRPORTS} can be followed.`);
             airports = parsed.codes;
           }
         }
@@ -1261,7 +1261,7 @@ export const setupCommand: Command = {
           const saved = ctx.store.getWeatherBoard(guildId)!;
           let line: string;
           if (result === 'updated' || result === 'posted') {
-            line = `✅ The weather board is in <#${channel.id}>. At the top: **${topOf(saved)}**. Below them are the airports of every flight whose landing window is in the next 24 hours (from your schedule). I check VATSIM every 10 minutes, and pilots can look up any airport with its **Search airport** button. Turn it off with \`/setup weather mode:off\`.`;
+            line = `✅ The weather board is in <#${channel.id}>, a grid of buttons with one for each airport. Airports followed: **${topOf(saved)}**. Below them are the airports of every flight whose landing window is in the next 24 hours (from your schedule). Pressing an airport shows its METAR to that person only, and the **Search airport** button looks up any other. I check VATSIM every 10 minutes. Turn it off with \`/setup weather mode:off\`.`;
           } else if (result === 'unavailable') {
             line = `⚠️ I couldn't get the weather from VATSIM just now (${saved.lastError ?? 'no answer'}). The board will appear in <#${channel.id}> once it answers; I try again every 10 minutes.`;
           } else if (result === 'no-access') {
@@ -1278,12 +1278,12 @@ export const setupCommand: Command = {
 
         // Nothing to change: say how it stands.
         if (!board) {
-          await interaction.editReply({ content: 'The weather board is **off**. Turn it on with `/setup weather mode:on channel:#your-channel`. Add `airports:` to choose the airports shown at the top (the default is KBOS KMIA SKBO EGLL).' });
+          await interaction.editReply({ content: 'The weather board is **off**. Turn it on with `/setup weather mode:on channel:#your-channel`. Add `airports:` to choose the airports it follows (the default is KBOS KMIA SKBO EGLL).' });
           return;
         }
         await interaction.editReply({
           content: [
-            `The weather board is **on** in <#${board.channelId}>${board.lastOkAt ? `, last checked ${ts(board.lastOkAt, 'R')}` : ', not drawn yet'}. At the top: **${topOf(board)}**. It is redrawn every 10 minutes.`,
+            `The weather board is **on** in <#${board.channelId}>${board.lastOkAt ? `, last checked ${ts(board.lastOkAt, 'R')}` : ', not drawn yet'}. Airports followed: **${topOf(board)}**. It is redrawn every 10 minutes.`,
             board.lastError ? `⚠️ The last try failed: ${board.lastError}` : '',
           ]
             .filter(Boolean)
