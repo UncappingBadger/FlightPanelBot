@@ -112,7 +112,9 @@ function payBullet(fills: ProfitFillPlan[]): string {
 export function profitReport(airline: string, a: ProfitAnalysis): string {
   const lines = [
     `💰 **Profit check: ${plainText(airline)}**`,
-    `I read ${a.aircraft} aircraft logbook${a.aircraft === 1 ? '' : 's'} from Aeroconomy (${a.logbookFlights} flights, ${a.usableFlights} flown under the airline's own callsign) and compared them with the ${a.sheetCompleted} flights ticked as completed in the sheet.`,
+    `I read ${a.aircraft} aircraft logbook${a.aircraft === 1 ? '' : 's'} from Aeroconomy${a.leased > 0 ? ` (${a.aircraft - a.leased} owned, ${a.leased} leased)` : ''} (${a.logbookFlights} flights, ${a.usableFlights} flown under the airline's own callsign) and compared them with the ${a.sheetCompleted} flights ticked as completed in the sheet.`,
+    ...(a.leasedProblem ? [`• ⚠️ I couldn't list the airline's leased aircraft (${a.leasedProblem.replace(/\.$/, '')}), so only the aircraft it owns are in this.`] : []),
+    ...(a.leasedHidden > 0 ? [`• ⚠️ Aeroconomy wouldn't show **${a.leasedHidden}** leased aircraft logbook${a.leasedHidden === 1 ? '' : 's'} to this account, so ${a.leasedHidden === 1 ? 'its' : 'their'} flights are left out.`] : []),
     `• ✅ **${a.agree}** have a Profit Made that agrees with Aeroconomy (within a dollar)`,
     `• ✏️ **${a.different.length}** have a Profit Made that is not what Aeroconomy says`,
     `• ⬜ **${a.fills.length}** have a blank Profit Made that Aeroconomy can fill in`,

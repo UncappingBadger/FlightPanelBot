@@ -848,7 +848,16 @@ sheet's numbers, unless an admin asks.
   of that one aircraft with the token), and remembered, so it is only ever looked for once. When no aircraft of the airline is out the bot says so: try
   again later, or give `business:` its number, the number in the web address of the airline's business page on Aeroconomy
   (aeroconomy.com/businesses/…); the aircraft it lists must belong to this airline.
-- **What it costs.** About 25 requests, spread out one every couple of seconds (about 30 seconds in all), when an admin runs it, plus one FsHub request for
+- **Leased aircraft are read too.** The aircraft the airline **owns** and the ones it **leases** (Aeroconomy lists them separately) all have their
+  logbooks read, and a flight is matched whichever of them flew it. The report says how many of each were read (`3 aircraft logbooks (2 owned, 1 leased)`) when
+  there are leased ones, and an aircraft on both lists is read once. Nothing about leasing is needed from you: an airline that leases nothing sees no change.
+  The leased side is read carefully, because it is new ground: if Aeroconomy will not list them, the check carries on with the owned aircraft and says the
+  leased ones are not in it; a leased aircraft whose logbook this account is not allowed to see is left out and counted in the report, without costing the
+  rest. (A refusal for an **owned** aircraft still stops the check, as before.) A business number given with `business:` is still proved by the airline's
+  own aircraft; a business that owns none can only be proved by one of its leased aircraft naming this airline as the one whose pilots fly it, and is refused
+  (before anything is read) otherwise. The business is still *found* from aircraft the airline owns, so an airline that only leases gives its business
+  number once with `business:` (it is remembered after that).
+- **What it costs.** About 26 requests, spread out one every couple of seconds (about 30 seconds in all), when an admin runs it (one more for the list of leased aircraft, and one more logbook for each leased aircraft), plus one FsHub request for
   each blank-pay flight that lost money, and, the first time only, about 5 more to find the airline's business (at most about 20, when it has to look
   through several contracts). The token is only ever sent to Aeroconomy and FsHub, only in plain read requests (`GET`), without following a
   redirect, and the bot never writes anything to Aeroconomy.

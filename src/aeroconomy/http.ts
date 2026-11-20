@@ -8,7 +8,11 @@ const MAX_BODY_BYTES = 4_000_000;
 
 /** Aeroconomy could not be asked, or answered in a way that makes no sense. `message` is safe to show. */
 export class AeroconomyError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** The HTTP status Aeroconomy answered with, when this is about an answer (403 is "not yours to see"); null otherwise. */
+    readonly status: number | null = null,
+  ) {
     super(message);
     this.name = 'AeroconomyError';
   }
@@ -88,11 +92,12 @@ export abstract class AeroHttp {
           res.status === 401
             ? 'Aeroconomy did not accept the FsHub token, so I could not read the airline\'s aircraft.'
             : "Aeroconomy won't show that to the account the FsHub token belongs to.",
+          res.status,
         );
       }
       if (!res.ok) {
         await res.body?.cancel().catch(() => undefined);
-        throw new AeroconomyError(`Aeroconomy answered ${res.status}.`);
+        throw new AeroconomyError(`Aeroconomy answered ${res.status}.`, res.status);
       }
       const text = await readTextCapped(res, MAX_BODY_BYTES);
       if (text === null) throw new AeroconomyError('Aeroconomy sent far more than expected.');

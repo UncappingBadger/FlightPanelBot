@@ -14,7 +14,7 @@ import { SheetsApi } from '../src/google/sheetsApi.js';
 import { AirlineProfits, compareProfits, isAirlineCallsign, pairRows, type ProfitAnalysis } from '../src/services/airlineProfits.js';
 import { readSheetFlights, type SheetFlight } from '../src/services/contributions.js';
 import { SheetWriteBack, WriteBackError } from '../src/services/writeback.js';
-import type { LogFlight } from '../src/aeroconomy/account.js';
+import type { AeroAircraft, LogFlight } from '../src/aeroconomy/account.js';
 import { HOUR, makeHarness, T0, USER_A, USER_B, type Harness } from './helpers.js';
 import { FakeChannel, fakeComponent, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 import { FakeGoogle, flightRow, HEADER, makeServiceAccount, SHEET_ID, TAB_GID } from './fake-google.js';
@@ -134,6 +134,33 @@ describe('reading Aeroconomy\'s aircraft and logbooks with the token', () => {
     await assert.rejects(client.ownedAircraft(BUSINESS), (e: unknown) => e instanceof AeroconomyError);
   });
 
+  it('reads the aircraft a business leases the same way, from its own address, with the airline whose pilots fly each one', async () => {
+    const leasedIn = (serial: string, extra: Record<string, unknown> = {}) => aircraft(serial, { owner: { type: 'business', business_id: 11, name: 'A Lessor' }, pilot_access: { mode: 'airline', airline: { fshub_airline_id: AIRLINE, code: 'TST', name: 'Test Air' } }, ...extra });
+    reply = () => json({ data: [leasedIn('00000900'), { nothing: true }, leasedIn('00000901', { pilot_access: { mode: 'open', airline: null } }), leasedIn('00000902', { pilot_access: 'none' }), leasedIn('00000903', { pilot_access: { airline: { fshub_airline_id: 'x' } } })] });
+    assert.deepEqual(await client.leasedAircraft(BUSINESS), [
+      { serial: 900, registration: 'G-TEST', type: 'B738', ownerType: 'business', ownerAirlineId: null, businessId: 11, pilotAirlineId: AIRLINE },
+      { serial: 901, registration: 'G-TEST', type: 'B738', ownerType: 'business', ownerAirlineId: null, businessId: 11 },
+      { serial: 902, registration: 'G-TEST', type: 'B738', ownerType: 'business', ownerAirlineId: null, businessId: 11 },
+      { serial: 903, registration: 'G-TEST', type: 'B738', ownerType: 'business', ownerAirlineId: null, businessId: 11 },
+    ]);
+    assert.equal(calls.at(-1)!.url, `${AEROCONOMY_API}/businesses/${BUSINESS}/aircraft/leased`);
+    assert.equal(calls.at(-1)!.headers.authorization, `Bearer ${TOKEN}`);
+    assert.equal(calls.at(-1)!.method, 'GET');
+    reply = () => json({ data: [] });
+    assert.deepEqual(await client.leasedAircraft(BUSINESS), [], 'an airline that leases nothing');
+    reply = () => json({}, 404);
+    assert.deepEqual(await client.leasedAircraft(BUSINESS), [], 'a business that is not there');
+    reply = () => json({ data: 'many' });
+    await assert.rejects(client.leasedAircraft(BUSINESS), (e: unknown) => e instanceof AeroconomyError);
+  });
+
+  it('keeps the owned and leased lists apart: each asks only for its own', async () => {
+    reply = () => json({ data: [] });
+    await client.ownedAircraft(BUSINESS);
+    await client.leasedAircraft(BUSINESS);
+    assert.deepEqual(calls.map((c) => c.url.replace(AEROCONOMY_API, '')), [`/businesses/${BUSINESS}/aircraft/owned`, `/businesses/${BUSINESS}/aircraft/leased`]);
+  });
+
   it('reads one aircraft, or none', async () => {
     reply = () => json({ data: aircraft('00000151') });
     assert.equal((await client.aircraft(151))!.businessId, BUSINESS);
@@ -177,11 +204,20 @@ describe('reading Aeroconomy\'s aircraft and logbooks with the token', () => {
     await assert.rejects(client.logbook(151), (e: unknown) => e instanceof AeroconomyError && /did not accept the FsHub token/.test(e.message) && !e.message.includes(TOKEN));
   });
 
+  it('says which answer an error was about, so a refusal can be told from a failure', async () => {
+    for (const status of [401, 403, 500, 422]) {
+      reply = () => json({ message: 'no' }, status);
+      await assert.rejects(client.logbook(151), (e: unknown) => e instanceof AeroconomyError && e.status === status, String(status));
+    }
+    assert.equal(new AeroconomyError('not about an answer').status, null);
+  });
+
   it('does not ask about something that is not an aircraft or a business', async () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       assert.deepEqual(await client.logbook(bad), []);
       assert.equal(await client.aircraft(bad), null);
       assert.deepEqual(await client.ownedAircraft(bad), []);
+      assert.deepEqual(await client.leasedAircraft(bad), []);
     }
     assert.equal(calls.length, 0);
   });
@@ -376,6 +412,13 @@ describe('checking an airline\'s profits against its sheet', () => {
   let aircraftAsked: number[];
   let aircraftOwners: Map<number, { type: string | null; airlineId: number | null; businessId?: number | null }>;
   let contractsFail: boolean;
+  /** The aircraft the airline owns (by serial), the ones it leases, what the lease list does when asked, and which logbooks Aeroconomy refuses. */
+  let ownedSerials: number[];
+  let leasedFleet: AeroAircraft[];
+  let leasedError: Error | null;
+  let hiddenLogbooks: Set<number>;
+  let leasedCalls: number[];
+  let logbookAsked: number[];
   let profits: AirlineProfits;
   const pid = () => h.panel.id;
   const panel = () => h.store.getPanel(pid())!;
@@ -386,7 +429,7 @@ describe('checking an airline\'s profits against its sheet', () => {
       account: {
         async ownedAircraft(business: number) {
           fleetCalls.push(business);
-          return [151, 287].map((serial) => ({ serial, registration: null, type: 'B738', ownerType: fleetOwner.type, ownerAirlineId: fleetOwner.airlineId, businessId: business }));
+          return ownedSerials.map((serial) => ({ serial, registration: null, type: 'B738', ownerType: fleetOwner.type, ownerAirlineId: fleetOwner.airlineId, businessId: business }));
         },
         async aircraft(serial: number) {
           aircraftAsked.push(serial);
@@ -394,7 +437,14 @@ describe('checking an airline\'s profits against its sheet', () => {
           return { serial, registration: null, type: 'B738', ownerType: owner.type, ownerAirlineId: owner.airlineId, businessId: owner.businessId === undefined ? BUSINESS : owner.businessId };
         },
         async logbook(serial: number) {
+          logbookAsked.push(serial);
+          if (hiddenLogbooks.has(serial)) throw new AeroconomyError("Aeroconomy won't show that to the account the FsHub token belongs to.", 403);
           return logbooks.get(serial) ?? [];
+        },
+        async leasedAircraft(business: number) {
+          leasedCalls.push(business);
+          if (leasedError) throw leasedError;
+          return leasedFleet;
         },
       },
       publicClient: {
@@ -432,6 +482,12 @@ describe('checking an airline\'s profits against its sheet', () => {
     aircraftAsked = [];
     aircraftOwners = new Map();
     contractsFail = false;
+    ownedSerials = [151, 287];
+    leasedFleet = [];
+    leasedError = null;
+    hiddenLogbooks = new Set();
+    leasedCalls = [];
+    logbookAsked = [];
     owners = new Map([
       [7001, null],
       [7002, { airlineId: 9999, businessId: 11 }],
@@ -606,6 +662,123 @@ describe('checking an airline\'s profits against its sheet', () => {
     assert.equal(h.store.getKv(`aero.business.${AIRLINE}`), null);
     fleetOwner = { type: 'business', airlineId: null };
     await assert.rejects(profits.analyse(panel(), 88), (e: unknown) => /isn't this airline's/.test((e as Error).message));
+  });
+
+  describe('aircraft the airline leases', () => {
+    /** An aircraft the airline leases from someone else: its owner is the lessor, and only `pilotAirlineId` says whose pilots fly it. */
+    const leasedIn = (serial: number, over: Partial<AeroAircraft> = {}): AeroAircraft => ({ serial, registration: null, type: 'A320', ownerType: 'business', ownerAirlineId: null, businessId: 55, pilotAirlineId: AIRLINE, ...over });
+    const leasedFlight = lf({ entryId: 9, dep: 'EGLL', arr: 'EGKK', callsign: 'TST505', pilotName: 'Pat', flightId: 5009, profit: 20000.2, landedAt: D13 + 10 * HOUR });
+
+    it('reads the logbooks of the leased aircraft as well as the owned ones, and says how many of each', async () => {
+      leasedFleet = [leasedIn(900)];
+      logbooks.set(900, [leasedFlight]);
+      const a = await profits.analyse(panel(), BUSINESS);
+      assert.deepEqual(leasedCalls, [BUSINESS]);
+      assert.deepEqual(logbookAsked, [151, 287, 900], 'the owned ones first');
+      assert.deepEqual([a.aircraft, a.leased, a.leasedHidden, a.leasedProblem], [3, 1, 0, null]);
+      assert.equal(a.logbookFlights, 5);
+      assert.deepEqual(a.fills.map((f) => [f.row, f.value, f.callsign]), [[3, 12346, 'TST101'], [5, -4000, 'TST202'], [7, 20001, 'TST505']], 'a flight a leased aircraft flew is filled in like any other');
+      const report = profitReport('Test Air', a);
+      assert.match(report, /I read 3 aircraft logbooks from Aeroconomy \(2 owned, 1 leased\)/);
+      assert.doesNotMatch(report, /⚠️/);
+    });
+
+    it('says nothing about leased aircraft when there are none, and asks for them only once', async () => {
+      const a = await profits.analyse(panel(), BUSINESS);
+      assert.deepEqual(leasedCalls, [BUSINESS]);
+      assert.deepEqual([a.aircraft, a.leased, a.leasedHidden, a.leasedProblem], [2, 0, 0, null]);
+      assert.doesNotMatch(profitReport('Test Air', a), /leased|owned/);
+    });
+
+    it('reads an aircraft once when both lists name it, and once when the lease list repeats it', async () => {
+      leasedFleet = [leasedIn(151), leasedIn(900), leasedIn(900)];
+      const a = await profits.analyse(panel(), BUSINESS);
+      assert.deepEqual(logbookAsked, [151, 287, 900]);
+      assert.deepEqual([a.aircraft, a.leased], [3, 1]);
+    });
+
+    it('goes on with the owned aircraft when the lease list cannot be read, and says the leased ones are not in it', async () => {
+      leasedFleet = [leasedIn(900)];
+      leasedError = new AeroconomyError('Aeroconomy answered 500.', 500);
+      const a = await profits.analyse(panel(), BUSINESS);
+      assert.deepEqual(logbookAsked, [151, 287]);
+      assert.deepEqual([a.aircraft, a.leased, a.leasedProblem], [2, 0, 'Aeroconomy answered 500.']);
+      assert.equal(a.fills.length, 2, 'what it reads from the owned aircraft is as it was');
+      assert.match(profitReport('Test Air', a), /• ⚠️ I couldn't list the airline's leased aircraft \(Aeroconomy answered 500\), so only the aircraft it owns are in this\./);
+      leasedError = new AeroconomyError("Aeroconomy won't show that to the account the FsHub token belongs to.", 403);
+      assert.match((await profits.analyse(panel(), BUSINESS)).leasedProblem!, /won't show that/);
+    });
+
+    it('does not hide a bug behind that: an error that is not Aeroconomy refusing or failing still stops it', async () => {
+      leasedError = new TypeError('a bug');
+      await assert.rejects(profits.analyse(panel(), BUSINESS), TypeError);
+    });
+
+    it('leaves out a leased aircraft whose logbook this account may not see, says so, and still reads the rest', async () => {
+      leasedFleet = [leasedIn(900), leasedIn(901), leasedIn(902)];
+      logbooks.set(900, [leasedFlight]);
+      hiddenLogbooks = new Set([901, 902]);
+      const a = await profits.analyse(panel(), BUSINESS);
+      assert.deepEqual([a.aircraft, a.leased, a.leasedHidden], [3, 1, 2], 'two were left out, so only three logbooks were read');
+      assert.equal(a.fills.length, 3);
+      assert.match(profitReport('Test Air', a), /\(2 owned, 1 leased\)[^]*• ⚠️ Aeroconomy wouldn't show \*\*2\*\* leased aircraft logbooks to this account, so their flights are left out\./);
+      hiddenLogbooks = new Set([901]);
+      assert.match(profitReport('Test Air', await profits.analyse(panel(), BUSINESS)), /wouldn't show \*\*1\*\* leased aircraft logbook to this account, so its flights are left out/);
+    });
+
+    it("still stops when an owned aircraft's logbook is refused, or a leased one fails in another way", async () => {
+      hiddenLogbooks = new Set([151]);
+      await assert.rejects(profits.analyse(panel(), BUSINESS), (e: unknown) => e instanceof AeroconomyError && e.status === 403);
+      hiddenLogbooks = new Set();
+      leasedFleet = [leasedIn(900)];
+      const original = logbooks.get.bind(logbooks);
+      logbooks.get = (k: number) => {
+        if (k === 900) throw new AeroconomyError('Aeroconomy answered 500.', 500);
+        return original(k);
+      };
+      await assert.rejects(profits.analyse(panel(), BUSINESS), (e: unknown) => e instanceof AeroconomyError && e.status === 500);
+    });
+
+    describe('with a business number typed by an admin', () => {
+      it('trusts the owned aircraft for it, as before, whatever else is leased', async () => {
+        leasedFleet = [leasedIn(900)];
+        const a = await profits.analyse(panel(), 88);
+        assert.deepEqual([a.business, a.leased], [88, 1]);
+        assert.equal(h.store.getKv(`aero.business.${AIRLINE}`), '88');
+        h.store.setKv(`aero.business.${AIRLINE}`, '');
+        fleetOwner = { type: 'airline', airlineId: 9999 };
+        logbookAsked = [];
+        await assert.rejects(profits.analyse(panel(), 88), (e: unknown) => /isn't this airline's/.test((e as Error).message));
+        assert.deepEqual(logbookAsked, [], 'a leased aircraft that names the airline does not make up for owned ones that belong to another');
+      });
+
+      it("takes a business that owns no aircraft when an aircraft it leases says this airline's pilots fly it, and remembers it", async () => {
+        ownedSerials = [];
+        leasedFleet = [leasedIn(900, { pilotAirlineId: 9999 }), leasedIn(901)];
+        logbooks.set(901, [leasedFlight]);
+        const a = await profits.analyse(panel(), 88);
+        assert.deepEqual([a.business, a.aircraft, a.leased], [88, 2, 2]);
+        assert.equal(h.store.getKv(`aero.business.${AIRLINE}`), '88');
+        assert.equal(a.fills.length, 1);
+      });
+
+      it('refuses one that owns nothing and leases nothing that names the airline, before reading any logbook, and does not remember it', async () => {
+        ownedSerials = [];
+        for (const leased of [[leasedIn(900, { pilotAirlineId: 9999 })], [leasedIn(901, { pilotAirlineId: undefined })], [leasedIn(902, { pilotAirlineId: null })]]) {
+          leasedFleet = leased;
+          await assert.rejects(profits.analyse(panel(), 88), (e: unknown) => /can't tell that business is this airline's/.test((e as Error).message));
+        }
+        assert.deepEqual(logbookAsked, []);
+        assert.equal(h.store.getKv(`aero.business.${AIRLINE}`), null);
+      });
+
+      it('says there is nothing to read when the business owns no aircraft and leases none', async () => {
+        ownedSerials = [];
+        await assert.rejects(profits.analyse(panel(), 88), /lists no aircraft/);
+        leasedError = new AeroconomyError('Aeroconomy answered 500.', 500);
+        await assert.rejects(profits.analyse(panel(), 88), /lists no aircraft/);
+      });
+    });
   });
 
   it('says plainly what is missing: a sheet, the FsHub link, a Profit Made column, aircraft, or a schedule', async () => {
@@ -1004,6 +1177,9 @@ describe('/setup profit', () => {
     const many: ProfitAnalysis = {
       business: BUSINESS,
       aircraft: 11,
+      leased: 0,
+      leasedHidden: 0,
+      leasedProblem: null,
       logbookFlights: 240,
       usableFlights: 230,
       sheetCompleted: 200,

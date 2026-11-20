@@ -534,7 +534,7 @@ describe('what the admin reads about the pay', () => {
     payPlan: { amount: 8174, basis: 'share', distanceNm: null, problem: null, cell: 'empty', ...pay },
     ...over,
   });
-  const analysis = (fills: ProfitFillPlan[]): ProfitAnalysis => ({ business: BUSINESS, aircraft: 1, logbookFlights: 3, usableFlights: 3, sheetCompleted: 3, matched: 3, agree: 0, fills, different: [], unreadable: 0, unmatched: 0, ambiguous: 0, readAt: T0 });
+  const analysis = (fills: ProfitFillPlan[]): ProfitAnalysis => ({ business: BUSINESS, aircraft: 1, leased: 0, leasedHidden: 0, leasedProblem: null, logbookFlights: 3, usableFlights: 3, sheetCompleted: 3, matched: 3, agree: 0, fills, different: [], unreadable: 0, unmatched: 0, ambiguous: 0, readAt: T0 });
 
   it('shows each pay and how it was worked out, in the preview and in the report', () => {
     const fills = [

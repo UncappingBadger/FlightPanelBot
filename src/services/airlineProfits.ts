@@ -1,4 +1,5 @@
 import type { AeroAircraft, AeroconomyAccountClient, LogFlight } from '../aeroconomy/account.js';
+import { AeroconomyError } from '../aeroconomy/http.js';
 import type { AeroconomyClient } from '../aeroconomy/client.js';
 import type { Panel, Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
@@ -89,9 +90,13 @@ export interface ProfitDifference {
 }
 
 export interface ProfitAnalysis {
-  /** The airline's backing business on Aeroconomy, and how many aircraft it owns. */
+  /** The airline's backing business on Aeroconomy, and how many aircraft logbooks were read (owned and leased together). */
   business: number;
   aircraft: number;
+  /** How many of those are aircraft the airline leases, how many leased ones' logbooks Aeroconomy would not show this account (left out), and why the list of leased aircraft could not be read, if it could not (only the owned ones are used then). */
+  leased: number;
+  leasedHidden: number;
+  leasedProblem: string | null;
   /** Flights read from the logbooks, and how many of them were flown under the airline's own callsign (only those are used). */
   logbookFlights: number;
   usableFlights: number;
@@ -173,7 +178,7 @@ export function planPay(value: number, row: SheetFlight, flightId: number | null
 }
 
 /** The comparison, from the sheet's rows and the logbook's flights (all of them; only the airline's own callsign is used). */
-export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: string, distances: ReadonlyMap<number, number> = new Map(), wrotePay: ReadonlySet<string> = new Set()): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'readAt'> {
+export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: string, distances: ReadonlyMap<number, number> = new Map(), wrotePay: ReadonlySet<string> = new Set()): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
   const completed = rows.filter((r) => r.completed);
   const { pairs, unmatched, ambiguous } = pairRows(completed, usable);
@@ -225,7 +230,7 @@ export class ProfitError extends Error {
 export interface AirlineProfitsDeps {
   store: Store;
   /** Reads with the FsHub token (aircraft and logbooks). */
-  account: Pick<AeroconomyAccountClient, 'aircraft' | 'ownedAircraft' | 'logbook'>;
+  account: Pick<AeroconomyAccountClient, 'aircraft' | 'ownedAircraft' | 'logbook'> & Partial<Pick<AeroconomyAccountClient, 'leasedAircraft'>>;
   /** Reads Aeroconomy's public pages: a pilot's aircraft, and (to find the business from the aircraft on its flights) the airline's contracts and their flights. */
   publicClient: Pick<AeroconomyClient, 'pilotAircraftOwner'> & Partial<Pick<AeroconomyClient, 'airlineContracts' | 'manifests'>>;
   /** Reads FsHub, for the distance of a flight that lost money (the pilot's pay for it depends on that). Without it, such pay is not worked out. */
@@ -255,15 +260,33 @@ export class AirlineProfits {
     const airlineId = panel.fshubAirlineId;
 
     const businessId = await this.businessOf(panel, airlineId, business);
-    const fleet = await this.d.account.ownedAircraft(businessId);
-    if (fleet.length === 0) throw new ProfitError("Aeroconomy lists no aircraft for that airline, so there are no logbooks to read.");
+    const owned = await this.d.account.ownedAircraft(businessId);
+    // The aircraft the airline leases fly its flights too, and their logbooks have the profits. A list that cannot be read is no reason to stop: the
+    // owned ones are still read, and the report says the leased ones are not in it.
+    const { aircraft: leasedAll, problem: leasedProblem } = await this.leasedFleet(businessId);
+    const ownedSerials = new Set(owned.map((a) => a.serial));
+    const leased = leasedAll.filter((a, i) => !ownedSerials.has(a.serial) && leasedAll.findIndex((b) => b.serial === a.serial) === i);
+    if (owned.length === 0 && leased.length === 0) throw new ProfitError("Aeroconomy lists no aircraft for that airline, so there are no logbooks to read.");
     if (business !== undefined) {
-      await this.checkOwner(fleet, airlineId);
+      await this.checkOwner(owned, leased, airlineId);
       this.d.store.setKv(businessKey(airlineId), String(business));
     }
 
     const flights: LogFlight[] = [];
-    for (const a of fleet) flights.push(...(await this.d.account.logbook(a.serial)));
+    for (const a of owned) flights.push(...(await this.d.account.logbook(a.serial)));
+    // A leased aircraft's logbook may not be this account's to see (it says so with a 403): that one is left out, and said so, rather than costing the rest.
+    let leasedRead = 0;
+    let leasedHidden = 0;
+    for (const a of leased) {
+      try {
+        flights.push(...(await this.d.account.logbook(a.serial)));
+        leasedRead++;
+      } catch (e) {
+        if (!(e instanceof AeroconomyError) || e.status !== 403) throw e;
+        leasedHidden++;
+        this.log.debug(`Aeroconomy would not show the logbook of leased aircraft ${a.serial}`);
+      }
+    }
 
     const csv = await downloadSheetCsv(ref, this.d.fetchFn ?? fetch);
     const sheet = readSheetFlights(csv);
@@ -280,7 +303,7 @@ export class AirlineProfits {
     const distances = await this.fshubDistances(airlineId, ids);
     const result = compareProfits(sheet.flights, flights, code, distances, wrotePay);
     this.log.info(`Compared ${result.matched} flights of ${panel.airlineName} with Aeroconomy's logbooks: ${result.agree} agree, ${result.fills.length} blank, ${result.different.length} differ`);
-    return { business: businessId, aircraft: fleet.length, readAt: this.now(), ...result };
+    return { business: businessId, aircraft: owned.length + leasedRead, leased: leasedRead, leasedHidden, leasedProblem, readAt: this.now(), ...result };
   }
 
   /**
@@ -351,10 +374,32 @@ export class AirlineProfits {
     return null;
   }
 
-  /** A business number an admin typed has to be the airline's own: its first aircraft must say so. */
-  private async checkOwner(fleet: AeroAircraft[], airlineId: number): Promise<void> {
-    const first = fleet[0] as AeroAircraft;
-    const owned = first.ownerAirlineId !== null ? first : await this.d.account.aircraft(first.serial);
-    if (owned?.ownerType !== 'airline' || owned.ownerAirlineId !== airlineId) throw new ProfitError("That business isn't this airline's: its aircraft belong to someone else, so I haven't read anything.");
+  /** The aircraft the business leases, or why they could not be listed (and none then). Only a refusal or a failure of Aeroconomy is taken as that; anything else is a bug and is thrown. */
+  private async leasedFleet(businessId: number): Promise<{ aircraft: AeroAircraft[]; problem: string | null }> {
+    const read = this.d.account.leasedAircraft;
+    if (!read) return { aircraft: [], problem: null };
+    try {
+      return { aircraft: await read.call(this.d.account, businessId), problem: null };
+    } catch (e) {
+      if (!(e instanceof AeroconomyError)) throw e;
+      this.log.debug(`Could not list the leased aircraft of business ${businessId}: ${e.message}`);
+      return { aircraft: [], problem: e.message };
+    }
+  }
+
+  /**
+   * A business number an admin typed has to be the airline's own. Its first owned aircraft must say so; a business that owns none can only be
+   * told by the aircraft it leases, one of which has to name the airline as the one whose pilots fly it. Nothing is read until it is.
+   */
+  private async checkOwner(owned: AeroAircraft[], leased: AeroAircraft[], airlineId: number): Promise<void> {
+    const first = owned[0];
+    if (first) {
+      const aircraft = first.ownerAirlineId !== null ? first : await this.d.account.aircraft(first.serial);
+      if (aircraft?.ownerType !== 'airline' || aircraft.ownerAirlineId !== airlineId) throw new ProfitError("That business isn't this airline's: its aircraft belong to someone else, so I haven't read anything.");
+      return;
+    }
+    if (!leased.some((a) => a.pilotAirlineId === airlineId)) {
+      throw new ProfitError("I can't tell that business is this airline's: it owns no aircraft, and none of the aircraft it leases says this airline's pilots fly it, so I haven't read anything.");
+    }
   }
 }

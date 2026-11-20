@@ -20,6 +20,11 @@ export interface AeroAircraft {
   ownerAirlineId: number | null;
   /** The business that backs an airline (what the aircraft list is asked by). */
   businessId: number | null;
+  /**
+   * The airline whose pilots may fly it (`pilot_access.airline`), when Aeroconomy names one. For an aircraft an airline leases this is the only way
+   * to tell it is the airline's to fly, since its `owner` is whoever leases it out. Absent when the aircraft names no airline.
+   */
+  pilotAirlineId?: number | null;
 }
 
 /** One flight in an aircraft's logbook. */
@@ -49,6 +54,8 @@ const AircraftRow = z
     registration: z.string().nullish(),
     airframe: z.preprocess(objectOrMissing, z.object({ icao: z.string().nullish() }).passthrough().optional()),
     owner: z.preprocess(objectOrMissing, z.object({ type: z.string().nullish(), fshub_airline_id: z.number().nullish(), business_id: z.number().nullish() }).passthrough().optional()),
+    // Read by hand below, never strictly: an odd value here must not cost an aircraft its place in the list.
+    pilot_access: z.unknown().optional(),
   })
   .passthrough();
 
@@ -77,6 +84,13 @@ function nauticalMiles(value: unknown): number | null {
 
 const ROUTE = /^Flight \[([A-Za-z0-9]{3,5}) > ([A-Za-z0-9]{3,5})\]$/;
 
+/** The FsHub airline whose pilots may fly an aircraft (`pilot_access.airline.fshub_airline_id`), or null when the aircraft names none or the value is not one. */
+function pilotAirline(access: unknown): number | null {
+  const airline = (access as { airline?: unknown } | null | undefined)?.airline;
+  const id = (airline as { fshub_airline_id?: unknown } | null | undefined)?.fshub_airline_id;
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 function aircraftFrom(raw: unknown): AeroAircraft | null {
   const row = AircraftRow.safeParse(raw);
   if (!row.success) return null;
@@ -89,6 +103,7 @@ function aircraftFrom(raw: unknown): AeroAircraft | null {
     ownerType: row.data.owner?.type ?? null,
     ownerAirlineId: row.data.owner?.fshub_airline_id ?? null,
     businessId: row.data.owner?.business_id ?? null,
+    ...(pilotAirline(row.data.pilot_access) !== null ? { pilotAirlineId: pilotAirline(row.data.pilot_access) } : {}),
   };
 }
 
@@ -111,9 +126,21 @@ export class AeroconomyAccountClient extends AeroHttp {
   }
 
   /** The aircraft a business (an airline's backing business) owns. An aircraft that cannot be read is left out. */
-  async ownedAircraft(businessId: number): Promise<AeroAircraft[]> {
+  ownedAircraft(businessId: number): Promise<AeroAircraft[]> {
+    return this.aircraftOf(businessId, 'owned');
+  }
+
+  /**
+   * The aircraft a business leases (from another owner, or one it leases to itself). The same list as the owned one, with the aircraft's own `owner`
+   * being whoever leases it out, so only `pilotAirlineId` says which airline's pilots fly it. An airline that leases nothing gets an empty list.
+   */
+  leasedAircraft(businessId: number): Promise<AeroAircraft[]> {
+    return this.aircraftOf(businessId, 'leased');
+  }
+
+  private async aircraftOf(businessId: number, which: 'owned' | 'leased'): Promise<AeroAircraft[]> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0) return [];
-    const body = await this.fetchJson(`/businesses/${businessId}/aircraft/owned`, this.token);
+    const body = await this.fetchJson(`/businesses/${businessId}/aircraft/${which}`, this.token);
     if (body === null) return [];
     const page = ListPage.safeParse(body);
     if (!page.success) throw new AeroconomyError('Aeroconomy sent a list of aircraft in a form I do not understand.');
