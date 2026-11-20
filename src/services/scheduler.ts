@@ -16,6 +16,10 @@ export interface SchedulerOptions {
    * so it goes on beside the main pass, not inside it, and an overlapping run is skipped.
    */
   weather?: { run(): Promise<void> };
+  /** Looks at the bank accounts pilots chose to be told about (`/banking`), when due (every five minutes). Beside the main pass, like the weather boards. */
+  banking?: { run(): Promise<void> };
+  /** Looks at the flights people asked to be told about (`/monitor`) in FsHub's live feed. Runs in the same lane, after the expected landing times. */
+  monitors?: { run(): Promise<unknown> };
   /** Deletes the "pilots needed" announcements from before today (the midnight tidy-up). */
   cleanup?: { run(): Promise<unknown> };
   /** Redraws the panels whose list changed only because time passed (a flight came within the panel's period, a completed one aged out). */
@@ -53,6 +57,9 @@ export class Scheduler {
   private readonly markets: SchedulerOptions['markets'];
   private readonly weather: SchedulerOptions['weather'];
   private weatherRun: Promise<unknown> = Promise.resolve();
+  private readonly banking: SchedulerOptions['banking'];
+  private bankingRun: Promise<unknown> = Promise.resolve();
+  private readonly monitors: SchedulerOptions['monitors'];
   private readonly cleanup: SchedulerOptions['cleanup'];
   private readonly fshub: SchedulerOptions['fshub'];
   private readonly autoComplete: SchedulerOptions['autoComplete'];
@@ -77,6 +84,8 @@ export class Scheduler {
     this.reminders = opts.reminders;
     this.markets = opts.markets;
     this.weather = opts.weather;
+    this.banking = opts.banking;
+    this.monitors = opts.monitors;
     this.cleanup = opts.cleanup;
     this.fshub = opts.fshub;
     this.autoComplete = opts.autoComplete;
@@ -108,7 +117,7 @@ export class Scheduler {
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.numbers && !this.departures && !this.daily && !this.payroll && !this.backups)) return this.lane;
+    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.monitors && !this.numbers && !this.departures && !this.daily && !this.payroll && !this.backups)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
       try {
@@ -118,6 +127,8 @@ export class Scheduler {
         await this.live?.run().catch((e) => this.log.error('Live tracking failed', e));
         // When the flights in the air are expected to land (one request for each airline).
         await this.etas?.run().catch((e) => this.log.error('Reading expected landing times failed', e));
+        // Flights people asked to be told about, from the same live feed (one request for each airline).
+        await this.monitors?.run().catch((e) => this.log.error('Watching flights failed', e));
         // Aeroconomy's flight numbers, when due. This only starts the (slow) read in the background.
         await this.numbers?.run().catch((e) => this.log.error('Reading Aeroconomy flight numbers failed', e));
         // After the FsHub reads, so a leg FsHub has just shown flown is not warned about; and here, not in the main pass, because the
@@ -136,7 +147,7 @@ export class Scheduler {
 
   /** Resolves once the FsHub lane, and the weather boards' redraw, have finished what they are doing (for tests, and for a tidy shutdown). */
   async idle(): Promise<void> {
-    await Promise.all([this.lane, this.weatherRun]);
+    await Promise.all([this.lane, this.weatherRun, this.bankingRun]);
   }
 
   /** One pass of background work. Overlapping passes are skipped rather than queued. */
@@ -162,6 +173,8 @@ export class Scheduler {
       await this.markets?.run().catch((e) => this.log.error('Market boards failed', e));
       // The weather boards, beside this pass for the same reason as FsHub's work: they ask VATSIM once for each airport.
       if (this.weather) this.weatherRun = this.weather.run().catch((e) => this.log.error('Weather boards failed', e));
+      // Pilots' bank accounts, the same way: each is a request to Aeroconomy, which is asked slowly.
+      if (this.banking) this.bankingRun = this.banking.run().catch((e) => this.log.error('Payment messages failed', e));
       // FsHub's work goes on beside this pass, not inside it.
       void this.startLane();
     } catch (e) {

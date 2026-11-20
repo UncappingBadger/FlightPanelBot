@@ -237,7 +237,7 @@ export interface BuildInput {
   startDay: number | null;
   ledger: LedgerView;
   identities: IdentityBook;
-  /** The airline's own number for a flight (`WLF516`), if the bot has one for the sheet row. */
+  /** The airline's own number for a flight (`SKY516`), if the bot has one for the sheet row. */
   flightRef(row: SheetFlight): string | null;
   /** The distance FsHub recorded for flights, in nautical miles, by the flight's key in the sheet: what a flight that lost money is paid by. */
   distances?: ReadonlyMap<string, number>;

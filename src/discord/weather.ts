@@ -130,17 +130,25 @@ async function fetchAndTranslate(ctx: BotContext, user: Person, arg: string): Pr
   }
   if (refused.length > 0) await say(user, `I skipped ${refused.map((r) => `\`${r}\``).join(', ')}: not four-letter airport codes.`);
 
-  for (const code of codes.slice(0, MAX_REPORTS)) {
-    let report: string | null;
-    try {
-      report = await ctx.metar.report(code);
-    } catch (e) {
-      if (e instanceof MetarError) {
-        await say(user, e.message);
-        return;
-      }
-      throw e;
+  // The airports asked about go to VATSIM together, in one request.
+  const asked = codes.slice(0, MAX_REPORTS);
+  let got: Awaited<ReturnType<typeof ctx.metar.reports>>;
+  try {
+    got = await ctx.metar.reports(asked);
+  } catch (e) {
+    if (e instanceof MetarError) {
+      await say(user, e.message);
+      return;
     }
+    throw e;
+  }
+  for (const code of asked) {
+    const found = got.get(code) ?? null;
+    if (found instanceof MetarError) {
+      await say(user, found.message);
+      return;
+    }
+    const report = found;
     if (report === null) {
       await say(user, `VATSIM has no weather report for **${code}** right now. Check the code (it is the four-letter ICAO one, like \`EGLL\`), and note that small airfields often have no weather station.`);
       continue;

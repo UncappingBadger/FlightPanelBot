@@ -1,7 +1,7 @@
 import { PermissionFlagsBits } from 'discord.js';
 import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction, Client, Message, StringSelectMenuInteraction } from 'discord.js';
 import type { AeroDaqClient, AirportFuel, Stock } from '../src/aerodaq/client.js';
-import type { MetarClient } from '../src/metar/client.js';
+import { MetarError, type MetarClient, type StationReport } from '../src/metar/client.js';
 import type { Config } from '../src/config.js';
 import type { BotContext } from '../src/discord/context.js';
 import type { FlightPage, FsHubAccount, FsHubAirline, FsHubApi, FsHubFlight, FsHubPilot, RosterPilot } from '../src/fshub/client.js';
@@ -12,6 +12,12 @@ import { MarketService } from '../src/discord/market.js';
 import { Notifier } from '../src/discord/notifier.js';
 import { PanelService } from '../src/discord/panel.js';
 import { WeatherBoardService } from '../src/discord/weatherBoard.js';
+import { BankingService } from '../src/services/banking.js';
+import { FlightMonitors } from '../src/services/flightMonitor.js';
+import { SecretBox } from '../src/services/secretBox.js';
+import type { AirlineFlight } from '../src/fshub/liveFeed.js';
+import type { BankAccount, BankTransaction, TransactionPage } from '../src/aeroconomy/banking.js';
+import { AeroconomyError } from '../src/aeroconomy/http.js';
 import type { JobSource } from '../src/jobs/types.js';
 import { sourceSelector } from '../src/jobs/sheet.js';
 import type { SheetWriteBack } from '../src/services/writeback.js';
@@ -473,24 +479,82 @@ export class FakeAeroDaq {
   }
 }
 
+/** A stand-in for Aeroconomy's banking API: tests set the accounts and payments a token can see, or make it fail the way a refusal or an outage would. */
+export class FakeBank {
+  /** The accounts each token can see (a token that is not here is not accepted). */
+  accountsByToken = new Map<string, BankAccount[]>();
+  /** The payments of each account, in any order. */
+  payments = new Map<string, BankTransaction[]>();
+  /** An error for every call, or for one account, or one token's calls. */
+  error: Error | null = null;
+  accountErrors = new Map<string, Error>();
+  /** What was asked, and with which token (so a test can see the token was used, and only for reading). */
+  accountCalls: string[] = [];
+  txCalls: Array<{ token: string; account: string; limit?: number; beforeId?: number | null }> = [];
+  async accounts(token: string): Promise<BankAccount[]> {
+    this.accountCalls.push(token);
+    if (this.error) throw this.error;
+    const list = this.accountsByToken.get(token);
+    if (!list) throw new AeroconomyError('Aeroconomy did not accept the FsHub token, so I could not read the airline\'s aircraft.', 401);
+    return list;
+  }
+  async transactions(token: string, account: string, opts: { limit?: number; beforeId?: number | null } = {}): Promise<TransactionPage> {
+    this.txCalls.push({ token, account, ...opts });
+    if (this.error) throw this.error;
+    if (!this.accountsByToken.has(token)) throw new AeroconomyError('Aeroconomy did not accept the FsHub token, so I could not read the airline\'s aircraft.', 401);
+    const own = this.accountErrors.get(account);
+    if (own) throw own;
+    const limit = opts.limit ?? 25;
+    const all = [...(this.payments.get(account) ?? [])].sort((a, b) => b.id - a.id).filter((t) => opts.beforeId == null || t.id < opts.beforeId);
+    const page = all.slice(0, limit);
+    return { transactions: page, hasMore: all.length > page.length, nextCursor: all.length > page.length ? (page.at(-1)?.id ?? null) : null };
+  }
+}
+
+/** A stand-in for FsHub's live feed (the flights of an airline): tests set what is flying, or make it fail. */
+export class FakeLiveFeed {
+  flights = new Map<string, AirlineFlight[]>();
+  error: Error | null = null;
+  calls: string[] = [];
+  async airlineFlights(abbr: string): Promise<AirlineFlight[]> {
+    this.calls.push(abbr);
+    if (this.error) throw this.error;
+    return this.flights.get(abbr) ?? [];
+  }
+}
+
 /** A stand-in for VATSIM's METAR service: tests set the reports it knows, or make it fail. */
 export class FakeMetar {
   /** The report for each airport (a line starting with its code); an airport that is not here has none. */
-  reports = new Map<string, string>();
+  known = new Map<string, string>();
   /** When set, every call throws it. */
   error: Error | null = null;
+  /** Every airport asked about, one entry each (however they were asked), and the requests: each is the airports asked for together. */
   calls: string[] = [];
-  /** The age limit each call asked for (a board asks for a young one). */
+  batches: string[][] = [];
+  /** The age limit each airport was asked with (a board asks for a young one). */
   maxAges: Array<number | undefined> = [];
-  /** An error for one airport only. */
-  errors = new Map<string, Error>();
-  async report(station: string, maxAgeMs?: number): Promise<string | null> {
-    this.calls.push(station);
-    this.maxAges.push(maxAgeMs);
+  /** An error for one airport only: one that is `unavailable` fails the whole request, as VATSIM refusing would; a `bad-response` is that airport's alone. */
+  errors = new Map<string, MetarError>();
+  async reports(stations: string[], maxAgeMs?: number): Promise<Map<string, StationReport>> {
+    this.batches.push([...stations]);
+    for (const s of stations) {
+      this.calls.push(s);
+      this.maxAges.push(maxAgeMs);
+    }
     if (this.error) throw this.error;
-    const own = this.errors.get(station);
-    if (own) throw own;
-    return this.reports.get(station) ?? null;
+    const out = new Map<string, StationReport>();
+    for (const s of stations) {
+      const own = this.errors.get(s);
+      if (own && own.kind === 'unavailable') throw own;
+      out.set(s, own ?? this.known.get(s) ?? null);
+    }
+    return out;
+  }
+  async report(station: string, maxAgeMs?: number): Promise<string | null> {
+    const r = (await this.reports([station], maxAgeMs)).get(station) ?? null;
+    if (r instanceof MetarError) throw r;
+    return r;
   }
 }
 
@@ -568,6 +632,10 @@ export interface DiscordHarness {
   metar: FakeMetar;
   market: MarketService;
   weather: WeatherBoardService;
+  banking: BankingService;
+  bank: FakeBank;
+  monitors: FlightMonitors;
+  live: FakeLiveFeed;
   notifier: Notifier;
   /** Present when the test asked for FsHub (`fshub: true`); otherwise ctx.fshub is null, as for a host with no token. */
   fshub: FakeFsHub | null;
@@ -596,6 +664,9 @@ export function makeDiscordHarness(
   market.attach(client as unknown as Client);
   const weather = new WeatherBoardService(h.store, metar, silentLogger, now);
   weather.attach(client as unknown as Client);
+  // Private messages people ask for: a bank (made up) the pilots' tokens are used against, and a live feed (made up) the flights are looked for in.
+  const bank = new FakeBank();
+  const live = new FakeLiveFeed();
   const fshub = opts.fshub ? (opts.fshub === true ? new FakeFsHub() : opts.fshub) : null;
   // As in the real bot, a very hard landing in the flights FsHub shows is remarked on in a DM.
   const hardLandings = new HardLandings(h.store, (discordId, content) => notifier.dm(discordId, content), { now, logger: silentLogger });
@@ -616,6 +687,8 @@ export function makeDiscordHarness(
     market,
     metar: metar as unknown as MetarClient,
     weather,
+    banking: null as unknown as BankingService,
+    monitors: null as unknown as FlightMonitors,
     writeback: opts.writeback ?? null,
     fshub,
     fshubSync,
@@ -624,8 +697,13 @@ export function makeDiscordHarness(
     now,
     fetchFn: opts.fetchFn ?? fetch,
   };
+  const sendDm = (discordId: string, content: string) => notifier.dm(discordId, content);
+  const banking = new BankingService({ store: h.store, client: bank, box: SecretBox.inMemory(), send: sendDm, logger: silentLogger, now });
+  const monitors = new FlightMonitors({ store: h.store, feed: live, send: sendDm, logger: silentLogger, now });
+  ctx.banking = banking;
+  ctx.monitors = monitors;
   notifier.subscribe(h.events);
-  return { ctx, client, panels, refresher, aerodaq, metar, market, weather, notifier, fshub };
+  return { ctx, client, panels, refresher, aerodaq, metar, market, weather, banking, bank, monitors, live, notifier, fshub };
 }
 
 /** Let fire-and-forget event listeners and debounce timers finish. */

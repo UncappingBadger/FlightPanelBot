@@ -204,7 +204,7 @@ describe('the weather board in a channel', () => {
   beforeEach(async () => {
     h = await makeHarness();
     d = makeDiscordHarness(h);
-    for (const [code, report] of Object.entries(REPORTS)) d.metar.reports.set(code, report);
+    for (const [code, report] of Object.entries(REPORTS)) d.metar.known.set(code, report);
     h.store.setWeatherBoard(GUILD, WX, h.clock.now);
   });
   afterEach(async () => {
@@ -259,6 +259,27 @@ describe('the weather board in a channel', () => {
     assert.ok(theirs.indexOf(REPORTS.EGKK!) < theirs.indexOf(REPORTS.KJFK!), 'in the order the flights come');
   });
 
+  it('asks VATSIM for the whole board in ONE request, however many airports the flights use (many requests at once got a server rate-limited)', async () => {
+    const codes = Array.from({ length: 30 }, (_, i) => `K${String.fromCharCode(65 + (i % 26))}${String(i).padStart(2, '0')}`);
+    h.jobs.sync(h.panel.id, codes.map((c, i) => flight(`j${i}`, `${c}-${codes[(i + 1) % 30]}`, 1, 5)));
+    assert.equal(await d.weather.refresh(GUILD), 'posted');
+    assert.equal(d.metar.batches.length, 1, 'one request');
+    assert.equal(d.metar.batches[0]!.length, 4 + 30, 'for the four at the top and every airport of the flights');
+    h.clock.advance(WEATHER_REFRESH_MS);
+    await d.weather.refresh(GUILD);
+    assert.equal(d.metar.batches.length, 2, 'and one more at the next redraw');
+  });
+
+  it('leaves the board as it was, and says how long VATSIM asked to be left alone, when it is rate-limited', async () => {
+    await d.weather.refresh(GUILD);
+    const shown = live()[0]!;
+    d.metar.error = new MetarError('unavailable', "VATSIM's weather service is busy right now. Try again in about 3 minutes.", 161_000);
+    h.clock.advance(WEATHER_REFRESH_MS);
+    assert.equal(await d.weather.refresh(GUILD), 'unavailable');
+    assert.equal(shown.edits.length, 0);
+    assert.match(board().lastError!, /busy right now\. Try again in about 3 minutes\./);
+  });
+
   it('shows the flights of every panel in the server, and none of another server\'s', async () => {
     const second = h.store.createPanel({ guildId: GUILD, name: 'Second Air', abbr: 'SEC', prefix: 'SEC', channelId: '700000000000000099', now: T0 });
     const foreign = h.store.createPanel({ guildId: 'another-server', name: 'Far Air', abbr: 'FAR', prefix: 'FAR', channelId: '700000000000000098', now: T0 });
@@ -280,7 +301,7 @@ describe('the weather board in a channel', () => {
   });
 
   it('says so for an airport VATSIM has no report for, and for one whose report could not be read', async () => {
-    d.metar.reports.delete('SKBO');
+    d.metar.known.delete('SKBO');
     d.metar.errors.set('EGLL', new MetarError('bad-response', 'VATSIM sent a weather report I could not read.'));
     assert.equal(await d.weather.refresh(GUILD), 'posted');
     assert.match(text(), /^SKBO no METAR available$/m);
@@ -314,7 +335,7 @@ describe('the weather board in a channel', () => {
   it('shows a new report when VATSIM has one', async () => {
     await d.weather.refresh(GUILD);
     const newer = 'KBOS 111254Z 28015G25KT 10SM BKN040 11/02 A3010 RMK AO2';
-    d.metar.reports.set('KBOS', newer);
+    d.metar.known.set('KBOS', newer);
     h.clock.advance(WEATHER_REFRESH_MS);
     assert.equal(await d.weather.refresh(GUILD), 'updated');
     assert.ok(text().includes(newer) && !text().includes(REPORTS.KBOS!));
@@ -459,7 +480,7 @@ describe('the Search button', () => {
   beforeEach(async () => {
     h = await makeHarness();
     d = makeDiscordHarness(h);
-    for (const [code, report] of Object.entries(REPORTS)) d.metar.reports.set(code, report);
+    for (const [code, report] of Object.entries(REPORTS)) d.metar.known.set(code, report);
   });
   afterEach(async () => {
     await settle(20);
@@ -584,7 +605,7 @@ describe('/setup weather', () => {
   beforeEach(async () => {
     h = await makeHarness();
     d = makeDiscordHarness(h);
-    for (const [code, report] of Object.entries(REPORTS)) d.metar.reports.set(code, report);
+    for (const [code, report] of Object.entries(REPORTS)) d.metar.known.set(code, report);
   });
   afterEach(async () => {
     await settle(20);

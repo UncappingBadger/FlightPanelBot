@@ -630,6 +630,47 @@ export const MIGRATIONS: string[] = [
     created_at      INTEGER NOT NULL
   );
   `,
+
+  /* v38: two private-message features. 'banking_links' is a pilot's link to their Aeroconomy bank accounts (`/banking` in a DM): where the conversation
+     stands, their API token SEALED (AES-GCM, key in a file beside the database; null until they send it, and gone the moment they turn it off), the accounts
+     last offered to them, and when it is next due to be looked at. 'banking_accounts' are the accounts they chose, with the newest payment already told.
+     'flight_monitors' are the flights people asked to be told about (`/monitor`): told within ten minutes of landing, and on landing. */
+  `
+  CREATE TABLE banking_links (
+    discord_id    TEXT PRIMARY KEY,
+    step          TEXT NOT NULL CHECK (step IN ('await_token','choose','active')),
+    token_sealed  TEXT,
+    offered       TEXT NOT NULL DEFAULT '[]',
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    expires_at    INTEGER,
+    created_at    INTEGER NOT NULL,
+    next_poll_at  INTEGER,
+    last_ok_at    INTEGER
+  );
+  CREATE TABLE banking_accounts (
+    discord_id      TEXT NOT NULL REFERENCES banking_links(discord_id) ON DELETE CASCADE,
+    account_number  TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    kind            TEXT,
+    last_tx_id      INTEGER,
+    PRIMARY KEY (discord_id, account_number)
+  );
+  CREATE TABLE flight_monitors (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id    TEXT NOT NULL,
+    flight_no     TEXT NOT NULL,
+    airline       TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting','airborne')),
+    near_sent     INTEGER NOT NULL DEFAULT 0,
+    dep           TEXT,
+    arr           TEXT,
+    last_seen_at  INTEGER,
+    misses        INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (discord_id, flight_no)
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {
@@ -637,6 +678,8 @@ export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
+  // A deleted row (a pilot's sealed token, once they turn payment messages off) is overwritten, not left in a freed page of the file.
+  db.exec('PRAGMA secure_delete = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   migrate(db);
   return db;

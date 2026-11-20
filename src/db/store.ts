@@ -180,6 +180,64 @@ export interface WeatherBoard {
   createdAt: number;
 }
 
+/** Where a pilot is in setting up payment messages (`/banking`): waiting for their API token, choosing accounts, or watching the ones they chose. */
+export type BankingStep = 'await_token' | 'choose' | 'active';
+
+/** An account offered to a pilot to watch. */
+export interface BankingOffered {
+  number: string;
+  name: string;
+  type: string | null;
+}
+
+/** A pilot's link to their Aeroconomy bank accounts. The token is only ever here sealed (see `SecretBox`); a link that is turned off is deleted, token and all. */
+export interface BankingLink {
+  discordId: string;
+  step: BankingStep;
+  tokenSealed: string | null;
+  /** The accounts last shown to them to choose from (a choice is only accepted from these). */
+  offered: BankingOffered[];
+  /** Tokens tried that were not accepted, for the conversation in progress. */
+  attempts: number;
+  /** When a conversation that is waiting for the token gives up. */
+  expiresAt: number | null;
+  createdAt: number;
+  /** When the accounts are next looked at (`active` only). */
+  nextPollAt: number | null;
+  lastOkAt: number | null;
+}
+
+/** One account a pilot chose to watch, and the newest payment of it they have been told about (null: not looked at yet, so the first look only notes where it stands). */
+export interface BankingAccount {
+  discordId: string;
+  number: string;
+  name: string;
+  kind: string | null;
+  lastTxId: number | null;
+}
+
+/** A flight someone asked to be told about. */
+export interface FlightMonitor {
+  id: number;
+  discordId: string;
+  /** The flight number as it is flown (`SKY330`), upper case. */
+  flightNo: string;
+  /** The airline's code, its letters (`SKY`), which is what FsHub's live feed lists flights under. */
+  airline: string;
+  createdAt: number;
+  /** When it stops being looked for. */
+  expiresAt: number;
+  /** `airborne` once it has been seen in the air. */
+  state: 'waiting' | 'airborne';
+  /** The ten-minutes-to-landing message has been sent. */
+  nearSent: boolean;
+  dep: string | null;
+  arr: string | null;
+  lastSeenAt: number | null;
+  /** How many looks in a row have not shown it since it was seen in the air. */
+  misses: number;
+}
+
 export type JobStatus = 'open' | 'expired' | 'removed';
 
 export interface Job {
@@ -398,6 +456,35 @@ const toWeatherBoard = (r: Row): WeatherBoard => ({
   lastOkAt: nn(r.last_ok_at),
   lastError: sn(r.last_error),
   createdAt: n(r.created_at),
+});
+
+const toBankingLink = (r: Row): BankingLink => ({
+  discordId: s(r.discord_id),
+  step: s(r.step) === 'active' ? 'active' : s(r.step) === 'choose' ? 'choose' : 'await_token',
+  tokenSealed: sn(r.token_sealed),
+  offered: parseJsonArray<BankingOffered>(r.offered, []).filter((o) => o && typeof o.number === 'string' && typeof o.name === 'string'),
+  attempts: n(r.attempts),
+  expiresAt: nn(r.expires_at),
+  createdAt: n(r.created_at),
+  nextPollAt: nn(r.next_poll_at),
+  lastOkAt: nn(r.last_ok_at),
+});
+
+const toBankingAccount = (r: Row): BankingAccount => ({ discordId: s(r.discord_id), number: s(r.account_number), name: s(r.name), kind: sn(r.kind), lastTxId: nn(r.last_tx_id) });
+
+const toFlightMonitor = (r: Row): FlightMonitor => ({
+  id: n(r.id),
+  discordId: s(r.discord_id),
+  flightNo: s(r.flight_no),
+  airline: s(r.airline),
+  createdAt: n(r.created_at),
+  expiresAt: n(r.expires_at),
+  state: s(r.state) === 'airborne' ? 'airborne' : 'waiting',
+  nearSent: n(r.near_sent) !== 0,
+  dep: sn(r.dep),
+  arr: sn(r.arr),
+  lastSeenAt: nn(r.last_seen_at),
+  misses: n(r.misses),
 });
 
 const toJob = (r: Row): Job => ({
@@ -1495,6 +1582,103 @@ export class Store {
 
   deleteWeatherBoard(guildId: string): boolean {
     return this.run('DELETE FROM weather_boards WHERE guild_id = ?', guildId).changes > 0;
+  }
+
+  /* ------------------------------------------------------------------ payment messages (`/banking`) */
+
+  getBankingLink(discordId: string): BankingLink | null {
+    const r = this.get('SELECT * FROM banking_links WHERE discord_id = ?', discordId);
+    return r ? toBankingLink(r) : null;
+  }
+
+  /** Make or change a pilot's link (the whole of it, as read and then changed). */
+  saveBankingLink(l: BankingLink): void {
+    this.run(
+      `INSERT INTO banking_links(discord_id, step, token_sealed, offered, attempts, expires_at, created_at, next_poll_at, last_ok_at) VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(discord_id) DO UPDATE SET step = excluded.step, token_sealed = excluded.token_sealed, offered = excluded.offered, attempts = excluded.attempts,
+         expires_at = excluded.expires_at, next_poll_at = excluded.next_poll_at, last_ok_at = excluded.last_ok_at`,
+      l.discordId,
+      l.step,
+      l.tokenSealed,
+      JSON.stringify(l.offered),
+      l.attempts,
+      l.expiresAt,
+      l.createdAt,
+      l.nextPollAt,
+      l.lastOkAt,
+    );
+  }
+
+  /** Delete a pilot's link: the sealed token and the accounts they chose go with it. True if there was one. */
+  deleteBankingLink(discordId: string): boolean {
+    return this.tx(() => {
+      this.run('DELETE FROM banking_accounts WHERE discord_id = ?', discordId);
+      return this.run('DELETE FROM banking_links WHERE discord_id = ?', discordId).changes > 0;
+    });
+  }
+
+  listBankingAccounts(discordId: string): BankingAccount[] {
+    return this.all('SELECT * FROM banking_accounts WHERE discord_id = ? ORDER BY account_number', discordId).map(toBankingAccount);
+  }
+
+  /** The accounts a pilot watches become exactly these (each with the cursor it is given). */
+  replaceBankingAccounts(discordId: string, accounts: Array<{ number: string; name: string; kind: string | null; lastTxId: number | null }>): void {
+    this.tx(() => {
+      this.run('DELETE FROM banking_accounts WHERE discord_id = ?', discordId);
+      for (const a of accounts) this.run('INSERT INTO banking_accounts(discord_id, account_number, name, kind, last_tx_id) VALUES (?,?,?,?,?)', discordId, a.number, a.name, a.kind, a.lastTxId);
+    });
+  }
+
+  setBankingCursor(discordId: string, number: string, lastTxId: number): void {
+    this.run('UPDATE banking_accounts SET last_tx_id = ? WHERE discord_id = ? AND account_number = ?', lastTxId, discordId, number);
+  }
+
+  removeBankingAccount(discordId: string, number: string): void {
+    this.run('DELETE FROM banking_accounts WHERE discord_id = ? AND account_number = ?', discordId, number);
+  }
+
+  /** The pilots whose accounts are due to be looked at, longest overdue first. */
+  listDueBankingLinks(now: number): BankingLink[] {
+    return this.all("SELECT * FROM banking_links WHERE step = 'active' AND (next_poll_at IS NULL OR next_poll_at <= ?) ORDER BY COALESCE(next_poll_at, 0), discord_id", now).map(toBankingLink);
+  }
+
+  /** Forget conversations that were left half done (waiting for a token, or a token sent and no accounts chosen), with any token they held. Returns how many. */
+  purgeBankingSetups(now: number): number {
+    return this.run("DELETE FROM banking_links WHERE step <> 'active' AND expires_at IS NOT NULL AND expires_at <= ?", now).changes;
+  }
+
+  /* ------------------------------------------------------------------ flights to be told about (`/monitor`) */
+
+  addFlightMonitor(m: { discordId: string; flightNo: string; airline: string; now: number; expiresAt: number }): FlightMonitor | null {
+    const added = this.run('INSERT OR IGNORE INTO flight_monitors(discord_id, flight_no, airline, created_at, expires_at) VALUES (?,?,?,?,?)', m.discordId, m.flightNo, m.airline, m.now, m.expiresAt).changes > 0;
+    return added ? (this.listFlightMonitors(m.discordId).find((x) => x.flightNo === m.flightNo) ?? null) : null;
+  }
+
+  listFlightMonitors(discordId?: string): FlightMonitor[] {
+    return (discordId === undefined ? this.all('SELECT * FROM flight_monitors ORDER BY id') : this.all('SELECT * FROM flight_monitors WHERE discord_id = ? ORDER BY id', discordId)).map(toFlightMonitor);
+  }
+
+  updateFlightMonitor(id: number, patch: Partial<Pick<FlightMonitor, 'state' | 'nearSent' | 'dep' | 'arr' | 'lastSeenAt' | 'misses' | 'expiresAt'>>): void {
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (patch.state !== undefined) (sets.push('state = ?'), params.push(patch.state));
+    if (patch.nearSent !== undefined) (sets.push('near_sent = ?'), params.push(patch.nearSent ? 1 : 0));
+    if (patch.dep !== undefined) (sets.push('dep = ?'), params.push(patch.dep));
+    if (patch.arr !== undefined) (sets.push('arr = ?'), params.push(patch.arr));
+    if (patch.lastSeenAt !== undefined) (sets.push('last_seen_at = ?'), params.push(patch.lastSeenAt));
+    if (patch.misses !== undefined) (sets.push('misses = ?'), params.push(patch.misses));
+    if (patch.expiresAt !== undefined) (sets.push('expires_at = ?'), params.push(patch.expiresAt));
+    if (sets.length === 0) return;
+    this.run(`UPDATE flight_monitors SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  }
+
+  /** Stop watching one flight (by number) for a person, or all of theirs. Returns how many were removed. */
+  deleteFlightMonitors(discordId: string, flightNo?: string): number {
+    return flightNo === undefined ? this.run('DELETE FROM flight_monitors WHERE discord_id = ?', discordId).changes : this.run('DELETE FROM flight_monitors WHERE discord_id = ? AND flight_no = ?', discordId, flightNo).changes;
+  }
+
+  deleteFlightMonitor(id: number): void {
+    this.run('DELETE FROM flight_monitors WHERE id = ?', id);
   }
 
   /* ------------------------------------------------------------------ DM sessions */

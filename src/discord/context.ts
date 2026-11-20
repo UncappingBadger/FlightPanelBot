@@ -12,6 +12,8 @@ import type { Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
 import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
+import type { BankingService } from '../services/banking.js';
+import type { FlightMonitors } from '../services/flightMonitor.js';
 import type { AeroNumbers } from '../services/aeroNumbers.js';
 import type { AirlineProfits } from '../services/airlineProfits.js';
 import type { DailyNote } from '../services/dailyNote.js';
@@ -40,6 +42,10 @@ export interface BotContext {
   market: MarketService;
   /** VATSIM's public METAR service, for the `metar` message to the bot. Only asked when someone asks for a weather report. */
   metar: MetarClient;
+  /** Messages a pilot when money goes into or out of the Aeroconomy bank accounts they chose (`/banking` in a DM). */
+  banking: BankingService;
+  /** Tells a person when a flight they asked about is about to land, and when it has (`/monitor` in a DM). */
+  monitors: FlightMonitors;
   /** Keeps each server's weather board (METARs for the chosen airports and the airports of the next 24 hours' flights) up to date. */
   weather: WeatherBoardService;
   /** Writes pilots' names and completions into a linked Google Sheet; null when the bot has no Google credentials. */

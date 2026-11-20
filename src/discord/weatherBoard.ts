@@ -28,8 +28,6 @@ export type WeatherRefreshResult = 'updated' | 'posted' | 'unavailable' | 'no-ac
 export const WEATHER_REFRESH_MS = 10 * 60_000;
 /** A redraw asks for reports younger than this, so the one it would reuse is never the one from its own previous redraw. */
 const FRESH_ENOUGH_MS = WEATHER_REFRESH_MS - 60_000;
-/** How many reports are asked for at once. */
-const CONCURRENCY = 4;
 /** A search by one person, and how many airports it may name. */
 export const SEARCH_COOLDOWN_MS = 3_000;
 export const MAX_SEARCH_AIRPORTS = 5;
@@ -53,7 +51,7 @@ export class WeatherBoardService {
 
   constructor(
     private readonly store: Store,
-    private readonly metar: Pick<MetarClient, 'report'>,
+    private readonly metar: Pick<MetarClient, 'report' | 'reports'>,
     private readonly log: Logger = silentLogger,
     private readonly now: () => number = Date.now,
   ) {}
@@ -80,25 +78,14 @@ export class WeatherBoardService {
     return run;
   }
 
-  /** The reports for these airports, as one line each. A report that VATSIM could not give at all throws (the board is then left as it was). */
+  /**
+   * The reports for these airports, as one line each, asked of VATSIM together in ONE request (it limits how often it can be asked, and a board has dozens of
+   * airports). If VATSIM could not be asked at all, or has asked to be left alone, this throws, and the board is left as it was.
+   */
   private async reports(codes: string[]): Promise<Map<string, string>> {
+    const got = await this.metar.reports([...new Set(codes)], FRESH_ENOUGH_MS);
     const lines = new Map<string, string>();
-    const failed: { error: MetarError | null } = { error: null };
-    const queue = [...new Set(codes)];
-    const worker = async () => {
-      for (let code = queue.shift(); code !== undefined; code = queue.shift()) {
-        try {
-          const report = await this.metar.report(code, FRESH_ENOUGH_MS);
-          lines.set(code, report === null ? none(code) : report);
-        } catch (e) {
-          if (!(e instanceof MetarError)) throw e;
-          if (e.kind === 'bad-response') lines.set(code, unreadable(code));
-          else failed.error ??= e;
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
-    if (failed.error) throw failed.error;
+    for (const [code, report] of got) lines.set(code, report instanceof MetarError ? unreadable(code) : report === null ? none(code) : report);
     return lines;
   }
 
@@ -264,18 +251,18 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction): 
   if (lastSearch.size > 5000) for (const [k, t] of lastSearch) if (now - t > SEARCH_COOLDOWN_MS) lastSearch.delete(k);
 
   const asked = codes.slice(0, MAX_SEARCH_AIRPORTS);
-  const lines: string[] = [];
-  for (const code of asked) {
-    try {
-      const report = await ctx.metar.report(code);
-      lines.push(report === null ? none(code) : report);
-    } catch (e) {
-      if (e instanceof MetarError) {
-        if (e.kind === 'bad-response') lines.push(unreadable(code));
-        else throw new UserError(e.message);
-      } else throw e;
-    }
+  // All the airports asked about go to VATSIM in one request.
+  let got: Awaited<ReturnType<typeof ctx.metar.reports>>;
+  try {
+    got = await ctx.metar.reports(asked);
+  } catch (e) {
+    if (e instanceof MetarError) throw new UserError(e.message);
+    throw e;
   }
+  const lines = asked.map((code) => {
+    const report = got.get(code) ?? null;
+    return report instanceof MetarError ? unreadable(code) : report === null ? none(code) : report;
+  });
   const notes: string[] = [];
   if (refused.length > 0) notes.push(`I skipped ${quote(refused)}: not four-letter airport codes.`);
   if (codes.length > asked.length) notes.push(`I looked up the first ${asked.length}. Search again for the rest.`);

@@ -28,10 +28,10 @@ describe('asking the bot for a weather report in a DM', () => {
     h = await makeHarness();
     h.clock.now = T0 + ++testNo * 3_600_000;
     metar = new FakeMetar();
-    metar.reports.set('EGLL', EGLL);
-    metar.reports.set('KJFK', KJFK);
-    metar.reports.set('KORD', KORD);
-    metar.reports.set('LFPG', LFPG);
+    metar.known.set('EGLL', EGLL);
+    metar.known.set('KJFK', KJFK);
+    metar.known.set('KORD', KORD);
+    metar.known.set('LFPG', LFPG);
     d = makeDiscordHarness(h, { metar });
     alice = d.client.user(new FakeUser(USER_A.discordId, USER_A.username));
     bob = d.client.user(new FakeUser(USER_B.discordId, USER_B.username));
@@ -90,13 +90,13 @@ describe('asking the bot for a weather report in a DM', () => {
     });
 
     it('says what it left as written, when it could not translate something', async () => {
-      metar.reports.set('KTST', 'KTST 161351Z 35011KT 10SM FEW028 08/01 A3039 FOOBAR RMK AO2 CIG 005V010');
+      metar.known.set('KTST', 'KTST 161351Z 35011KT 10SM FEW028 08/01 A3039 FOOBAR RMK AO2 CIG 005V010');
       await say(alice, 'metar KTST');
       assert.match(field(cards(alice)[0], 'Left as written'), /^I couldn't translate: `FOOBAR` `CIG` `005V010`\nRemarks differ from country to country/);
     });
 
     it('does not let a report break out of its box', async () => {
-      metar.reports.set('KEVL', 'KEVL 161351Z 35011KT 10SM FEW028 08/01 A3039 RMK ``` @everyone <@123456789012345678> ```');
+      metar.known.set('KEVL', 'KEVL 161351Z 35011KT 10SM FEW028 08/01 A3039 RMK ``` @everyone <@123456789012345678> ```');
       await say(alice, 'metar KEVL');
       const card = cards(alice)[0];
       const written = field(card, 'The report as written');
@@ -106,7 +106,7 @@ describe('asking the bot for a weather report in a DM', () => {
     });
 
     it('stays inside the size Discord allows for a card, even for a long report', async () => {
-      metar.reports.set('LONG', `LONG 161350Z 27015G25KT 240V300 3000 1400SW R27L/1200U R26R/0800VP2000D +TSRA -SN BR FZFG BKN005 OVC030CB FEW040TCU 14/13 Q0998 RETS WS R27L WS ALL RWY W12/H75 R10R/290193 BLACKWHT TEMPO 1500 FG BECMG FM1100 25035G50KT 6000 BKN020 RMK ${'AO2 SLP141 CIG 005V010 '.repeat(25)}`);
+      metar.known.set('LONG', `LONG 161350Z 27015G25KT 240V300 3000 1400SW R27L/1200U R26R/0800VP2000D +TSRA -SN BR FZFG BKN005 OVC030CB FEW040TCU 14/13 Q0998 RETS WS R27L WS ALL RWY W12/H75 R10R/290193 BLACKWHT TEMPO 1500 FG BECMG FM1100 25035G50KT 6000 BKN020 RMK ${'AO2 SLP141 CIG 005V010 '.repeat(25)}`);
       await say(alice, 'metar LONG');
       const c = cards(alice)[0];
       const size = (c.title?.length ?? 0) + (c.description?.length ?? 0) + (c.footer?.text.length ?? 0) + (c.fields ?? []).reduce((n: number, f: any) => n + f.name.length + f.value.length, 0);
@@ -191,17 +191,23 @@ describe('asking the bot for a weather report in a DM', () => {
       metar.error = new MetarError('unavailable', "I couldn't reach VATSIM's weather service right now.");
       await say(alice, 'metar EGLL KJFK');
       assert.deepEqual(texts(alice), ["I couldn't reach VATSIM's weather service right now."]);
-      assert.deepEqual(metar.calls, ['EGLL'], 'it does not ask again for the next airport');
+      assert.deepEqual(metar.batches, [['EGLL', 'KJFK']], 'both airports were asked about in one request, and it does not ask again');
+    });
+
+    it('asks VATSIM about all the airports of one message in one request', async () => {
+      await say(alice, 'metar EGLL KJFK KORD');
+      assert.deepEqual(metar.batches, [['EGLL', 'KJFK', 'KORD']]);
+      assert.equal(cards(alice).length, 3);
     });
 
     it('says when VATSIM sent a report it cannot read', async () => {
-      metar.reports.set('KBAD', 'KBAD NIL junk');
+      metar.known.set('KBAD', 'KBAD NIL junk');
       await say(alice, 'metar KBAD');
       assert.match(texts(alice)[0] ?? '', /^VATSIM sent a report for \*\*KBAD\*\* that I couldn't read: `KBAD NIL junk`$/);
     });
 
     it('says a NIL report is a station that sent nothing', async () => {
-      metar.reports.set('EDDF', 'EDDF 161350Z NIL');
+      metar.known.set('EDDF', 'EDDF 161350Z NIL');
       await say(alice, 'metar EDDF');
       assert.match(cards(alice)[0].description, /^EDDF sent no weather report for the 16th at 13:50 UTC \(NIL\)\./);
     });
@@ -336,10 +342,10 @@ describe('asking the bot for a weather report in a DM', () => {
     it('does not start a second request for someone whose first is still being answered', async () => {
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
-      const slow = metar.report.bind(metar);
-      metar.report = async (code: string) => {
+      const slow = metar.reports.bind(metar);
+      metar.reports = async (codes: string[], maxAge?: number) => {
         await gate;
-        return slow(code);
+        return slow(codes, maxAge);
       };
       const first = say(alice, 'metar EGLL');
       await settle(10);
@@ -387,7 +393,7 @@ describe('asking the bot for a weather report in a DM', () => {
 
     it('is mentioned in the short pointer people get when they message the bot with nothing open', async () => {
       await say(alice, 'hello');
-      assert.match(alice.lastText, /`metar EGLL` \(any airport code\) for a weather report in plain language, or `notifications` to choose which messages I send you\.$/);
+      assert.match(alice.lastText, /`metar EGLL` \(any airport code\) for a weather report in plain language, or `notifications` to choose which messages I send you\./);
     });
   });
 });

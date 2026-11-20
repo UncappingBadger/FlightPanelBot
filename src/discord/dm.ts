@@ -27,12 +27,14 @@ import { dayOf, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parse
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler, ComponentInteraction } from './context.js';
+import { BANKING_REQUEST, maybeTakeToken, showBanking } from './banking.js';
 import { CONTRIBUTIONS_REQUEST, showContributions } from './contributions.js';
 import { isDmClosed, UserError } from './errors.js';
 import { memberHasRole } from './guard.js';
 import { handleGridAction } from './gridHandlers.js';
 import { MAX_FOLLOWERS } from './panel.js';
 import { avatarIdsOf, flightFacts, noPings, jobBlock, searchEmbeds, stampFiles } from './ui.js';
+import { MONITOR_REQUEST, showMonitor } from './monitor.js';
 import { NOTICES_REQUEST, showNotices } from './notices.js';
 import { METAR_REQUEST, showMetar } from './weather.js';
 
@@ -1053,6 +1055,23 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
   const now = ctx.now();
   const text = message.content.trim();
 
+  // `/banking`: messages when money goes into or out of the pilot's Aeroconomy bank accounts. Also leaves an open conversation alone.
+  const bankingRequest = BANKING_REQUEST.exec(text);
+  if (bankingRequest) {
+    await showBanking(ctx, message, bankingRequest[1] ?? '');
+    return;
+  }
+
+  // `/monitor SKY330`: be told when a flight is about ten minutes from landing, and when it has landed. Also leaves an open conversation alone.
+  const monitorRequest = MONITOR_REQUEST.exec(text);
+  if (monitorRequest) {
+    await showMonitor(ctx, message, monitorRequest[1] ?? '');
+    return;
+  }
+
+  // A pilot who was asked for their Aeroconomy token and has now sent it.
+  if (ctx.banking.isWaitingForToken(user.id) && (await maybeTakeToken(ctx, message, text))) return;
+
   // `name Alex Smith`: what to call this person in airline sheets. Works whether or not a conversation is open.
   const rename = /^name(?:\s+(.*))?$/is.exec(text);
   if (rename) {
@@ -1106,7 +1125,7 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
       lastHint.set(user.id, now);
       // Forget people whose cooldown is over, so the map can't grow for ever with everyone who has ever messaged the bot.
       if (lastHint.size > 5000) for (const [k, t] of lastHint) if (now - t >= HINT_COOLDOWN_MS) lastHint.delete(k);
-      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, `metar EGLL` (any airport code) for a weather report in plain language, or `notifications` to choose which messages I send you.');
+      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, `metar EGLL` (any airport code) for a weather report in plain language, or `notifications` to choose which messages I send you. `/banking` sets up a message whenever money goes into or out of your Aeroconomy bank accounts, and `/monitor SKY330` tells you when a flight is about to land.');
     }
     return;
   }

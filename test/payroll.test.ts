@@ -152,18 +152,18 @@ describe('making the list of payments', () => {
   });
 
   it("adds the flight's number when the same pilot flew the same route twice in a day, to each of the two", () => {
-    const { lines } = build([flight({ row: 2, sourceKey: 'a' }), flight({ row: 3, sourceKey: 'b' })], [info()], { ref: (f) => (f.sourceKey === 'a' ? 'WLF516' : 'WLF-517') });
+    const { lines } = build([flight({ row: 2, sourceKey: 'a' }), flight({ row: 3, sourceKey: 'b' })], [info()], { ref: (f) => (f.sourceKey === 'a' ? 'SKY516' : 'SKY-517') });
     assert.deepEqual(lines.map((l) => l.uniqueId), ['32411-KORD-EGLL-111026-516', '32411-KORD-EGLL-111026-517']);
   });
 
   it('uses the sheet row when there is no flight number to add, and never gives two payments the same ID', () => {
-    const { lines } = build([flight({ row: 12, sourceKey: 'a' }), flight({ row: 13, sourceKey: 'b' }), flight({ row: 14, sourceKey: 'c' })], [info()], { ref: (f) => (f.sourceKey === 'c' ? 'WLF900' : f.sourceKey === 'b' ? 'WLF900' : null) });
+    const { lines } = build([flight({ row: 12, sourceKey: 'a' }), flight({ row: 13, sourceKey: 'b' }), flight({ row: 14, sourceKey: 'c' })], [info()], { ref: (f) => (f.sourceKey === 'c' ? 'SKY900' : f.sourceKey === 'b' ? 'SKY900' : null) });
     assert.deepEqual(lines.map((l) => l.uniqueId), ['32411-KORD-EGLL-111026-r12', '32411-KORD-EGLL-111026-900', '32411-KORD-EGLL-111026-900-2']);
     assert.equal(new Set(lines.map((l) => l.uniqueId)).size, 3);
   });
 
   it('adds the number too when the plain ID was already used for a payment made earlier', () => {
-    const { lines } = build([flight({ sourceKey: 'second' })], [info()], { ledger: { hasUniqueId: (id) => id === '32411-KORD-EGLL-111026' }, ref: () => 'WLF516' });
+    const { lines } = build([flight({ sourceKey: 'second' })], [info()], { ledger: { hasUniqueId: (id) => id === '32411-KORD-EGLL-111026' }, ref: () => 'SKY516' });
     assert.deepEqual(lines.map((l) => l.uniqueId), ['32411-KORD-EGLL-111026-516']);
   });
 
@@ -1107,8 +1107,8 @@ describe('paying pilots is switched off by default', () => {
     const prefixes = (on: boolean) => handlerSet(on).map((h) => h.prefix).sort();
     assert.deepEqual(names(false), ['eta', 'fuel', 'help', 'hideunavailable', 'setup']);
     assert.deepEqual(names(true), ['eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
-    assert.deepEqual(prefixes(false), ['dm', 'notices', 'panel', 'profit', 'weather']);
-    assert.deepEqual(prefixes(true), ['dm', 'notices', 'panel', 'payroll', 'profit', 'weather']);
+    assert.deepEqual(prefixes(false), ['banking', 'dm', 'notices', 'panel', 'profit', 'weather']);
+    assert.deepEqual(prefixes(true), ['banking', 'dm', 'notices', 'panel', 'payroll', 'profit', 'weather']);
   });
 
   it('is off in the set the bot actually uses, when nobody has turned it on', () => {

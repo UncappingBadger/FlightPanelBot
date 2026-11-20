@@ -1,5 +1,6 @@
 import { payrollEnabled } from '../../features.js';
 import type { Command, ComponentHandler } from '../context.js';
+import { bankingHandler } from '../banking.js';
 import { dmHandler, panelHandler } from '../dm.js';
 import { noticesHandler } from '../notices.js';
 import { payrollHandler } from '../payrollUi.js';
@@ -15,7 +16,7 @@ import { setupCommand } from './setup.js';
 /** Only admins configure anything; everyone else uses the buttons on the panel, `/fuel`, `/eta`, and `/hideunavailable` for their own view. */
 export const commandSet = (withPayroll: boolean): Command[] => [setupCommand, helpCommand, fuelCommand, etaCommand, hideUnavailableCommand, ...(withPayroll ? [payrollCommand] : [])];
 
-export const handlerSet = (withPayroll: boolean): ComponentHandler[] => [panelHandler, dmHandler, noticesHandler, profitHandler, weatherHandler, ...(withPayroll ? [payrollHandler] : [])];
+export const handlerSet = (withPayroll: boolean): ComponentHandler[] => [panelHandler, dmHandler, noticesHandler, profitHandler, weatherHandler, bankingHandler, ...(withPayroll ? [payrollHandler] : [])];
 
 /** Paying pilots is built but switched off until the bank connection exists (see `src/features.ts`), so by default it is neither registered nor handled. */
 export const commands: Command[] = commandSet(payrollEnabled());

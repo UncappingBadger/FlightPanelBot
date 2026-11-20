@@ -507,9 +507,12 @@ as written is shown at the bottom. It is for flight simulation only, and says so
 - **Only full four-character codes are asked for.** VATSIM reads a code of three characters or fewer as "every airport starting
   with these", and `all` as every airport, so the bot refuses those (and tells people that US airports start with a K: `KJFK`,
   not `JFK`) instead of passing them on. An airport with no report gets a plain message.
-- **Kind to VATSIM.** An airport's report is remembered for ten minutes (what the service itself asks of caches), overlapping
+- **Kind to VATSIM.** An airport's report is remembered for ten minutes (what the service itself asks of caches), the airports of
+  one message (up to three) or one lookup are asked for **in one request** (VATSIM takes them comma-separated), overlapping
   requests share one call, one person can ask about every few seconds, answers are size-capped, redirects are not followed,
-  and only the airport code and the bot's name and version are ever sent. The service is only contacted when someone asks.
+  and only the airport codes and the bot's name and version are ever sent. The service is only contacted when someone asks.
+  VATSIM sits behind a rate limit: when it answers **429 busy** (with a wait), the bot **does not ask again until that time has passed**
+  and says how long (`I couldn't ...busy right now. Try again in about 3 minutes.`) instead of asking over and over.
 - It leaves an open Reserve conversation alone, so asking for the weather halfway through reserving a flight costs nothing.
 
 ### The weather board
@@ -538,8 +541,58 @@ gives, and is read top to bottom:
 - **Search airport.** The button under the board's last message opens a box for an airport's four-letter ICAO code (or several, up to
   five) and answers only to the person who asked, with the METAR as written and a pointer to the DM `metar` for the plain-language
   version. A three-letter code is explained rather than guessed (`KJFK`, not `JFK`). One person can search every few seconds.
-- **Kind to VATSIM.** One request per airport per redraw (four at a time), answers shared with the DM `metar` and with other servers'
-  boards, and only the airport code is ever sent. `/setup weather mode:off` removes the board and its messages.
+- **Kind to VATSIM.** **One request per redraw, for all of the board's airports together** (up to 50 in a request, a few dozen in practice), answers shared with the DM
+  `metar` and with other servers' boards, and only the airport codes are ever sent. (The first version asked for each airport separately, which
+  was refused as too many requests at once: a board with a day of flights has dozens of airports.) When VATSIM says it is busy the bot waits as long
+  as it asks (at most 15 minutes) before asking again, leaves the board as it was, and `/setup weather` says how long. `/setup weather mode:off` removes the board and its messages.
+
+### Payment messages: `/banking`
+
+**DM the bot `/banking`** and it messages you, in that DM, whenever money goes **into or out of** the Aeroconomy bank accounts you choose: your own, and any
+business accounts you have. It only ever **reads**. It cannot pay, move or change anything.
+
+- **It needs your own API token**, because Aeroconomy's banking API asks for one on every request (its documentation does not say where to get one; FsHub and
+  Aeroconomy are one system, and the **FsHub personal access token** from `fshub.io/settings/integrations` is accepted). The bot explains this in the DM
+  and tells you to make a new token just for this, so you can delete it at any time without touching anything else. **You send it to the bot in that DM.**
+  Aeroconomy's documentation lists no scopes, so treat the token like a password; the bot says that too, and tells you to delete your message with it.
+- **Then it asks which accounts to watch**, as a list to pick from (it asks Aeroconomy which accounts the token can see, and labels each as personal or business).
+  Only payments **from then on** are told: it notes the newest payment of each account and never sends your history.
+- **`/banking` again** shows what is watched, lets you pick a different set of accounts (a kept one keeps its place, a new one starts from now) and has a
+  **Turn off** button. `/banking off` does the same by typing.
+- **Turning it off deletes the token and the list of accounts** from the bot, and the bot says so. The same happens, with a message, if Aeroconomy stops
+  accepting the token, the token can no longer be read, or no account is left that Aeroconomy will show. An account Aeroconomy stops showing is dropped with a
+  message and the rest carry on.
+- **What a message says:** money in (`💰 +$1,250 into <account> (…0111) · From <name> · For: <description>` and the time), money out (`💸 -$80.50 out of ...`),
+  or a payment between two of your own watched accounts (`↔️`, one message, not two). The lines of a payment of several are listed. Names and descriptions
+  come from other players, so they are shown with no formatting and no mentions, and an account is named with only the last four characters of its number.
+- **How often:** every five minutes the bot reads the newest payments of each watched account (a payment number higher than the last one told is new), at most
+  the newest ten are sent one by one when there are many (with a line saying how many), and a payment is told once. If your DMs from the bot are closed it tries
+  again after an hour; nothing is marked as told until it has reached you. If Aeroconomy is having trouble it simply looks again next time.
+- **How the token is kept.** Only **sealed**: AES-256-GCM, with a random key in a file of its own (`banking.key`, next to the database in the bot's data folder),
+  so a copy of the database alone holds nothing that works. It is never logged, never put in an address, never sent anywhere but Aeroconomy, and decrypted only
+  for each request. It does not protect against someone who can read the whole data folder, which is the computer the bot runs on: the DM says so, and that
+  whoever runs the bot can reach that computer. If the key file cannot be made, tokens are kept only in memory and people are asked again after a restart. A
+  setup left half done (a token sent and no accounts chosen) is deleted after 30 minutes, and the DM says it will be. Deleted rows are overwritten in the file
+  (`secure_delete`).
+- **Requests:** `GET /banking/accounts` and `GET /banking/accounts/<number>/transactions` on `aeroconomy.com`, one at a time, spaced out like every other
+  Aeroconomy request the bot makes, redirects not followed, only for pilots who turned this on.
+
+### Watching a flight: `/monitor`
+
+**DM the bot `/monitor SKY330`** (a flight number: the airline's letters and the number) and it messages you when that flight is **about 10 minutes from
+landing**, and again when it has **landed**. It finds the flight in FsHub's public live feed by its callsign, which for an airline's flight is its flight
+number, so it works for any airline whose flights show there, not only the ones on your panel.
+
+- If the flight is not in the air yet the bot keeps looking for up to **24 hours** (a flight seen in the air is then followed until it lands). It says how the flight
+  stands when you ask (in the air with about so many minutes to go, on the ground, or not in the feed yet).
+- **The 10 minutes** is FsHub's own estimate of the time to landing, used only while the aircraft is flying (it is not meaningful on the ground), and is told once.
+  If the flight is first seen already that close you are told at once.
+- **Landed** is the feed showing the flight landed, taxiing to the gate or arrived, or a flight that was in the air and is now on the ground. A flight seen in the
+  air that then drops out of the feed (two looks in a row) is reported as no longer in the feed, most likely landed or the pilot disconnected.
+- **`/monitor`** shows what is being watched; **`/monitor stop SKY330`** stops one and **`/monitor stop all`** every one. Up to five flights at once. A flight number
+  already on the ground and shown as arrived when you ask is reported as landed straight away.
+- Once a minute, one request to FsHub's live feed for each airline that anyone is watching a flight of, however many people watch it; nothing about you is sent.
+  A message that could not be delivered is tried again at the next look.
 
 ### Who can reserve
 
@@ -1051,15 +1104,16 @@ key only as a file path in `.env`; the key file itself stays wherever you put it
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
 (shown beside their name on flights they hold), per Discord user their own settings (whether `/hideunavailable` is on, and
 which of the three optional private messages they have switched off with `notifications`, and which very hard landings they have been sent a remark about), and per server the channel and message of an AeroDAQ market
-board if one is switched on, and the channel, messages and chosen airports of a weather board if one is. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
+board if one is switched on, and the channel, messages and chosen airports of a weather board if one is. For each pilot who asked for `/banking`: which accounts they chose (name and number) and the number of the newest payment already told, with their sealed token (the key is in `banking.key` beside the database); for each flight someone asked to be told about with `/monitor`: who, the flight number and how far it has got. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
-account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no tokens or passwords from users. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
+account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no passwords from users, and a token only from a pilot who turned on `/banking` (see *Payment messages*): sealed, in a table of its own, and deleted when they turn it off. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
 server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on.
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
-`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>` or uses a weather board's Search button, and, for a server with a weather board, once every ten minutes for each airport on it; only the airport code is sent; read-only; see *Weather reports* and *The weather board*);
+`aeroconomy.com` banking (`/banking/accounts` and each account's transactions, read with a pilot's own token, in plain `GET` requests, only for a pilot who turned on `/banking`, every five minutes for each account they chose; see *Payment messages*); `movements.fshub.io` is also asked for the airline of any flight someone is watching with `/monitor`, once a minute (see *Watching a flight*);
+`metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>` or uses a weather board's Search button, and, for a server with a weather board, once every ten minutes, all its airports in one request; only the airport codes are sent; read-only; see *Weather reports* and *The weather board*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the

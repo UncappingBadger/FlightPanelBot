@@ -12,6 +12,10 @@ import { Notifier } from './discord/notifier.js';
 import { MarketService } from './discord/market.js';
 import { PanelService } from './discord/panel.js';
 import { WeatherBoardService } from './discord/weatherBoard.js';
+import { AeroconomyBankingClient } from './aeroconomy/banking.js';
+import { BankingService } from './services/banking.js';
+import { FlightMonitors } from './services/flightMonitor.js';
+import { SecretBox } from './services/secretBox.js';
 import { PayrollDaily } from './discord/payrollUi.js';
 import { PAYROLL_FLAG, payrollEnabled } from './features.js';
 import { registerInteractionRouter } from './discord/router.js';
@@ -182,6 +186,19 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   });
   // The same feed says when each of the airline's flights in the air is expected to land: on the flight's card, and for `/eta`.
   const etas = new FlightEtas({ store, feed: liveFeed, panels, logger: log });
+  // Private messages a person asks for in a DM: `/monitor` (a flight about to land, and landed, from the same live feed) and `/banking` (money going into or out of
+  // the Aeroconomy accounts they choose, read with their own token, which is kept sealed in a key file beside the database and deleted when they turn it off).
+  const sendDm = async (discordId: string, content: string) => (await notifier?.dm(discordId, content)) === true;
+  const monitors = new FlightMonitors({ store, feed: liveFeed, send: sendDm, logger: log });
+  let box: SecretBox;
+  try {
+    box = config.databasePath === ':memory:' ? SecretBox.inMemory() : SecretBox.fromFile(join(dirname(config.databasePath), 'banking.key'));
+  } catch (e) {
+    // Without a key file that can be kept, tokens could not be opened after a restart: they are kept only while the program runs, and people are asked again.
+    log.warn('Could not keep a key file for pilots\' Aeroconomy tokens; they will only be remembered until the bot restarts', e);
+    box = SecretBox.inMemory();
+  }
+  const banking = new BankingService({ store, client: new AeroconomyBankingClient({ logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), box, send: sendDm, logger: log });
   let twitch: TwitchBridge | null = null;
   panels.etas = etas;
   const departures = new DepartureWarnings(store, jobs, new FlightTimes(store, airports), async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log, live });
@@ -217,6 +234,8 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     reminders,
     markets: market,
     weather,
+    banking,
+    monitors,
     panels,
     cleanup: { run: () => panels.cleanReminders() },
     live,
@@ -235,7 +254,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), logger: log })
     : null;
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

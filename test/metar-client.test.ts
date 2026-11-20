@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
-import { METAR_TTL_MS, MetarClient, MetarError, normalizeStation, pickReport, VATSIM_METAR_API } from '../src/metar/client.js';
+import { METAR_TTL_MS, MetarClient, MetarError, normalizeStation, pickReport, VATSIM_METAR_API, waitFromRetryAfter } from '../src/metar/client.js';
 
 interface Seen {
   url: string;
@@ -9,13 +9,13 @@ interface Seen {
   hasSignal: boolean;
 }
 
-function fakeFetch(reply: (url: string) => { status?: number; raw?: string } | Error) {
+function fakeFetch(reply: (url: string) => { status?: number; raw?: string; headers?: Record<string, string> } | Error) {
   const seen: Seen[] = [];
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, redirect: init?.redirect, hasSignal: init?.signal !== undefined });
     const r = reply(String(url));
     if (r instanceof Error) throw r;
-    return new Response(r.raw ?? '', { status: r.status ?? 200 });
+    return new Response(r.raw ?? '', { status: r.status ?? 200, ...(r.headers ? { headers: r.headers } : {}) });
   }) as unknown as typeof fetch;
   return { fetchFn, seen };
 }
@@ -138,10 +138,143 @@ describe('asking VATSIM for a weather report', () => {
     await assert.rejects(c.report('EGLL'), (e: unknown) => e instanceof MetarError && e.kind === 'unavailable' && /couldn't reach VATSIM's weather service/.test(e.message));
     reply = { status: 429 };
     await assert.rejects(c.report('EGLL'), /busy/);
+    now += 61_000; // it asked to be left alone for a minute
     reply = { status: 503 };
     await assert.rejects(c.report('EGLL'), /having trouble.*503/);
     reply = { raw: EGLL };
     assert.equal(await c.report('EGLL'), EGLL, 'recovers as soon as it is back');
+  });
+
+  describe('asking for several airports', () => {
+    const ALL = ['KBOS', 'KMIA', 'SKBO', 'EGLL'];
+    const reports: Record<string, string> = { KBOS: 'KBOS 201354Z 27010KT 10SM FEW220 16/M01 A3024', KMIA: 'KMIA 201353Z 19005KT 10SM OVC008 23/22 A2997', EGLL };
+    const body = (...codes: string[]) => codes.map((c) => reports[c]).filter(Boolean).join('\n');
+
+    it('asks for them all in ONE request, the codes comma-separated, and hands each its own report', async () => {
+      const f = fakeFetch(() => ({ raw: body(...ALL) }));
+      const got = await client(f).reports(ALL);
+      assert.equal(f.seen.length, 1, 'one request, not one for each');
+      assert.equal(f.seen[0]!.url, 'https://metar.vatsim.net/KBOS,KMIA,SKBO,EGLL');
+      assert.deepEqual([...got.entries()], [['KBOS', reports.KBOS], ['KMIA', reports.KMIA], ['SKBO', null], ['EGLL', EGLL]], 'one that VATSIM sent nothing for is null');
+      assert.deepEqual(f.seen[0]!.headers, { accept: 'text/plain', 'user-agent': 'FlightPanelBot' });
+      assert.equal(f.seen[0]!.redirect, 'error');
+    });
+
+    it('asks only for what is not remembered, and for each airport once', async () => {
+      const f = fakeFetch((url) => ({ raw: body(...url.split('/').pop()!.split(',')) }));
+      const c = client(f);
+      await c.reports(['KBOS', 'EGLL']);
+      const got = await c.reports(['EGLL', 'KMIA', 'KBOS', 'KMIA']);
+      assert.deepEqual(f.seen.map((s) => s.url.split('/').pop()), ['KBOS,EGLL', 'KMIA'], 'only the new one the second time');
+      assert.deepEqual([...got.keys()], ['EGLL', 'KMIA', 'KBOS']);
+      await c.reports(['KBOS', 'EGLL', 'KMIA']);
+      assert.equal(f.seen.length, 2, 'all remembered');
+    });
+
+    it('asks again for the ones older than the age wanted, together', async () => {
+      const f = fakeFetch(() => ({ raw: body(...ALL) }));
+      const c = client(f);
+      await c.reports(ALL);
+      now += 9 * 60_000 + 30_000;
+      await c.reports(ALL);
+      assert.equal(f.seen.length, 1);
+      await c.reports(ALL, 9 * 60_000);
+      assert.equal(f.seen.length, 2, 'one request for all four');
+    });
+
+    it('splits a very long list into requests of at most fifty airports', async () => {
+      const many = Array.from({ length: 120 }, (_, i) => `K${String(i).padStart(3, '0')}`);
+      const f = fakeFetch(() => ({ raw: '' }));
+      const got = await client(f).reports(many);
+      assert.deepEqual(f.seen.map((s) => s.url.split('/').pop()!.split(',').length), [50, 50, 20]);
+      assert.equal(got.size, 120);
+    });
+
+    it('gives a report that cannot be read as that airport\'s error, and still gives the others', async () => {
+      const f = fakeFetch(() => ({ raw: `${reports.KBOS}\nEGLL ${'X'.repeat(900)}\n${reports.KMIA}` }));
+      const got = await client(f).reports(['KBOS', 'EGLL', 'KMIA']);
+      assert.equal(got.get('KBOS'), reports.KBOS);
+      assert.equal(got.get('KMIA'), reports.KMIA);
+      assert.ok(got.get('EGLL') instanceof MetarError && (got.get('EGLL') as MetarError).kind === 'bad-response');
+      await assert.rejects(client(f).report('EGLL'), (e: unknown) => e instanceof MetarError && e.kind === 'bad-response');
+    });
+
+    it('refuses a code that is not an airport before asking anything', async () => {
+      const f = fakeFetch(() => ({ raw: '' }));
+      await assert.rejects(client(f).reports(['KBOS', 'all']), /Not an airport code/);
+      await assert.rejects(client(f).reports(['KBOS,EGLL']), /Not an airport code/);
+      assert.equal(f.seen.length, 0);
+    });
+
+    it('overlapping requests for the same airports share one call, and one for more shares what it can', async () => {
+      const f = fakeFetch((url) => ({ raw: body(...url.split('/').pop()!.split(',')) }));
+      const c = client(f);
+      const [a, b] = await Promise.all([c.reports(['KBOS', 'EGLL']), c.reports(['EGLL', 'KMIA'])]);
+      assert.deepEqual(f.seen.map((s) => s.url.split('/').pop()), ['KBOS,EGLL', 'KMIA'], 'EGLL was not asked for twice');
+      assert.equal(a.get('EGLL'), EGLL);
+      assert.equal(b.get('EGLL'), EGLL);
+    });
+  });
+
+  describe('when VATSIM asks to be left alone', () => {
+    it('stops asking for as long as it said (Retry-After, in seconds), without making a request, and says how long', async () => {
+      let reply: ReturnType<Parameters<typeof fakeFetch>[0]> = { status: 429 };
+      const f = fakeFetch(() => reply);
+      const c = client(f);
+      reply = { status: 429, headers: { 'retry-after': '161' } };
+      await assert.rejects(c.reports(['KBOS', 'EGLL']), (e: unknown) => e instanceof MetarError && e.kind === 'unavailable' && e.retryAfterMs === 161_000 && /busy right now\. Try again in about 3 minutes\./.test(e.message));
+      assert.equal(f.seen.length, 1);
+      now += 110_000;
+      await assert.rejects(c.reports(['KMIA']), (e: unknown) => e instanceof MetarError && /busy right now\. Try again in about 1 minute\./.test(e.message) && (e as MetarError).retryAfterMs === 51_000);
+      await assert.rejects(c.report('SKBO'), /busy/);
+      assert.equal(f.seen.length, 1, 'not asked while it said to wait');
+      now += 51_001;
+      reply = { raw: EGLL };
+      assert.equal(await c.report('EGLL'), EGLL, 'asked again once the time is up');
+      assert.equal(f.seen.length, 2);
+    });
+
+    it('waits a minute when it does not say how long, a date is understood, and no wait is longer than fifteen minutes', async () => {
+      const f = fakeFetch(() => ({ status: 429 }));
+      const c = client(f);
+      await assert.rejects(c.report('EGLL'), (e: unknown) => (e as MetarError).retryAfterMs === 60_000);
+      const today = Date.parse('2026-11-20T17:00:00Z');
+      assert.equal(waitFromRetryAfter(null, today), 60_000);
+      assert.equal(waitFromRetryAfter('', today), 60_000);
+      assert.equal(waitFromRetryAfter('soon', today), 60_000);
+      assert.equal(waitFromRetryAfter('0', today), 60_000);
+      assert.equal(waitFromRetryAfter('-5', today), 60_000);
+      assert.equal(waitFromRetryAfter('120', today), 120_000);
+      assert.equal(waitFromRetryAfter('161', today), 161_000);
+      assert.equal(waitFromRetryAfter('99999', today), 15 * 60_000);
+      assert.equal(waitFromRetryAfter(new Date(today + 90_000).toUTCString(), today), 90_000);
+      assert.equal(waitFromRetryAfter(new Date(today - 90_000).toUTCString(), today), 60_000, 'a date in the past says nothing');
+    });
+
+    it('does not remember being told to wait once it answers again, and an answer it already holds is still given while it waits', async () => {
+      let reply: ReturnType<Parameters<typeof fakeFetch>[0]> = { raw: EGLL };
+      const f = fakeFetch(() => reply);
+      const c = client(f);
+      await c.report('EGLL');
+      reply = { status: 429 };
+      now += METAR_TTL_MS + 1;
+      await assert.rejects(c.report('EGLL'), /busy/);
+      await c.reports([]);
+      now += 61_000;
+      reply = { raw: EGLL };
+      assert.equal(await c.report('EGLL'), EGLL);
+      assert.equal(await c.report('EGLL'), EGLL);
+      assert.equal(f.seen.length, 3, 'asked, refused, and asked again: nothing extra');
+    });
+
+    it('treats the other failures as before: not remembered, and no wait is imposed', async () => {
+      let reply: ReturnType<Parameters<typeof fakeFetch>[0]> = { status: 503 };
+      const f = fakeFetch(() => reply);
+      const c = client(f);
+      await assert.rejects(c.report('EGLL'), /having trouble.*503/);
+      reply = { raw: EGLL };
+      assert.equal(await c.report('EGLL'), EGLL, 'asked again at once');
+    });
   });
 
   it('refuses an answer that is absurdly large', async () => {
