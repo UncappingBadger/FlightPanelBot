@@ -73,17 +73,34 @@ export interface LivePilot {
  * taxiing_to_gate, arrived. `approach` is an older spelling of `on_approach`.)
  */
 const AIRBORNE_PHASES = new Set(['take_off', 'climbing', 'level_flight', 'cruise', 'descending', 'on_approach', 'approach']);
+/** Phases that mean the aircraft is on the ground, or has just come down. */
+const GROUND_PHASES = new Set(['awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']);
 
-/** Whether a FsHub flight phase means the aircraft is flying. */
-export const isAirbornePhase = (phase: string | null | undefined): boolean => phase != null && AIRBORNE_PHASES.has(phase);
+/**
+ * Whether the aircraft is flying, from FsHub's phase and the aircraft's own on-ground flag. A phase of the ground, or an aircraft on the
+ * ground, is not flying; a phase of the air is. Any other phase is not told by its name: FsHub's tracker says `calculating` until it has
+ * worked the phase out, which can be well into the flight (a long-haul seen at 37,000 ft and 494 knots was still `calculating` hours in), and
+ * a phase it adds later is no better known. For those the aircraft decides: flying only when it says it is off the ground.
+ */
+export function isFlying(phase: string | null | undefined, onGround: boolean | null | undefined): boolean {
+  if (onGround === true) return false;
+  if (phase != null && GROUND_PHASES.has(phase)) return false;
+  if (phase != null && AIRBORNE_PHASES.has(phase)) return true;
+  return onGround === false;
+}
 
 /** One flight in the list of an airline's flights, as far as the bot reads it. */
 export interface AirlineFlight {
   flightId: string;
   /** The FsHub pilot flying it. */
   pilotId: number | null;
-  /** The callsign of the flight plan (upper case), or null when the pilot filed no plan. */
+  /** The callsign of the flight plan (upper case), or its flight number when it has no usable callsign, or null when the pilot filed no plan. */
   callsign: string | null;
+  /**
+   * The flight plan's flight number (upper case), when it has one. A pilot may fly under a callsign of their own and still file the airline's
+   * number here, so both are looked at to see whether a flight is the airline's.
+   */
+  flightNo?: string | null;
   dep: string | null;
   arr: string | null;
   phase: string | null;
@@ -98,13 +115,10 @@ export interface AirlineFlight {
  */
 const objectOrMissing = (v: unknown): unknown => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : undefined);
 
-const airport = z
-  .string()
-  .nullish()
-  .transform((v) => {
-    const code = (v ?? '').trim().toUpperCase();
-    return /^[A-Z0-9]{3,5}$/.test(code) ? code : null;
-  });
+const airport = z.unknown().optional().transform((v) => {
+  const code = (typeof v === 'string' ? v : '').trim().toUpperCase();
+  return /^[A-Z0-9]{3,5}$/.test(code) ? code : null;
+});
 
 const PilotsSchema = z.object({ pilots: z.array(z.object({ id: z.number().int() }).passthrough()).default([]) }).passthrough();
 
@@ -157,31 +171,41 @@ const DetailSchema = z
   })
   .passthrough();
 
-const callsign = z
-  .string()
-  .nullish()
-  .transform((v) => {
-    const code = (v ?? '').trim().toUpperCase();
-    return /^[A-Z0-9-]{1,12}$/.test(code) ? code : null;
-  });
+const callsign = z.unknown().optional().transform((v) => {
+  const code = (typeof v === 'string' ? v : '').trim().toUpperCase();
+  return /^[A-Z0-9-]{1,12}$/.test(code) ? code : null;
+});
+
+/** A part of a flight that is not the kind of value it should be is missing, so one odd value never costs the whole flight. (`optional` so that a part that is simply not there is fine too: in zod 4 a key whose schema is `unknown` is otherwise required.) */
+const stringOrNull = z.unknown().optional().transform((v) => (typeof v === 'string' ? v : null));
+const booleanOrNull = z.unknown().optional().transform((v) => (typeof v === 'boolean' ? v : null));
+const integerOrNull = z.unknown().optional().transform((v) => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null));
 
 const AirlineSchema = z.object({ flights: z.array(z.unknown()).default([]) }).passthrough();
 
 const AirlineFlightSchema = z
   .object({
     id: z.union([z.string(), z.number()]).transform(String),
-    phase: z.string().nullish(),
-    position: z.preprocess(objectOrMissing, z.object({ on_ground: z.boolean().nullish() }).passthrough().optional()),
-    pilot: z.preprocess(objectOrMissing, z.object({ id: z.number().int().nullish() }).passthrough().optional()),
+    phase: stringOrNull,
+    position: z.preprocess(objectOrMissing, z.object({ on_ground: booleanOrNull }).passthrough().optional()),
+    pilot: z.preprocess(objectOrMissing, z.object({ id: integerOrNull }).passthrough().optional()),
     plan: z.preprocess(objectOrMissing, z.object({ callsign, flight_no: callsign, departure: airport, arrival: airport }).passthrough().optional()),
-    eta_minutes: z.number().finite().nullish(),
+    eta_minutes: finiteOrNull,
   })
   .passthrough();
 
 /** A short airline code as FsHub's feed takes it (the airline's abbreviation, such as `SKY`), or null when it is not one. */
 const airlineCode = (raw: string): string | null => (/^[A-Za-z0-9]{2,6}$/.test(raw.trim()) ? raw.trim().toUpperCase() : null);
 
+/**
+ * What an airline's flights are remembered for, and shared by everything that asks (the landing estimates, `/monitor`, a person adding a monitor):
+ * the feed is read once and they all use it. Short, because the estimates move by the minute; the callers ask about once a minute.
+ */
+const AIRLINE_CACHE_MS = 20_000;
+
 export interface LiveFeedOptions {
+  /** How long an airline's flights are shared between callers, in ms (default 20 seconds; 0 asks the feed every time). */
+  airlineCacheMs?: number;
   fetchFn?: typeof fetch;
   logger?: Logger;
   userAgent?: string;
@@ -196,8 +220,12 @@ export class LiveFeed {
   private readonly base: string;
   private readonly now: () => number;
   private readonly sent: number[] = [];
+  private readonly airlineCacheMs: number;
+  /** An airline's flights as last read, and the read that is under way (callers that come while one is waiting share it). */
+  private readonly airlines = new Map<string, { at: number; flights?: AirlineFlight[]; pending?: Promise<AirlineFlight[]> }>();
 
   constructor(opts: LiveFeedOptions = {}) {
+    this.airlineCacheMs = opts.airlineCacheMs ?? AIRLINE_CACHE_MS;
     this.fetchFn = opts.fetchFn ?? fetch;
     this.log = opts.logger ?? silentLogger;
     this.userAgent = opts.userAgent ?? 'FlightPanelBot';
@@ -225,7 +253,7 @@ export class LiveFeed {
     const flight: LiveFlight | null = f
       ? { flightId: f.id, phase: f.phase ?? null, onGround: f.position?.on_ground ?? null, dep: f.plan?.departure ?? null, arr: f.plan?.arrival ?? null }
       : null;
-    const airborne = parsed.data.is_airborne ?? (flight !== null && flight.onGround === false && flight.phase !== null && AIRBORNE_PHASES.has(flight.phase));
+    const airborne = parsed.data.is_airborne ?? (flight !== null && isFlying(flight.phase, flight.onGround));
     return { pilotId: parsed.data.pilot_id, airborne: airborne === true && flight !== null, flight };
   }
 
@@ -244,7 +272,7 @@ export class LiveFeed {
     };
     const onGround = f.position?.on_ground ?? null;
     const phase = f.phase ?? null;
-    const airborne = parsed.data.is_airborne ?? (onGround === false && isAirbornePhase(phase));
+    const airborne = parsed.data.is_airborne ?? isFlying(phase, onGround);
     return {
       flightId: f.id,
       phase,
@@ -271,6 +299,25 @@ export class LiveFeed {
   async airlineFlights(abbr: string): Promise<AirlineFlight[]> {
     const code = airlineCode(abbr);
     if (code === null) return [];
+    const now = this.now();
+    const have = this.airlines.get(code);
+    if (have?.pending) return have.pending;
+    if (have?.flights && now - have.at < this.airlineCacheMs) return have.flights;
+    const pending = this.readAirline(code).then(
+      (flights) => {
+        this.airlines.set(code, { at: this.now(), flights });
+        return flights;
+      },
+      (e: unknown) => {
+        this.airlines.delete(code); // a failure is not remembered: the next caller asks again
+        throw e;
+      },
+    );
+    this.airlines.set(code, { at: have?.at ?? 0, ...(have?.flights ? { flights: have.flights } : {}), pending });
+    return pending;
+  }
+
+  private async readAirline(code: string): Promise<AirlineFlight[]> {
     const body = await this.get(`/airline/${code}`);
     if (body === null) return [];
     const list = AirlineSchema.safeParse(body);
@@ -284,6 +331,7 @@ export class LiveFeed {
         flightId: f.data.id,
         pilotId: f.data.pilot?.id ?? null,
         callsign: plan?.callsign ?? plan?.flight_no ?? null,
+        flightNo: plan?.flight_no ?? null,
         dep: plan?.departure ?? null,
         arr: plan?.arrival ?? null,
         phase: f.data.phase ?? null,

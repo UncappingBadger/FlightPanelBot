@@ -6,6 +6,7 @@ import { noticesHandler } from '../notices.js';
 import { payrollHandler } from '../payrollUi.js';
 import { profitHandler } from '../profitUi.js';
 import { weatherHandler } from '../weatherBoard.js';
+import { commandsCommand } from './commands.js';
 import { etaCommand } from './eta.js';
 import { fuelCommand } from './fuel.js';
 import { helpCommand } from './help.js';
@@ -13,8 +14,8 @@ import { hideUnavailableCommand } from './hideunavailable.js';
 import { payrollCommand } from './payroll.js';
 import { setupCommand } from './setup.js';
 
-/** Only admins configure anything; everyone else uses the buttons on the panel, `/fuel`, `/eta`, and `/hideunavailable` for their own view. */
-export const commandSet = (withPayroll: boolean): Command[] => [setupCommand, helpCommand, fuelCommand, etaCommand, hideUnavailableCommand, ...(withPayroll ? [payrollCommand] : [])];
+/** Only admins configure anything; everyone else uses the buttons on the panel, `/fuel`, `/eta`, `/commands`, and `/hideunavailable` for their own view. */
+export const commandSet = (withPayroll: boolean): Command[] => [setupCommand, helpCommand, commandsCommand, fuelCommand, etaCommand, hideUnavailableCommand, ...(withPayroll ? [payrollCommand] : [])];
 
 export const handlerSet = (withPayroll: boolean): ComponentHandler[] => [panelHandler, dmHandler, noticesHandler, profitHandler, weatherHandler, bankingHandler, ...(withPayroll ? [payrollHandler] : [])];
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { etaCommand } from '../src/discord/commands/eta.js';
 import { openCard, renderPanelParts } from '../src/discord/ui.js';
-import { LIVE_FEED, LiveFeed, LiveFeedError, type AirlineFlight } from '../src/fshub/liveFeed.js';
+import { isFlying, LIVE_FEED, LiveFeed, LiveFeedError, type AirlineFlight } from '../src/fshub/liveFeed.js';
 import { callsignCode, FlightEtas, isOwnFlight, matchFlight, type FlightEta } from '../src/services/flightEtas.js';
 import { HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpers.js';
 import { fakeInteraction, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
@@ -61,17 +61,44 @@ describe('the live feed client: an airline\'s flights', () => {
     reply = () => json({ airline_icao: 'TST', count: 1, flights: [rawFlight()] });
     const out = await feed.airlineFlights('tst');
     assert.deepEqual(calls, [`${LIVE_FEED}/airline/TST`]);
-    assert.deepEqual(out, [{ flightId: 'abc123', pilotId: 7001, callsign: 'TST123', dep: 'EGLL', arr: 'EGKK', phase: 'level_flight', onGround: false, etaMinutes: 37 }]);
+    assert.deepEqual(out, [{ flightId: 'abc123', pilotId: 7001, callsign: 'TST123', flightNo: 'TST123', dep: 'EGLL', arr: 'EGKK', phase: 'level_flight', onGround: false, etaMinutes: 37 }]);
   });
 
   it('reads a flight with no flight plan (`plan: false`) and one with no airline, with no callsign and no airports', async () => {
     reply = () => json({ flights: [rawFlight({ plan: false, airline: false, eta_minutes: undefined })] });
-    assert.deepEqual(await feed.airlineFlights('TST'), [{ flightId: 'abc123', pilotId: 7001, callsign: null, dep: null, arr: null, phase: 'level_flight', onGround: false, etaMinutes: null }]);
+    assert.deepEqual(await feed.airlineFlights('TST'), [{ flightId: 'abc123', pilotId: 7001, callsign: null, flightNo: null, dep: null, arr: null, phase: 'level_flight', onGround: false, etaMinutes: null }]);
   });
 
   it('upper-cases the callsign, and takes the flight number when the plan has no callsign', async () => {
     reply = () => json({ flights: [rawFlight({ plan: { callsign: ' tst77 ', departure: 'egll', arrival: 'egkk' } }), rawFlight({ id: 'x', plan: { flight_no: 'tst88', departure: 'EGLL', arrival: 'EGKK' } })] });
     assert.deepEqual((await feed.airlineFlights('TST')).map((f) => f.callsign), ['TST77', 'TST88']);
+  });
+
+  it('keeps a flight whose parts are odd, losing only the odd part: a number where text should be, a text where a number should be', async () => {
+    reply = () =>
+      json({
+        flights: [
+          rawFlight({ eta_minutes: '37', pilot: { id: 'seven' }, position: { on_ground: 'no' }, phase: 12, plan: { callsign: 517, flight_no: 'TST517', departure: 42, arrival: 'EGKK' } }),
+          rawFlight({ id: 'b', eta_minutes: null, pilot: { id: 70.5 } }),
+        ],
+      });
+    const out = await feed.airlineFlights('TST');
+    assert.deepEqual(out.map((f) => f.flightId), ['abc123', 'b'], 'both flights are kept');
+    assert.deepEqual(out[0], { flightId: 'abc123', pilotId: null, callsign: 'TST517', flightNo: 'TST517', dep: null, arr: 'EGKK', phase: null, onGround: null, etaMinutes: null });
+    assert.equal(out[1]!.pilotId, null);
+  });
+
+  it('keeps a flight with parts missing altogether: a plan with only a callsign, no position, no pilot, no phase', async () => {
+    reply = () => json({ flights: [{ id: 'bare', plan: { callsign: 'TST9' } }, { id: 'bare2', plan: {}, position: {}, pilot: {} }, { id: 'bare3' }] });
+    const out = await feed.airlineFlights('TST');
+    assert.deepEqual(out.map((f) => f.flightId), ['bare', 'bare2', 'bare3']);
+    assert.deepEqual(out[0], { flightId: 'bare', pilotId: null, callsign: 'TST9', flightNo: null, dep: null, arr: null, phase: null, onGround: null, etaMinutes: null });
+  });
+
+  it('reads the flight number of the plan beside its callsign, so a pilot\'s own callsign does not hide the airline\'s number', async () => {
+    reply = () => json({ flights: [rawFlight({ plan: { callsign: 'mymate', flight_no: 'TST123', departure: 'EGLL', arrival: 'EGKK' } })] });
+    const [f] = await feed.airlineFlights('TST');
+    assert.deepEqual([f!.callsign, f!.flightNo], ['MYMATE', 'TST123']);
   });
 
   it('leaves out a flight it cannot read, and keeps the others', async () => {
@@ -123,10 +150,56 @@ describe('which live flights are the airline\'s own', () => {
 
   it('ignores an aircraft on the ground, and an estimate that cannot be believed', () => {
     assert.equal(isOwnFlight(flight({ phase: 'taxiing_to_runway', onGround: true, etaMinutes: 2391 }), 'TST'), false);
-    for (const phase of ['awaiting_departure', 'calculating', 'landed', 'taxiing_to_gate', 'arrived']) assert.equal(isOwnFlight(flight({ phase }), 'TST'), false, phase);
+    for (const phase of ['awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']) assert.equal(isOwnFlight(flight({ phase }), 'TST'), false, phase);
     assert.equal(isOwnFlight(flight({ onGround: true }), 'TST'), false, 'a flight in a flying phase that is on the ground is not flying');
     for (const etaMinutes of [null, -1, 17689, Number.NaN]) assert.equal(isOwnFlight(flight({ etaMinutes }), 'TST'), false, String(etaMinutes));
     assert.equal(isOwnFlight(flight({ etaMinutes: 0 }), 'TST'), true, 'about to land is fine');
+  });
+});
+
+describe('whether a flight is flying: the phase, and what the aircraft says', () => {
+  it('follows a flight whose phase FsHub has not worked out (`calculating`) while the aircraft is off the ground: a long-haul at 37,000 ft stayed in it for hours', () => {
+    assert.equal(isOwnFlight(flight({ phase: 'calculating', onGround: false, etaMinutes: 128 }), 'TST'), true);
+    assert.equal(isFlying('calculating', false), true);
+  });
+
+  it('does not follow it while the aircraft is on the ground, or does not say', () => {
+    assert.equal(isOwnFlight(flight({ phase: 'calculating', onGround: true }), 'TST'), false);
+    assert.equal(isOwnFlight(flight({ phase: 'calculating', onGround: null }), 'TST'), false, 'not told by the name, and the aircraft does not say');
+    assert.equal(isFlying('calculating', true), false);
+    assert.equal(isFlying('calculating', null), false);
+  });
+
+  it('follows a phase it has never heard of when the aircraft is off the ground, and not when it is not', () => {
+    for (const phase of ['go_around', 'holding', 'diverting', 'something_new']) {
+      assert.equal(isFlying(phase, false), true, phase);
+      assert.equal(isFlying(phase, true), false, phase);
+      assert.equal(isFlying(phase, null), false, phase);
+    }
+    assert.equal(isFlying(null, false), true, 'no phase at all, off the ground');
+    assert.equal(isFlying(null, null), false);
+  });
+
+  it('never calls a phase of the ground flying, whatever the aircraft says', () => {
+    for (const phase of ['awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']) {
+      assert.equal(isFlying(phase, false), false, phase);
+      assert.equal(isFlying(phase, null), false, phase);
+    }
+  });
+
+  it('calls a phase of the air flying unless the aircraft is on the ground', () => {
+    for (const phase of ['take_off', 'climbing', 'level_flight', 'cruise', 'descending', 'on_approach', 'approach']) {
+      assert.equal(isFlying(phase, false), true, phase);
+      assert.equal(isFlying(phase, null), true, phase);
+      assert.equal(isFlying(phase, true), false, phase);
+    }
+  });
+
+  it('takes a flight filed under the airline\'s number even when the pilot flies under a callsign of their own', () => {
+    assert.equal(isOwnFlight(flight({ callsign: 'MYMATE', flightNo: 'TST123' }), 'TST'), true);
+    assert.equal(isOwnFlight(flight({ callsign: 'MYMATE', flightNo: 'DLH408' }), 'TST'), false);
+    assert.equal(isOwnFlight(flight({ callsign: 'MYMATE', flightNo: null }), 'TST'), false);
+    assert.equal(isOwnFlight(flight({ callsign: 'TST123', flightNo: 'MYMATE' }), 'TST'), true, 'either one');
   });
 });
 
@@ -255,6 +328,27 @@ describe('when the flights in the air are expected to land', () => {
     await etas.run();
     assert.deepEqual(feed.calls, ['SKY']);
     assert.deepEqual(etas.airborne(bare.id).map((e) => e.callsign), ['SKY290'], 'only the airline\'s own callsign');
+  });
+
+  it('shows the landing time of a flight whose phase is still `calculating` hours in (the aircraft is off the ground, 37,000 ft)', async () => {
+    feed.flights = [flight({ phase: 'calculating', onGround: false, etaMinutes: 128 })];
+    await etas.run();
+    const e = shown('a');
+    assert.ok(e, 'it is followed');
+    assert.equal(e!.etaAt, NOW + 128 * MIN);
+    assert.deepEqual(redraws, [pid()], 'and the panel is redrawn to show it');
+  });
+
+  it('does not show a `calculating` flight that is on the ground, as before', async () => {
+    feed.flights = [flight({ phase: 'calculating', onGround: true, etaMinutes: 128 })];
+    await etas.run();
+    assert.equal(shown('a'), undefined);
+  });
+
+  it('follows a flight whose callsign is the pilot\'s own when its plan carries the airline\'s number', async () => {
+    feed.flights = [flight({ callsign: 'MYMATE', flightNo: 'TST123' })];
+    await etas.run();
+    assert.ok(shown('a'));
   });
 
   it('shows the time a flight in the air is expected to land, and has the panel redrawn', async () => {
@@ -472,6 +566,7 @@ describe('showing it', () => {
       const { text } = await run();
       assert.match(text, /no flight is in the air that I can follow/);
       assert.match(text, /own callsign \(like `TST123`\) and a flight plan/);
+      assert.match(text, /A flight with no flight plan has no landing time to show\./);
     });
 
     it('answers for one flight by its ID, in any form of it', async () => {

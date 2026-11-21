@@ -130,6 +130,7 @@ export class AeroNumbers {
   private readonly caches = new Map<number, NumbersCache | null>();
   private readonly failedAt = new Map<number, number>();
   private busy: Promise<void> | null = null;
+  private stopped = false;
 
   constructor(private readonly d: AeroNumbersDeps) {
     this.now = d.now ?? Date.now;
@@ -214,7 +215,7 @@ export class AeroNumbers {
    * background and the pass returns at once, so nothing else the scheduler does is held up. Never throws.
    */
   async run(): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.stopped) return;
     const now = this.now();
     const due = new Set<number>();
     for (const p of this.followed()) {
@@ -234,11 +235,21 @@ export class AeroNumbers {
     while (this.busy) await this.busy;
   }
 
+  /**
+   * The bot is shutting down: no new read starts, and the one under way stops at its next step instead of finishing (a read takes minutes, and
+   * would otherwise end by writing to a database that has been closed).
+   */
+  stop(): void {
+    this.stopped = true;
+  }
+
   private async readAll(airlineIds: number[]): Promise<void> {
     for (const id of airlineIds) {
+      if (this.stopped) return;
       try {
         await this.read(id);
       } catch (e) {
+        if (this.stopped) return; // shutting down: what failed was cut short, not broken
         this.failedAt.set(id, this.now());
         this.log.warn(`Could not read Aeroconomy's flight numbers for FsHub airline ${id}: ${e instanceof Error ? e.message : e}`);
       }
@@ -249,9 +260,11 @@ export class AeroNumbers {
     const contracts: AeroContract[] = await this.d.client.airlineContracts(airlineId);
     const flights: AeroFlight[] = [];
     for (const c of contracts) {
+      if (this.stopped) return;
       if (c.total === 0) continue; // nothing to fly yet
       flights.push(...(await this.d.client.manifests(c.id)));
     }
+    if (this.stopped) return;
     this.save(airlineId, { at: this.now(), flights, contracts: contracts.length });
     this.failedAt.delete(airlineId);
     this.log.info(`Read ${flights.length} flight${flights.length === 1 ? '' : 's'} from ${contracts.length} Aeroconomy contract${contracts.length === 1 ? '' : 's'} for FsHub airline ${airlineId}`);

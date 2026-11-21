@@ -310,7 +310,7 @@ export async function mayConfirm(interaction: ButtonInteraction | ModalSubmitInt
     if (interaction.user.id !== wanted.userId) return false;
     try {
       const guild = await interaction.client.guilds.fetch(wanted.guildId);
-      const member = await guild.members.fetch(wanted.userId);
+      const member = await guild.members.fetch({ user: wanted.userId, force: true }); // who may write to the airline's sheet is asked of Discord, not read from an old copy
       return member.permissions.has(PermissionFlagsBits.ManageGuild) || (roleId !== null && member.roles.cache.has(roleId));
     } catch {
       return false; // no longer in the server, or the bot no longer is

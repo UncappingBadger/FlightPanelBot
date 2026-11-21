@@ -189,6 +189,23 @@ describe('watching a flight (/monitor)', () => {
       assert.equal(dms(), before + 1);
     });
 
+    it('watches a flight whose phase FsHub has not worked out (`calculating`) as in the air, and tells them when it is close', async () => {
+      fly(flight({ phase: 'calculating', etaMinutes: 45 }));
+      await look();
+      assert.equal(mine()[0]!.state, 'airborne');
+      const before = dms();
+      fly(flight({ phase: 'calculating', etaMinutes: 9 }));
+      await look();
+      assert.match(last(alice), /about \*\*9 minutes\*\* from landing/);
+      assert.equal(dms(), before + 1);
+    });
+
+    it('finds a flight by the plan\'s flight number when the pilot flies under a callsign of their own', async () => {
+      fly(flight({ callsign: 'MYMATE', flightNo: 'SKY330', etaMinutes: 8 }));
+      await look();
+      assert.match(last(alice), /about \*\*8 minutes\*\* from landing/);
+    });
+
     it('says a minute rather than nought or one minutes', async () => {
       fly(flight({ etaMinutes: 0 }));
       await look();

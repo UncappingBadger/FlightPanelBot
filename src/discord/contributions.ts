@@ -19,13 +19,11 @@ const MAX_WAITING = 25;
 /** Pilots with a request already being worked on, so asking again and again doesn't read the sheet again and again. */
 const busy = new Set<string>();
 
-type Person = Message['author'];
-
 /** Is this person in that server? Their sheet figures are only for people who belong to the airline's server. */
 async function inGuild(message: Message, guildId: string): Promise<boolean> {
   try {
     const guild = message.client.guilds.cache.get(guildId) ?? (await message.client.guilds.fetch(guildId));
-    await guild.members.fetch(message.author.id);
+    await guild.members.fetch({ user: message.author.id, force: true }); // asked of Discord each time: a copy held from before could say a person who has left is still there
     return true;
   } catch {
     return false;

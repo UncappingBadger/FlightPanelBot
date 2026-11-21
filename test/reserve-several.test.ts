@@ -605,7 +605,7 @@ describe('reserving several flights with one message', () => {
       h.jobs.reserve(job('TST-002').id, [1], { discordId: USER_B.discordId, username: 'bob' });
       await press(alice, `panel:backup:${pid}`);
       await say(alice, 'TST-001, TST-002');
-      assert.match(alice.lastText, /can't find an open flight with the ID `TST-001, TST-002`/);
+      assert.match(alice.lastText, /^You can stand by for one flight at a time\. Send me the ID of just one, or say `cancel`\.$/);
       assert.equal(h.jobs.view(job('TST-001').id)!.backup, null);
       await say(alice, 'TST-001');
       assert.match(alice.lastText, /down as backup for \*\*TST-001\*\*/);

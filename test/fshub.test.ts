@@ -459,7 +459,7 @@ describe('what the store keeps about FsHub', () => {
     for (let v = 0; v < step; v++) old.exec(MIGRATIONS[v] as string);
     old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
     old.prepare(`INSERT INTO dm_sessions(discord_id, panel_id, step, attempts, expires_at) VALUES ('555', 1, 'await_code', 0, 9999999999999)`).run();
-    old.exec(MIGRATIONS[step] as string);
+    for (let v = step; v < MIGRATIONS.length; v++) old.exec(MIGRATIONS[v] as string); // the update brings the database all the way up to date
     const store = new Store(old);
     assert.deepEqual([store.getSession('555', 1)?.purpose, store.getSession('555', 1)?.step], ['reserve', 'await_code']);
     store.upsertSession({ discordId: '555', panelId: 1, step: 'await_code', purpose: 'backup', expiresAt: 9999999999999 });

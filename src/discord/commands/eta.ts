@@ -15,7 +15,7 @@ const label = (p: Panel): string => plainText(airlineLabel({ name: p.airlineName
 
 /** What a flight needs for the bot to follow it, in the airline's own words. */
 const needs = (p: Panel): string =>
-  `I only follow a flight flown with the airline's own callsign (like \`${callsignCode(p)}123\`) and a flight plan between the flight's airports, once it is in the air.`;
+  `I only follow a flight flown with the airline's own callsign (like \`${callsignCode(p)}123\`) and a flight plan between the flight's airports, once it is in the air. A flight with no flight plan has no landing time to show.`;
 
 /**
  * `/eta`: when the flights of this server's airline that are in the air are expected to land, from FsHub's live feed. Without a flight it
@@ -63,13 +63,21 @@ function listAll(etas: FlightEtas, followed: Panel[]): string {
 
 function answerFor(ctx: BotContext, etas: FlightEtas, panels: Panel[], followed: Panel[], wanted: string): string {
   let known: { panel: Panel; code: string } | null = null;
+  // A flight number flown on more than one day is not one flight: it is said, with the IDs that are, rather than called unknown.
+  let several: string[] = [];
   for (const panel of panels) {
     const view = ctx.jobs.findByCode(panel, wanted);
-    if (!view) continue;
+    if (!view) {
+      if (several.length === 0) several = ctx.jobs.datedChoices(panel, wanted).map((v) => v.job.code);
+      continue;
+    }
     const hit = followed.includes(panel) ? etas.forPanel(panel.id).get(view.job.id) : undefined;
     if (hit) return `✈ **${plainText(hit.code)}** ${route(hit)} is in the air: ${when(hit)}. (From FsHub's live tracking of ${plainText(hit.callsign)}.)`;
     known ??= { panel, code: view.job.code };
   }
   if (known) return `**${plainText(known.code)}** is not in the air as far as I can tell. ${followed.includes(known.panel) ? needs(known.panel) : "This panel isn't following flights live."}`;
+  if (several.length > 0) {
+    return `**${plainText(truncate(wanted, 30))}** is flown on more than one day: ${several.slice(0, 8).map((c) => `\`${plainText(c)}\``).join(', ')}${several.length > 8 ? ' …' : ''}. Ask about one of them, like \`/eta flight:${plainText(several[0]!)}\`.`;
+  }
   return `I don't know an open flight called **${plainText(truncate(wanted, 30))}** on this server's panels.`;
 }

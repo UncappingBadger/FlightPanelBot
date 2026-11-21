@@ -542,7 +542,7 @@ export const setupCommand: Command = {
     .addSubcommand((s) =>
       s
         .setName('weather')
-        .setDescription('Show METARs (airports you choose, then the next 24 hours of flights) in a channel (empty: check)')
+        .setDescription('Keep a weather board in a channel: a grid of airports, press one for its METAR (empty: check)')
         .addStringOption((o) =>
           o
             .setName('mode')

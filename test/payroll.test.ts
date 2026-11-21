@@ -1105,8 +1105,8 @@ describe('paying pilots is switched off by default', () => {
   it('registers no /payroll command and handles none of its buttons unless it is on', () => {
     const names = (on: boolean) => commandSet(on).map((c) => c.data.name).sort();
     const prefixes = (on: boolean) => handlerSet(on).map((h) => h.prefix).sort();
-    assert.deepEqual(names(false), ['eta', 'fuel', 'help', 'hideunavailable', 'setup']);
-    assert.deepEqual(names(true), ['eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
+    assert.deepEqual(names(false), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'setup']);
+    assert.deepEqual(names(true), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
     assert.deepEqual(prefixes(false), ['banking', 'dm', 'notices', 'panel', 'profit', 'weather']);
     assert.deepEqual(prefixes(true), ['banking', 'dm', 'notices', 'panel', 'payroll', 'profit', 'weather']);
   });

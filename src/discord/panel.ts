@@ -150,7 +150,7 @@ export class PanelService {
 
   /** Request a redraw; a burst of changes inside the debounce window becomes one edit. */
   schedule(panelId: number): void {
-    if (this.timers.has(panelId)) return;
+    if (this.stopped || this.timers.has(panelId)) return;
     const timer = setTimeout(() => {
       this.timers.delete(panelId);
       this.refresh(panelId).catch((e) => this.log.warn(`Could not refresh panel ${panelId}`, e));
@@ -166,6 +166,7 @@ export class PanelService {
    * requests made during that wait share the one redraw (it reads the jobs when it starts, so it shows them all).
    */
   refresh(panelId: number, opts: { force?: boolean } = {}): Promise<PanelRefreshResult> {
+    if (this.stopped) return Promise.resolve('skipped'); // shutting down: the database and Discord are about to go
     // A forced redraw sends every message again (it forgets what each was last made to say), so that anything new about
     // a panel, such as buttons added by a newer version of the bot, reaches the messages already in the channel.
     if (opts.force) this.forced.add(panelId);
@@ -360,8 +361,8 @@ export class PanelService {
     const lookup = (id: string) => ('messages' in channel ? channel.messages.fetch({ message: id, force: true }).catch(() => null) : Promise.resolve(null));
 
     if ('messages' in channel && ids.length === payloads.length) {
-      const existing = [];
-      for (const id of ids) existing.push(await lookup(id));
+      // Asked together: the answers do not depend on one another, and one after another it was a round trip to Discord for each message of the panel.
+      const existing = await Promise.all(ids.map((id) => lookup(id)));
       if (existing.every((m) => m && m.editable)) {
         try {
           for (let i = 0; i < payloads.length; i++) {
@@ -729,7 +730,7 @@ export class PanelService {
     if (last !== undefined && this.now() - last < ENTITLED_RECHECK_MS) return true;
     try {
       const guild = await this.client.guilds.fetch(panel.guildId);
-      const member = await guild.members.fetch(discordId);
+      const member = await guild.members.fetch({ user: discordId, force: true }); // not the copy held from before: it would never learn they had left or lost the channel
       const channel = await this.client.channels.fetch(panel.channelId).catch(() => null);
       if (channel && 'permissionsFor' in channel) {
         const perms = channel.permissionsFor(member);
@@ -803,8 +804,18 @@ export class PanelService {
     for (const f of this.store.listFollowers(panel.id)) await this.removeListMessages(f);
   }
 
+  private stopped = false;
+
+  /** Shutting down: nothing new is drawn (what was asked for but not yet drawn is dropped; the panels are drawn again when the bot starts). */
   stop(): void {
+    this.stopped = true;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+  }
+
+  /** Resolves once the redraws that are under way have finished, or after `ms`, whichever is first (for a tidy shutdown). */
+  async drain(ms: number): Promise<void> {
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
+    await Promise.race([Promise.all([...this.chains.values()]).then(() => undefined), timeout]);
   }
 }

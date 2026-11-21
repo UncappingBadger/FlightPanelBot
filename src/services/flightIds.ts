@@ -36,3 +36,11 @@ export function flightIdChunks(text: string): string[][] {
     )
     .filter((words) => words.length > 0);
 }
+
+const DAY_CODE_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+/** The day (Zulu) of a moment, the way it ends a flight number that is flown on several days: `21NOV`. */
+export function dayCode(at: number): string {
+  const day = new Date(at);
+  return `${String(day.getUTCDate()).padStart(2, '0')}${DAY_CODE_MONTHS[day.getUTCMonth()]}`;
+}

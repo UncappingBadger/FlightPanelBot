@@ -20,22 +20,22 @@ export const helpCommand: Command = {
             {
               name: 'Reserving a flight',
               value:
-                '1. Press **Reserve** under the panel.\n2. I\'ll DM you. The first time, I\'ll ask for your **FsHub pilot ID** (the number in your profile address, fshub.io/pilot/**1234**/overview) so managers can match you to the airline\'s roster (if the airline\'s FsHub roster already lists your Discord account, I know it and skip this). Change it any time by DMing me `fshub <your ID>`.\n3. Reply with the flight ID shown on the panel (like `DMO-004`), or several in one message (`DMO-004, DMO-007`).\n4. If the flight has several legs, I\'ll ask whether you\'re flying all of them or only some.\n5. The panel then shows your name, and your FsHub ID, next to the flight.',
+                '1. Press **Reserve** under the panel and I\'ll DM you, or skip the button and DM me the flight ID yourself (`reserve DMO-004`, or several: `DMO-004, DMO-007`).\n2. The first time, I\'ll ask for your **FsHub pilot ID** (the number in your profile address, fshub.io/pilot/**1234**/overview) so managers can match you to the airline\'s roster (if the airline\'s FsHub roster already lists your Discord account, I skip this). Change it any time by DMing me `fshub <your ID>`.\n3. If you pressed the button, reply with the flight ID shown on the panel.\n4. If the flight has several legs, I\'ll ask whether you\'re flying all of them or only some.\n5. The panel then shows your name, and your FsHub ID, next to the flight.',
             },
             {
               name: 'Finding a flight, or standing by',
               value:
-                'Press **Search** under the panel and type where you want to fly from, to, a date and/or an aircraft type (airport codes like `EGLL`; `EG` finds every airport starting EG; dates like `tomorrow`, `sat`, `14 Nov`, in Zulu time; types like `A320`, and `B73` finds every B73x). I show the flights that match, only ones the panel lists. Press **Backup pilot** and reply to my DM with the ID of a flight that is already taken, to be its backup; I tell you if it is given back.',
+                'Press **Search** under the panel and type where you want to fly from, to, a date and/or an aircraft type (airport codes like `EGLL`; `EG` finds every airport starting EG; dates like `tomorrow`, `sat`, `14 Nov`, in Zulu time; types like `A320`, and `B73` finds every B73x). I show the matching flights the panel lists. Press **Backup pilot** (or DM me `backup DMO-004`) with the ID of a flight that is already taken, to be its backup; I tell you if it is given back.',
             },
             {
               name: 'A list instead of cards',
               value:
-                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes what you see.",
+                "Press **List view** under the panel and I'll post the panel as a plain list in your DMs, and keep it up to date there whenever the panel changes. **Stop updates** under the list ends it. `/hideunavailable` hides the flights that are already taken, and the completed ones, from your list and your searches (flights you hold stay); it only changes your view.",
             },
             {
               name: 'If your server uses the button grid',
               value:
-                'Each flight is a button: 🟡 open, 🔵 taken, 🟢 completed, ⚪ not open yet, with its aircraft, route, the date it opens (UTC) and who has it. Press one to see its card and ID (only you see it). **Collapse** and **Expand** fold a message for everyone; it unfolds after 10 minutes without a button press.',
+                'Each flight is a button: 🟡 open, 🔵 taken, 🟢 completed, ⚪ not open yet, with its aircraft, route, the date it opens (UTC) and who has it. Press one to see its card and ID (only you see it). **Collapse** and **Expand** fold a message for everyone; it unfolds after 10 minutes.',
             },
             {
               name: 'What your flights made',
@@ -44,26 +44,26 @@ export const helpCommand: Command = {
             },
             {
               name: 'Changing your mind',
-              value: 'Press **My flights** under the panel to see what you hold and give flights back, or DM me `flights` to see them all. Say `cancel` in the DM at any point to stop.',
+              value: 'Press **My flights** under the panel to see what you hold and give flights back, or DM me `flights`. Say `cancel` in the DM to stop. `/commands` (or `commands` in a DM) lists all I can do.',
             },
             {
               name: 'A heads-up before it is too late',
               value:
-                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. If FsHub's live feed shows you already flying it, I don't send it; otherwise ignore it if you are flying. DM me `notifications` to switch it, or the completed-flight DM, off.",
+                "If you hold a flight (or are its backup), I DM you shortly before the latest time you could take off and still land inside its window, with the time I used for the flight and where it came from. I don't send it if FsHub's live feed shows you already flying; otherwise ignore it if you are. DM me `notifications` to switch it, or the completed-flight DM, off.",
             },
             {
               name: 'Landing times',
-              value: "A flight in the air shows its expected landing time on its card. `/eta` lists them all, or one flight (`/eta flight:DMO-004`).",
+              value: "A flight in the air shows its expected landing time on its card. `/eta` lists them all, or one (`/eta flight:DMO-004`).",
             },
             {
               name: 'When you have flown it',
               value:
-                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`. Completed flights get a panel of their own below the open ones.",
+                "Press **Complete** under the panel. If your airline's panel is linked to FsHub, I check FsHub for your landing and complete the flights it shows you flew: there is nothing to pick, and a flight FsHub hasn't shown yet is left alone (it appears about a minute after landing). Otherwise you pick the flights you have flown and confirm. Where your airline keeps its schedule in a Google Sheet and I'm set up to write to it, I put your name against the flight there and tick it off; if your name in that sheet isn't your Discord name, DM me `name <your name in the sheet>`.",
             },
             {
               name: 'Weather reports (METAR)',
               value:
-                "DM me `metar EGLL` (any four-letter airport code, up to 3 at once) and I fetch the current report from VATSIM and explain it in plain language. Paste a METAR after `metar`, or on its own, and I translate that instead.",
+                "DM me `metar EGLL` (any airport code, up to 3 at once) and I fetch the current report from VATSIM and explain it in plain language. Paste a METAR after `metar`, or on its own, and I translate that instead.",
             },
             {
               name: 'Fuel prices',
@@ -78,7 +78,7 @@ export const helpCommand: Command = {
             {
               name: 'Server admins, continued',
               value:
-                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup refresh-roles` let members with a role run `/setup refresh` and `/setup id-add`, and nothing else from `/setup`\n`/setup id-add` set a pilot FsHub ID by hand, to fix a wrong one\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup weather` show METARs in a channel · `/setup fshub` match pilots to their FsHub IDs, confirm completed flights, and complete flown flights every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup live-tracking` follow pilots\' flights live (no warning for a pilot already flying, complete on landing) · `/setup layout` draw the panel as cards (default) or a grid of buttons\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
+                '`/setup completed` show completed flights in a channel of their own (`mode:panel` puts them back)\n`/setup refresh-roles` let members with a role run `/setup refresh` and `/setup id-add`, and nothing else from `/setup`\n`/setup id-add` set a pilot FsHub ID by hand, to fix a wrong one\n`/setup market` show the AeroDAQ in-game market in a channel · `/setup weather` show a weather board in a channel · `/setup fshub` match pilots to FsHub IDs, confirm completed flights, and complete flown ones every hour (`autocomplete:off` stops that) from your airline\'s FsHub\n`/setup live-tracking` follow pilots\' flights live (no warning for a pilot already flying, complete on landing) · `/setup layout` draw the panel as cards (default) or a grid of buttons\n`/setup release` free someone\'s reservation · `/setup panels` · `/setup refresh` · `/setup panel-remove`\nOnly people with **Manage Server** can do these.',
             },
           )
           .setFooter({ text: FOOTER }),

@@ -3,7 +3,7 @@ import type { SourceJob } from '../jobs/types.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
-import { flightIdChunks, MAX_ID_WORDS, MAX_SHOWN_ID } from './flightIds.js';
+import { dayCode, flightIdChunks, MAX_ID_WORDS, MAX_SHOWN_ID } from './flightIds.js';
 import { namedForOneOf } from './pilotNames.js';
 import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
 
@@ -50,9 +50,13 @@ export interface ReserveResult {
   job: JobView;
 }
 
-/** What `JobService.findSeveral` found in a message: flights and unrecognised IDs in the order written, and the words it did not get to. */
+/**
+ * What `JobService.findSeveral` found in a message: flights and unrecognised IDs in the order written, and the words it did not get to.
+ * `several` is a flight number flown on more than one day that was typed without its day: it names none of them, and `views` are the
+ * open flights it could be (soonest first), for the person to choose from.
+ */
 export interface FoundIds {
-  items: Array<{ kind: 'flight'; view: JobView } | { kind: 'unknown'; typed: string }>;
+  items: Array<{ kind: 'flight'; view: JobView } | { kind: 'unknown'; typed: string } | { kind: 'several'; typed: string; views: JobView[] }>;
   skipped: string[];
 }
 /** Most flights taken from one message. Each one may be written to the airline's sheet in turn, so there is a limit. */
@@ -374,19 +378,56 @@ export class JobService {
     // in its shorter forms (`dmo7`, `7`). A flight number is tried first: it is exactly what is on the panel.
     const typed = input.trim().toUpperCase().replace(/\s+/g, '');
     const code = (typed && this.store.getJobByCode(panel.id, typed) ? typed : null) ?? normalizeCode(panel.prefix, input);
-    // A flight number flown on several days carries the day in its ID (`SKY330-17NOV`). Just the number finds it when only one such flight is open.
-    const job = (code ? this.store.getJobByCode(panel.id, code) : null) ?? this.datedFlight(panel.id, typed);
+    // A flight number flown on several days carries the day in its ID (`SKY330-17NOV`). Just the number finds it when only one such flight is open
+    // (when several are, `datedChoices` has them, for the person to choose from). A flight whose ID lost its day since (the other days left the
+    // schedule) is still found by the old dated ID, while it is that day's.
+    const direct = code ? this.store.getJobByCode(panel.id, code) : null;
+    let job: Job | null = direct;
+    if (!direct) {
+      const hits = this.datedHits(panel.id, typed);
+      job = hits.length === 1 ? (hits[0] as Job) : hits.length === 0 ? this.renamedFlight(panel.id, typed) : null;
+    }
     if (!job || job.status !== 'open') return null;
     // A deadline that has just passed counts as closed even if the sweep hasn't run yet.
     if (job.deadline !== null && job.deadline <= this.now()) return null;
     return this.store.getJobView(job.id);
   }
 
-  /** The one open flight whose ID is this flight number with a day on the end (`SKY330` for `SKY330-17NOV`), or null when none or several are. */
-  private datedFlight(panelId: number, typed: string): Job | null {
-    if (!/^[A-Z][A-Z0-9]{1,15}$/.test(typed)) return null;
-    const hits = this.store.listJobs(panelId, 'open').filter((j) => j.code.startsWith(`${typed}-`) && /^\d{2}[A-Z]{3}$/.test(j.code.slice(typed.length + 1)));
-    return hits.length === 1 ? (hits[0] as Job) : null;
+  /** The open flights whose ID is this flight number with a day on the end (`SKY330` for `SKY330-17NOV`), soonest first. Ones already past their deadline are not counted. */
+  private datedHits(panelId: number, typed: string): Job[] {
+    if (!/^[A-Z][A-Z0-9]{1,15}$/.test(typed)) return [];
+    const now = this.now();
+    const late = Number.MAX_SAFE_INTEGER;
+    return this.store
+      .listJobs(panelId, 'open')
+      .filter((j) => j.code.startsWith(`${typed}-`) && /^\d{2}[A-Z]{3}$/.test(j.code.slice(typed.length + 1)) && (j.deadline === null || j.deadline > now))
+      .sort((a, b) => (a.availableFrom ?? late) - (b.availableFrom ?? late) || a.id - b.id);
+  }
+
+  /**
+   * The flights a bare flight number could be, when it is flown on more than one day: `SKY330` for `SKY330-17NOV` and `SKY330-18NOV`. Empty
+   * when the text names a flight by itself (its whole ID), when no open flight has that number, and when only one has (then `findByCode` finds
+   * it). Soonest first; it does not look at the panel's days, so the caller says which of them can be booked (`isListed`).
+   */
+  datedChoices(panel: Panel, input: string): JobView[] {
+    const typed = input.trim().toUpperCase().replace(/\s+/g, '');
+    if (!typed) return [];
+    const code = (this.store.getJobByCode(panel.id, typed) ? typed : null) ?? normalizeCode(panel.prefix, input);
+    if (code && this.store.getJobByCode(panel.id, code)) return [];
+    const hits = this.datedHits(panel.id, typed);
+    if (hits.length < 2) return [];
+    return hits.flatMap((j) => {
+      const view = this.store.getJobView(j.id);
+      return view ? [view] : [];
+    });
+  }
+
+  /** A flight that is now known by its plain number (the other days of it left the schedule) found by the dated ID it had: `SKY330-17NOV` for `SKY330`, if it is the 17th. */
+  private renamedFlight(panelId: number, typed: string): Job | null {
+    const m = /^([A-Z][A-Z0-9]{1,15})-(\d{2}[A-Z]{3})$/.exec(typed);
+    if (!m) return null;
+    const job = this.store.getJobByCode(panelId, m[1] as string);
+    return job && job.availableFrom !== null && dayCode(job.availableFrom) === m[2] ? job : null;
   }
 
   /**
@@ -413,15 +454,24 @@ export class JobService {
           continue;
         }
         looked++;
+        let used = word;
         let view = this.findByCode(panel, word);
-        if (!view && i + 1 < words.length) {
-          view = this.findByCode(panel, `${word}${words[i + 1]}`);
-          if (view) i++;
+        let several = view ? [] : this.datedChoices(panel, word);
+        if (!view && several.length === 0 && i + 1 < words.length) {
+          used = `${word}${words[i + 1]}`;
+          view = this.findByCode(panel, used);
+          several = view ? [] : this.datedChoices(panel, used);
+          if (view || several.length > 0) i++;
         }
         if (view) {
           if (!seenFlights.has(view.job.id)) {
             seenFlights.add(view.job.id);
             items.push({ kind: 'flight', view });
+          }
+        } else if (several.length > 0) {
+          if (!seenWords.has(used.toUpperCase())) {
+            seenWords.add(used.toUpperCase());
+            items.push({ kind: 'several', typed: shown(used), views: several });
           }
         } else if (/\d/.test(word) && !seenWords.has(word.toUpperCase())) {
           seenWords.add(word.toUpperCase());
@@ -708,6 +758,10 @@ export class JobService {
 
   /** Admin: free every reservation on a job, or one leg of it. The holders are told. */
   adminRelease(panel: Panel, codeInput: string, legNo?: number): ReleasedNotice[] {
+    const several = this.datedChoices(panel, codeInput);
+    if (several.length > 0) {
+      throw new JobError('BAD_INPUT', `${codeInput.trim().toUpperCase()} is flown on more than one day (${andList(several.map((v) => v.job.code))}). Give the one you mean, with its day.`);
+    }
     const view = this.findByCode(panel, codeInput);
     if (!view) throw new JobError('NOT_FOUND', `I can't find an open flight with the ID "${codeInput}" on this panel.`);
     const notices: ReleasedNotice[] = [];

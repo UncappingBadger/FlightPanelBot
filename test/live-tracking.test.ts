@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { commands } from '../src/discord/commands/index.js';
 import { UserError } from '../src/discord/errors.js';
 import { FsHubError, type FsHubFlight } from '../src/fshub/client.js';
-import { LIVE_FEED, LiveFeed, LiveFeedError, type LivePilot } from '../src/fshub/liveFeed.js';
+import { LIVE_FEED, LiveFeed, LiveFeedError, type AirlineFlight, type LivePilot } from '../src/fshub/liveFeed.js';
 import { backupWarning, DepartureWarnings, pilotWarning } from '../src/services/departureWarnings.js';
 import type { FlightTime } from '../src/services/flightTime.js';
 import { LIVE_STALE_MS, LiveTracker, type LiveStatus } from '../src/services/liveTracker.js';
@@ -104,10 +104,19 @@ describe('the live feed client', () => {
       reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase, position: { on_ground: false } } });
       assert.equal((await feed.pilot(7))!.airborne, true, phase);
     }
-    for (const phase of ['calculating', 'awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']) {
+    for (const phase of ['awaiting_departure', 'taxiing_to_runway', 'landed', 'taxiing_to_gate', 'arrived']) {
       reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase, position: { on_ground: false } } });
       assert.equal((await feed.pilot(7))!.airborne, false, phase);
     }
+  });
+
+  it('counts a flight whose phase is still `calculating` as in the air while the aircraft is off the ground, and not on the ground or when it does not say', async () => {
+    reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'calculating', position: { on_ground: false } } });
+    assert.equal((await feed.pilot(7))!.airborne, true);
+    reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'calculating', position: { on_ground: true } } });
+    assert.equal((await feed.pilot(7))!.airborne, false);
+    reply = () => json({ pilot_id: 7, active_flight: { id: 'a', phase: 'calculating' } });
+    assert.equal((await feed.pilot(7))!.airborne, false);
   });
 
   it('works out the air from the phase when the feed does not say, and never calls a flight on the ground airborne', async () => {
@@ -281,6 +290,25 @@ class FakeFeed {
   }
 }
 
+/** The same feed, and the lists of an airline's flights too (what the real feed also has). */
+class FakeAirlineFeed extends FakeFeed {
+  airline = new Map<string, AirlineFlight[]>();
+  failAirline = false;
+  async airlineFlights(code: string): Promise<AirlineFlight[]> {
+    this.calls.push(`airline:${code}`);
+    if (this.failAirline) throw new LiveFeedError('down');
+    return this.airline.get(code) ?? [];
+  }
+  /** A pilot's flight in their airline's list. */
+  list(pilotId: number, over: Partial<AirlineFlight> = {}, code = 'TST') {
+    const rest = (this.airline.get(code) ?? []).filter((f) => f.pilotId !== pilotId);
+    this.airline.set(code, [...rest, { flightId: `f${pilotId}`, pilotId, callsign: `${code}1`, dep: 'EGLL', arr: 'EGKK', phase: 'cruise', onGround: false, etaMinutes: 30, ...over }]);
+  }
+  unlist(pilotId: number, code = 'TST') {
+    this.airline.set(code, (this.airline.get(code) ?? []).filter((f) => f.pilotId !== pilotId));
+  }
+}
+
 describe('following pilots live', () => {
   let h: Harness;
   let d: DiscordHarness;
@@ -450,6 +478,123 @@ describe('following pilots live', () => {
       await tracker.run();
       assert.equal(tracker.statusOf(dave.id), null);
       assert.deepEqual(feed.calls, []);
+    });
+  });
+
+  describe('through the airline\'s own list of flights', () => {
+    let af: FakeAirlineFeed;
+    beforeEach(() => {
+      af = new FakeAirlineFeed();
+      feed = af;
+      build();
+    });
+
+    it('knows every pilot who holds a flight from the one list of the airline, asking nothing else of FsHub', async () => {
+      hold('s');
+      hold('t', bob);
+      af.list(1001, { phase: 'cruise' });
+      af.list(1002, { phase: 'climbing' });
+      await tracker.run();
+      assert.deepEqual(af.calls, ['airline:TST'], 'one request for the airline: no list of who is online, and none for each pilot');
+      assert.deepEqual([tracker.statusOf(alice.id)!.state, tracker.statusOf(bob.id)!.state], ['airborne', 'airborne']);
+      assert.deepEqual(tracker.statusOf(alice.id), { state: 'airborne', phase: 'cruise', dep: 'EGLL', arr: 'EGKK', flightId: 'f1001', checkedAt: h.clock.now });
+    });
+
+    it('says in the air for a flight whose phase FsHub has not worked out (`calculating`) while the aircraft is off the ground', async () => {
+      hold('s');
+      af.list(1001, { phase: 'calculating', onGround: false });
+      await tracker.run();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'airborne');
+      af.list(1001, { phase: 'calculating', onGround: true });
+      await minute();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'ground');
+    });
+
+    it('says on the ground for a flight that has arrived, and in the air for the one flying when a pilot has two in the list', async () => {
+      hold('s');
+      af.list(1001, { phase: 'arrived', onGround: true });
+      await tracker.run();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'ground');
+      af.airline.set('TST', [
+        { flightId: 'old', pilotId: 1001, callsign: 'TST1', dep: 'EGLL', arr: 'EGKK', phase: 'arrived', onGround: true, etaMinutes: null },
+        { flightId: 'new', pilotId: 1001, callsign: 'TST2', dep: 'EGKK', arr: 'EGCC', phase: 'cruise', onGround: false, etaMinutes: 20 },
+      ]);
+      await minute();
+      assert.deepEqual([tracker.statusOf(alice.id)!.state, tracker.statusOf(alice.id)!.flightId], ['airborne', 'new']);
+    });
+
+    it('asks who is online, and for the pilot themselves, only for a pilot the airline\'s list does not have', async () => {
+      hold('s');
+      hold('t', bob);
+      af.list(1001);
+      af.fly(1002); // Bob is online but is not in the airline's list (a guest, say)
+      await tracker.run();
+      assert.deepEqual(af.calls, ['airline:TST', 'online', 'pilot:1002'], 'Alice came from the list; only Bob is looked up the old way');
+      assert.deepEqual([tracker.statusOf(alice.id)!.state, tracker.statusOf(bob.id)!.state], ['airborne', 'airborne']);
+    });
+
+    it('says not online for a pilot in neither', async () => {
+      hold('s');
+      await tracker.run();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'offline');
+      assert.deepEqual(af.calls, ['airline:TST', 'online'], 'nobody to look up');
+    });
+
+    it('falls back to the old way for everyone when the airline\'s list cannot be read', async () => {
+      hold('s');
+      af.failAirline = true;
+      af.fly(1001, { phase: 'climbing' });
+      await tracker.run();
+      assert.deepEqual(af.calls, ['airline:TST', 'online', 'pilot:1001']);
+      assert.equal(tracker.statusOf(alice.id)!.state, 'airborne');
+    });
+
+    it('still knows the pilots the list had when the list of who is online cannot be read', async () => {
+      hold('s');
+      hold('t', bob);
+      af.list(1001);
+      af.failList = true;
+      await tracker.run();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'airborne', 'from the airline\'s list');
+      assert.equal(tracker.statusOf(bob.id), null, 'and nothing is claimed for Bob, whom it could not look for');
+    });
+
+    it('asks for each airline once, however many panels and pilots there are', async () => {
+      hold('s');
+      hold('t', bob);
+      const second = h.store.createPanel({ guildId: '900000000000000007', name: 'Other Air', abbr: 'OTH', prefix: 'OTH', channelId: '700000000000000007', now: T0 });
+      h.store.updatePanel(second.id, { liveTracking: true });
+      h.jobs.sync(second.id, [windowed('o', 'EGLL-EGKK')]);
+      h.jobs.reserve(h.store.listJobs(second.id)[0]!.id, [1], { discordId: alice.id, username: alice.username });
+      af.list(1001, {}, 'TST');
+      af.list(1002, {}, 'OTH');
+      await tracker.run();
+      assert.deepEqual([...af.calls].sort(), ['airline:OTH', 'airline:TST'], 'one request for each airline');
+    });
+
+    it('sees a pilot land in the list, looks for the flight in FsHub that minute, and completes it once FsHub shows it flown', async () => {
+      hold('s');
+      af.list(1001, { phase: 'cruise' });
+      await tracker.run();
+      await minute();
+      af.list(1001, { phase: 'arrived', onGround: true });
+      await minute();
+      assert.equal(job('s').completedAt, null, 'FsHub has not registered the flight yet');
+      assert.equal(tracker.waiting, 1, 'a landing was seen');
+      flown({ arrivedAt: h.clock.now - MIN });
+      await minute();
+      assert.deepEqual([job('s').status, job('s').completedBy, job('s').completedVia], ['expired', alice.id, 'fshub']);
+    });
+
+    it('counts a pilot dropping out of the list after being in the air as a landing, once they are not online either', async () => {
+      hold('s');
+      af.list(1001, { phase: 'cruise' });
+      await tracker.run();
+      await minute();
+      af.unlist(1001); // gone from the list, and not online
+      await minute();
+      assert.equal(tracker.statusOf(alice.id)!.state, 'offline');
+      assert.equal(tracker.waiting, 1);
     });
   });
 

@@ -671,6 +671,12 @@ export const MIGRATIONS: string[] = [
     UNIQUE (discord_id, flight_no)
   );
   `,
+
+  /* v39: a pilot who sends a flight ID straight to the bot (no Reserve button first) and has not yet given their FsHub pilot ID is asked
+     for it first; what they sent is kept here so it is carried out as soon as they have answered. */
+  `
+  ALTER TABLE dm_sessions ADD COLUMN pending_text TEXT;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

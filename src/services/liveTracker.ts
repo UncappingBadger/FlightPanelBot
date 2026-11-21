@@ -1,7 +1,8 @@
 import type { Panel, Store } from '../db/store.js';
-import type { LiveFeed, LivePilot } from '../fshub/liveFeed.js';
+import { isFlying, type AirlineFlight, type LiveFeed, type LivePilot } from '../fshub/liveFeed.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { trustedFshubId, type AutoCompleteResult, type AutoCompleteScope } from './autoComplete.js';
+import { callsignCode } from './flightEtas.js';
 
 /** Where a pilot is, as far as FsHub's live feed says. */
 export type LiveState = 'offline' | 'ground' | 'airborne';
@@ -27,6 +28,12 @@ const PENDING_MAX_MS = 12 * 60_000;
 /** A landing check reads FsHub's flights unless they were read this recently. */
 const FRESH_FLIGHTS_MS = 45_000;
 
+/** A pilot as their airline's list of flights shows them: in the air when any flight of theirs is, otherwise on the ground at what they last flew. */
+function pilotOf(pilotId: number, flights: AirlineFlight[]): LivePilot {
+  const f = flights.find((x) => isFlying(x.phase, x.onGround)) ?? (flights[0] as AirlineFlight);
+  return { pilotId, airborne: isFlying(f.phase, f.onGround), flight: { flightId: f.flightId, phase: f.phase, onGround: f.onGround, dep: f.dep, arr: f.arr } };
+}
+
 interface Pending {
   panelId: number;
   discordId: string;
@@ -36,7 +43,11 @@ interface Pending {
 
 export interface LiveTrackerDeps {
   store: Store;
-  feed: Pick<LiveFeed, 'onlinePilotIds' | 'pilot'>;
+  /**
+   * `airlineFlights`, when the feed has it, is read first: an airline's flights name their pilots, so most pilots' state comes from the one list
+   * the landing estimates read too, instead of a request for each of them.
+   */
+  feed: Pick<LiveFeed, 'onlinePilotIds' | 'pilot'> & Partial<Pick<LiveFeed, 'airlineFlights'>>;
   /** Completes the flights FsHub shows these pilots flew; null when the bot has no FsHub token (it can still tell who is flying). */
   complete: ((panel: Panel, scope: AutoCompleteScope) => Promise<AutoCompleteResult>) | null;
   logger?: Logger;
@@ -108,22 +119,55 @@ export class LiveTracker {
     return out;
   }
 
+  /**
+   * The flights of the tracked pilots in their airlines' own feeds: one request for each airline (which the landing estimates share, see
+   * `LiveFeed.airlineFlights`), however many pilots there are. A pilot who is not in one (not a pilot of that airline, or the feed could not be read)
+   * is simply not here, and is looked for the other way.
+   */
+  private async fromAirlines(tracked: Map<number, Array<{ panel: Panel }>>): Promise<Map<number, AirlineFlight[]>> {
+    const out = new Map<number, AirlineFlight[]>();
+    const read = this.d.feed.airlineFlights;
+    if (typeof read !== 'function') return out;
+    const codes = new Set<string>();
+    for (const users of tracked.values()) for (const { panel } of users) if (callsignCode(panel)) codes.add(callsignCode(panel));
+    for (const code of codes) {
+      let flights: AirlineFlight[];
+      try {
+        flights = await read.call(this.d.feed, code);
+      } catch (e) {
+        this.log.debug(`Live feed (${code}): ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      for (const f of flights) if (f.pilotId !== null && tracked.has(f.pilotId)) out.set(f.pilotId, [...(out.get(f.pilotId) ?? []), f]);
+    }
+    return out;
+  }
+
   private async poll(now: number): Promise<void> {
     const tracked = this.tracked(now);
     if (tracked.size === 0) {
       this.status.clear();
       return;
     }
-    let online: Set<number>;
-    try {
-      online = await this.d.feed.onlinePilotIds();
-    } catch (e) {
-      this.log.debug(`Live feed: ${e instanceof Error ? e.message : e}`);
-      return; // what was known goes stale by itself
+    const listed = await this.fromAirlines(tracked);
+    // Who is online, and each such pilot's flight, are only asked for the pilots no airline's list had.
+    let online: Set<number> | null = null;
+    if ([...tracked.keys()].some((id) => !listed.has(id))) {
+      try {
+        online = await this.d.feed.onlinePilotIds();
+      } catch (e) {
+        this.log.debug(`Live feed: ${e instanceof Error ? e.message : e}`);
+        // What is not known about the rest goes stale by itself; the pilots the airlines' lists had are still looked at.
+      }
     }
     for (const [fshubId, users] of tracked) {
       let live: LivePilot | null = null;
-      if (online.has(fshubId)) {
+      const flights = listed.get(fshubId);
+      if (flights) {
+        live = pilotOf(fshubId, flights);
+      } else if (online === null) {
+        continue; // could not be asked
+      } else if (online.has(fshubId)) {
         try {
           live = await this.d.feed.pilot(fshubId);
         } catch (e) {

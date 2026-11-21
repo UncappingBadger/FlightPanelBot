@@ -23,11 +23,14 @@ import { parsePilotId } from '../services/pilotId.js';
 import { sheetNamesFor } from '../services/pilotNames.js';
 import { aliasNote, expandAircraftTypes } from '../services/aircraftAliases.js';
 import { availableFor } from '../services/availability.js';
-import { dayOf, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
+import { dayCode } from '../services/flightIds.js';
+import { dayLabel, dayOf, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate, type SearchDay } from '../services/search.js';
 import { WriteBackError } from '../services/writeback.js';
 import { legList, legText, mention, plainText, routeText, truncate, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler, ComponentInteraction } from './context.js';
+import { bookingAccess, type BookingAccess } from './access.js';
 import { BANKING_REQUEST, maybeTakeToken, showBanking } from './banking.js';
+import { COMMANDS_REQUEST, showCommands } from './commandsList.js';
 import { CONTRIBUTIONS_REQUEST, showContributions } from './contributions.js';
 import { isDmClosed, UserError } from './errors.js';
 import { memberHasRole } from './guard.js';
@@ -468,7 +471,7 @@ const LIST_REQUEST = /^(?:(?:show|list|get|send)\s+(?:me\s+)?)?(?:my\s+)?(?:flig
 
 /** The Search button: a small form asking where from, where to, on which day and in which aircraft. Each is optional, but one is needed. */
 async function startSearch(ctx: BotContext, interaction: ButtonInteraction, panelId: number): Promise<void> {
-  const panel = panelFor(ctx, interaction, panelId);
+  panelFor(ctx, interaction, panelId); // refuses a panel of another server, or one that has gone
   const input = (id: string, label: string, placeholder: string) =>
     new ActionRowBuilder<TextInputBuilder>().addComponents(
       new TextInputBuilder().setCustomId(id).setLabel(label).setPlaceholder(placeholder).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(40),
@@ -541,6 +544,10 @@ async function runSearch(ctx: BotContext, interaction: ModalSubmitInteraction, p
 
 /* ------------------------------------------------------------------ backup pilot */
 
+/** What someone is told when there is no flight they could stand by for. */
+const NO_BACKUP_TEXT =
+  "There's no flight for you to be backup for right now. A flight can have a backup once all of it is taken, each flight has just one, and you can't back up a flight you're flying. If a flight still has a free leg, press **Reserve** for it instead.";
+
 /** Why this person can't stand by for flights of this panel at all, or null if they can. */
 function backupBlocked(panel: Panel, interaction: ButtonInteraction): string | null {
   if (panel.requiredRoleId && !memberHasRole(interaction, panel.requiredRoleId)) {
@@ -561,10 +568,7 @@ async function startBackup(ctx: BotContext, interaction: ButtonInteraction, pane
 
   const user = interaction.user;
   if (ctx.jobs.backupCandidates(panel, user.id).length === 0) {
-    await interaction.editReply({
-      content:
-        "There's no flight for you to be backup for right now. A flight can have a backup once all of it is taken, each flight has just one, and you can't back up a flight you're flying. If a flight still has a free leg, press **Reserve** for it instead.",
-    });
+    await interaction.editReply({ content: NO_BACKUP_TEXT });
     return;
   }
 
@@ -1040,12 +1044,7 @@ export async function handleDmMessage(ctx: BotContext, message: Message): Promis
   } catch (e) {
     // A reply typed in a DM has no error screen, so an expected failure (say, the flight closed a
     // moment ago) must be said right here, or the person would just see silence.
-    if (e instanceof JobError || e instanceof UserError) {
-      const purpose = ctx.store.getSession(message.author.id, ctx.now())?.purpose ?? 'reserve';
-      ctx.store.deleteSession(message.author.id);
-      await say(message.author, `${e.message}\nPress ${startButton(purpose)} on the panel to try another flight.`).catch(() => undefined);
-      return;
-    }
+    if (await sayFailure(ctx, message.author, e)) return;
     throw e;
   }
 }
@@ -1066,6 +1065,12 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
   const monitorRequest = MONITOR_REQUEST.exec(text);
   if (monitorRequest) {
     await showMonitor(ctx, message, monitorRequest[1] ?? '');
+    return;
+  }
+
+  // `commands`: what this person can do with the bot at their level in the servers they share with it. Also leaves an open conversation alone.
+  if (COMMANDS_REQUEST.test(text)) {
+    await showCommands(ctx, message, (reply) => say(user, reply));
     return;
   }
 
@@ -1119,13 +1124,19 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
 
   const session = ctx.store.getSession(user.id, now);
 
+  // A flight asked for straight here, with no button pressed first: `reserve SKY330`, just `SKY330`, or `backup SKY330`. With nothing open it is
+  // looked for on the panels of the servers the person is in; with a conversation open only words that name what to do (`reserve`, `backup`) start
+  // a new one, and a conversation waiting for a FsHub pilot ID is left to its answer.
+  const request = directRequest(text);
+  if (request && (!session || (request.explicit && session.step !== 'await_pilot')) && (await startDirect(ctx, message, request))) return;
+
   if (!session) {
     const last = lastHint.get(user.id);
     if (last === undefined || now - last >= HINT_COOLDOWN_MS) {
       lastHint.set(user.id, now);
       // Forget people whose cooldown is over, so the map can't grow for ever with everyone who has ever messaged the bot.
       if (lastHint.size > 5000) for (const [k, t] of lastHint) if (now - t >= HINT_COOLDOWN_MS) lastHint.delete(k);
-      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken). I\'ll ask for the flight ID here. Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, `metar EGLL` (any airport code) for a weather report in plain language, or `notifications` to choose which messages I send you. `/banking` sets up a message whenever money goes into or out of your Aeroconomy bank accounts, and `/monitor SKY330` tells you when a flight is about to land.');
+      await say(user, 'To reserve a flight, press **Reserve** on a flight panel in your server (or **Backup pilot** to stand by for one that is taken), or just send me its flight ID here, like `reserve SKY330` (`backup SKY330` to stand by). Send me `flights` any time to see the flights you have, `my contributions` to see what your completed flights made for the airline, `metar EGLL` (any airport code) for a weather report in plain language, or `notifications` to choose which messages I send you. `/banking` sets up a message whenever money goes into or out of your Aeroconomy bank accounts, and `/monitor SKY330` tells you when a flight is about to land. Send me `commands` for everything I can do.');
     }
     return;
   }
@@ -1170,11 +1181,17 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     }
     const name = check.status === 'found' ? check.name : null;
     rememberPilotId(ctx, user.id, id, name);
-    ctx.store.upsertSession({ ...session, step: 'await_code', attempts: 0, expiresAt: now + SESSION_TTL_MS });
-    await say(
-      user,
-      `Thanks, I've saved your FsHub pilot ID as ${pilotLabel(id, name)}.${name ? ' If that isn\'t you, send `fshub <your ID>` with the right one.' : ''}\n\n${session.purpose === 'backup' ? askBackupCodeText(ctx, panel, user.id) : askCodeText(ctx, panel)}`,
-    );
+    const thanks = `Thanks, I've saved your FsHub pilot ID as ${pilotLabel(id, name)}.${name ? ' If that isn\'t you, send `fshub <your ID>` with the right one.' : ''}`;
+    // Asked for a flight before giving it: do that now rather than asking again.
+    const asked = session.pendingText;
+    const next = { ...session, step: 'await_code' as const, attempts: 0, pendingText: null, expiresAt: now + SESSION_TTL_MS };
+    ctx.store.upsertSession(next);
+    if (asked) {
+      await say(user, thanks);
+      await handleCode(ctx, user, next, panel, asked);
+      return;
+    }
+    await say(user, `${thanks}\n\n${session.purpose === 'backup' ? askBackupCodeText(ctx, panel, user.id) : askCodeText(ctx, panel)}`);
     return;
   }
 
@@ -1183,16 +1200,74 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
     return;
   }
 
+  await handleCode(ctx, user, session, panel, text);
+}
+
+/**
+ * The flight ID (or IDs) in a message, for an open conversation that is asking for one: to reserve (several may come at once) or, for a
+ * backup conversation, to stand by for one flight. A wrong ID is a wrong try; a few of those close the conversation.
+ */
+async function handleCode(ctx: BotContext, user: Message['author'], session: DmSession, panel: Panel, text: string): Promise<void> {
+  const now = ctx.now();
+  // A question about which day was open: a reply that names a day is the flight. Anything else is read as a new ID, and the question is over.
+  if (session.pendingText) {
+    const asked = session.pendingText;
+    session = { ...session, pendingText: null };
+    ctx.store.upsertSession(session);
+    const reply = chooseByDay(ctx, panel, asked, text);
+    if (reply.chosen) {
+      text = reply.chosen.job.code;
+    } else if (reply.day) {
+      // A day, but not one this number is flown on (or can be booked): say so and ask again, rather than reading the date as a flight ID.
+      const views = ctx.jobs.datedChoices(panel, asked);
+      const attempts = session.attempts + 1;
+      if (views.length > 1 && attempts >= MAX_ATTEMPTS) {
+        ctx.store.deleteSession(user.id);
+        await say(user, `That's a few days I couldn't use, so I've closed this. Press ${startButton(session.purpose)} on the panel to start again.`);
+        return;
+      }
+      if (views.length > 1) {
+        await say(user, `**${plainText(asked)}** isn't flown on ${reply.day.label}, or not on a day that can be booked.`);
+        if (await askWhichDay(ctx, user, { ...session, attempts }, panel, { typed: asked, views })) return;
+      }
+    }
+  }
   let view: JobView | null;
   if (session.purpose === 'backup') {
-    view = ctx.jobs.findByCode(panel, text);
+    // `backup SKY330` and `SKY330` both name the flight; standing by is for one flight at a time.
+    const found = ctx.jobs.findSeveral(panel, text);
+    const named = found.items.flatMap((i) => (i.kind === 'flight' ? [i.view] : []));
+    const several = found.items.flatMap((i) => (i.kind === 'several' ? [i] : []));
+    if (named.length + several.length > 1) {
+      const attempts = session.attempts + 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        ctx.store.deleteSession(user.id);
+        await say(user, `That's a few IDs I couldn't use, so I've closed this. Press **Backup pilot** on the panel to start again.`);
+        return;
+      }
+      ctx.store.upsertSession({ ...session, attempts, expiresAt: now + SESSION_TTL_MS });
+      await say(user, 'You can stand by for one flight at a time. Send me the ID of just one, or say `cancel`.');
+      return;
+    }
+    if (several[0]) {
+      // Flown on more than one day: ask which. If none of the days is open for booking yet, the soonest gets the usual "too far ahead" answer.
+      if (await askWhichDay(ctx, user, session, panel, several[0])) return;
+      view = several[0].views[0] ?? null;
+    } else {
+      view = named[0] ?? null;
+    }
   } else {
     // Reserving: the message can name several flights (`TST-001, TST-004 and TST-009`). One flight, or none that can be
     // made out, goes the way it always has; two or more are reserved together.
     const found = ctx.jobs.findSeveral(panel, text);
     const flights = found.items.flatMap((i) => (i.kind === 'flight' ? [i.view] : []));
-    const unknown = found.items.length - flights.length;
-    if (found.skipped.length === 0 && ((flights.length === 0 && unknown <= 1) || (flights.length === 1 && unknown === 0))) {
+    const several = found.items.flatMap((i) => (i.kind === 'several' ? [i] : []));
+    const unknown = found.items.filter((i) => i.kind === 'unknown').length;
+    if (found.skipped.length === 0 && several.length === 1 && flights.length === 0 && unknown === 0) {
+      // One number, flown on more than one day: ask which. If none of the days is open for booking yet, the soonest gets the usual "too far ahead" answer.
+      if (await askWhichDay(ctx, user, session, panel, several[0]!)) return;
+      view = several[0]!.views[0] ?? null;
+    } else if (found.skipped.length === 0 && several.length === 0 && ((flights.length === 0 && unknown <= 1) || (flights.length === 1 && unknown === 0))) {
       view = flights[0] ?? null;
     } else {
       await reserveSeveral(ctx, user, session, panel, found);
@@ -1231,6 +1306,230 @@ async function handleDm(ctx: BotContext, message: Message): Promise<void> {
   await proceedWithJob(ctx, user, session, view);
 }
 
+/* ------------------------------------------------------------------ a flight number flown on more than one day */
+
+/** The most days offered as buttons: four rows of five, and a row for Cancel. */
+const MAX_DAY_CHOICES = 20;
+
+/** `Sat 21 Nov`: the Zulu day a flight opens, which is the day a flight number carries when it is flown on several. */
+const dayText = (v: JobView): string => (v.job.availableFrom === null ? 'no date' : dayLabel(dayOf(v.job.availableFrom).start));
+
+/**
+ * A flight number was typed without its day, and it is flown on more than one: ask which, with a button for each day that can be booked (the days
+ * beyond the panel's are shown but cannot be pressed). The conversation stays open on that number (`pendingText`), so a reply that names a day
+ * works too. False when none of the days can be booked yet: nothing is asked then, and the caller answers for the soonest.
+ */
+async function askWhichDay(ctx: BotContext, user: Message['author'], session: DmSession, panel: Panel, found: { typed: string; views: JobView[] }): Promise<boolean> {
+  if (!found.views.some((v) => ctx.jobs.isListed(panel, v))) return false;
+  const stand = session.purpose === 'backup';
+  const shown = found.views.slice(0, MAX_DAY_CHOICES);
+  const state = (v: JobView): string => {
+    if (!ctx.jobs.isListed(panel, v)) return 'not open for booking yet';
+    const free = v.legs.some((l) => !l.holder && !l.sheetHolder);
+    return stand ? (free ? 'still has a free leg' : v.backup ? 'has a backup' : 'taken') : free ? 'open' : 'taken';
+  };
+  const more = found.views.length - shown.length;
+  ctx.store.upsertSession({ ...session, step: 'await_code', jobId: null, pendingLegs: [], pendingText: found.typed, expiresAt: ctx.now() + SESSION_TTL_MS });
+  const buttons = shown.map((v) => button(`dm:pick:${v.job.id}`, truncate(`${dayText(v)} · ${routeText(v.legs)}`, 80), ButtonStyle.Secondary).setDisabled(!ctx.jobs.isListed(panel, v)));
+  const rows: Row[] = [];
+  for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
+  rows.push(row(button('dm:cancel', 'Cancel', ButtonStyle.Secondary)));
+  const content = [
+    `**${plainText(found.typed)}** is flown on more than one day. Which one do you want to ${stand ? 'stand by for' : 'reserve'}?`,
+    ...shown.map((v) => `• \`${v.job.code}\` · ${dayText(v)} · ${truncate(routeText(v.legs), 40)} · ${state(v)}`),
+    more > 0 ? `…and ${more} more.` : '',
+    'Press a day below, or reply with the date (like `21 Nov`) or the full ID. Days are Zulu (UTC), like the IDs. Say `cancel` to stop.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  await say(user, content, rows);
+  return true;
+}
+
+/**
+ * A reply to the question above: if it names a day (`21 Nov`, `21NOV`, `Sat 21 Nov`, `tomorrow`), that day, and the one flight of that number that
+ * can be booked then, if there is one. Anything that is not a day is neither (it is an ID, or nonsense, for the caller to read as such).
+ */
+function chooseByDay(ctx: BotContext, panel: Panel, asked: string, text: string): { day: SearchDay | null; chosen: JobView | null } {
+  const tidy = text
+    .trim()
+    .replace(/^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+(?=\S)/i, '')
+    .replace(/^(\d{1,2})([a-z]{3,9})$/i, '$1 $2');
+  const day = parseSearchDate(tidy, ctx.now());
+  if (!day) return { day: null, chosen: null };
+  const hits = ctx.jobs.datedChoices(panel, asked).filter((v) => ctx.jobs.isListed(panel, v) && v.job.availableFrom !== null && dayCode(v.job.availableFrom) === dayCode(day.start));
+  return { day, chosen: hits.length === 1 ? (hits[0] as JobView) : null };
+}
+
+/** The day button under the question: carry on exactly as if the person had typed that flight's own ID. */
+async function pickDay(ctx: BotContext, interaction: ButtonInteraction | StringSelectMenuInteraction, session: DmSession | null): Promise<void> {
+  const user = interaction.user;
+  const panel = session ? ctx.store.getPanel(session.panelId) : null;
+  const jobId = Number(interaction.customId.split(':')[2]);
+  const view = Number.isInteger(jobId) ? ctx.jobs.view(jobId) : null;
+  const asked = session?.pendingText ?? null;
+  if (!session || !panel || !asked || !view || view.job.panelId !== panel.id || !view.job.code.startsWith(`${asked}-`)) {
+    await interaction.update({ content: 'That question has closed. Send the flight ID again, with its day.', components: [], allowedMentions: noPings });
+    return;
+  }
+  await interaction.update({ content: `Okay: **${view.job.code}** (${dayText(view)}).`, components: [], allowedMentions: noPings });
+  const next = { ...session, pendingText: null };
+  ctx.store.upsertSession(next);
+  try {
+    await handleCode(ctx, user, next, panel, view.job.code);
+  } catch (e) {
+    if (!(await sayFailure(ctx, user, e))) throw e;
+  }
+}
+
+/** An expected failure (the flight closed a moment ago) said in the DM itself, since a reply typed there has no error screen; false for anything else. */
+async function sayFailure(ctx: BotContext, user: Message['author'], e: unknown): Promise<boolean> {
+  if (!(e instanceof JobError || e instanceof UserError)) return false;
+  const purpose = ctx.store.getSession(user.id, ctx.now())?.purpose ?? 'reserve';
+  ctx.store.deleteSession(user.id);
+  await say(user, `${e.message}\nPress ${startButton(purpose)} on the panel to try another flight.`).catch(() => undefined);
+  return true;
+}
+
+/* ------------------------------------------------------------------ asking for a flight straight in a DM */
+
+/** A message that asks for a flight (or to start asking) without a button having been pressed. */
+interface DirectRequest {
+  purpose: SessionPurpose;
+  /** It says what to do (`reserve`, `book`, `backup`), rather than being a flight ID on its own. */
+  explicit: boolean;
+  /** It names something that may be a flight ID (it has a digit in it); otherwise it only asks to start. */
+  ids: boolean;
+}
+
+/** The longest message looked at as a request for a flight. */
+const MAX_DIRECT_LENGTH = 400;
+/** Words that can surround `reserve` or `backup` in a message that only asks to start (`I want to book a flight`). */
+const FILLER = new Set(['please', 'a', 'an', 'me', 'my', 'flight', 'flights', 'pilot', 'as', 'for', 'i', 'want', 'to', 'would', 'like', 'let', 'can', 'could', 'the']);
+
+/** `reserve`, `book a flight` or `backup` on their own: the kind of conversation being asked for, or null. */
+function wordRequest(text: string): SessionPurpose | null {
+  const said = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w !== '' && !FILLER.has(w))
+    .join(' ');
+  if (said === 'reserve' || said === 'book') return 'reserve';
+  if (said === 'backup' || said === 'back up') return 'backup';
+  return null;
+}
+
+/**
+ * Whether a message is asking for a flight directly. With a word that says what to do it is (`reserve SKY330`, `backup SKY330`, or the word
+ * alone to be asked which flight). Without one it has to look like a flight ID itself: letters and digits together (`SKY330`, `DMO-004`), so a
+ * bare number, or any ordinary message, is never taken for a request.
+ */
+function directRequest(text: string): DirectRequest | null {
+  if (text === '' || text.length > MAX_DIRECT_LENGTH) return null;
+  if (!/\d/.test(text)) {
+    const purpose = wordRequest(text);
+    return purpose ? { purpose, explicit: true, ids: false } : null;
+  }
+  const backup = /\bback\s?up\b/i.test(text);
+  if (backup || /\b(?:reserve|book)\b/i.test(text)) return { purpose: backup ? 'backup' : 'reserve', explicit: true, ids: true };
+  return text.split(/[\s,;&]+/).some((t) => /[a-z]/i.test(t) && /\d/.test(t)) ? { purpose: 'reserve', explicit: false, ids: true } : null;
+}
+
+/** Said to someone who is in the airline's server but not allowed to reserve there. */
+const limitedText = (panel: Panel, purpose: SessionPurpose, roleName: string | null): string =>
+  `${purpose === 'backup' ? 'Standing by for flights of' : 'Reserving flights for'} **${plainText(panel.airlineName)}** is limited to members with ${roleName ? `the **${plainText(roleName)}** role` : 'a role you do not have'}.`;
+
+/**
+ * A message that asks for a flight (or to start looking for one) with no conversation open. It is looked for on the panels of the servers the
+ * person is in: the ones that have an open flight with that ID are asked about (is the person a member, do they hold the role the panel is
+ * limited to, can they see its channel), because pressing the button is what proves that and a DM proves nothing. One panel that is open to
+ * them and has the flight: it goes ahead as if they had pressed the button and sent the ID. Returns false when it is none of this bot's business
+ * (the message is then answered as any other message), true when it has been answered.
+ */
+async function startDirect(ctx: BotContext, message: Message, req: DirectRequest): Promise<boolean> {
+  const user = message.author;
+  const text = message.content.trim();
+  const all = ctx.store.listAllPanels();
+  if (all.length === 0) return false;
+
+  // Which panels the message is about: those with an open flight it names (looked for in the bot's own records, before anyone is asked about).
+  const named = req.ids ? all.filter((p) => ctx.jobs.findSeveral(p, text).items.some((i) => i.kind !== 'unknown')) : all;
+  // A flight ID that no panel has is only worth an answer when the person asked outright, and belongs to one of these servers.
+  const toAsk = req.ids && named.length === 0 ? (req.explicit ? all : []) : named;
+  if (toAsk.length === 0) return false;
+
+  const checked: Array<{ panel: Panel; access: BookingAccess }> = [];
+  for (const panel of toAsk) checked.push({ panel, access: await bookingAccess(message.client, panel, user.id) });
+  const open = checked.flatMap((c) => (c.access.ok ? [{ panel: c.panel, displayName: c.access.displayName }] : []));
+
+  if (open.length === 0) {
+    const limited = checked.find((c) => !c.access.ok && c.access.reason === 'no-role');
+    if (limited && !limited.access.ok && limited.access.reason === 'no-role') {
+      await say(user, limitedText(limited.panel, req.purpose, limited.access.roleName));
+      return true;
+    }
+    if (checked.some((c) => !c.access.ok && c.access.reason === 'unsure')) {
+      await say(user, "I couldn't check your place in the airline's server just now. Try again in a minute, or press the button on the panel.");
+      return true;
+    }
+    return false; // not in any of those servers (or cannot see the panel): this is not for them
+  }
+
+  const stand = req.purpose === 'backup';
+  if (req.ids && named.length === 0) {
+    const panel = open[0]!.panel;
+    const missed = ctx.jobs.findSeveral(panel, text).items.flatMap((i) => (i.kind === 'unknown' ? [i.typed] : []));
+    await say(user, `I can't find an open flight with the ${missed.length === 1 ? 'ID' : 'IDs'} ${typedList(missed.length > 0 ? missed : [truncate(text, 40)])}. IDs look like \`${stand ? exampleBackupId(ctx, panel, user.id) : exampleId(ctx, panel)}\` and are listed on the panel.`);
+    return true;
+  }
+  if (open.length > 1) {
+    const names = open.map((o) => `**${plainText(o.panel.airlineName)}**`).join(', ');
+    await say(
+      user,
+      req.ids
+        ? `That ID is on more than one panel you can use (${names}). Press ${startButton(req.purpose)} on the one you mean.`
+        : `You can use more than one airline here (${names}). Send the flight ID with it, like \`${stand ? 'backup' : 'reserve'} ${stand ? exampleBackupId(ctx, open[0]!.panel, user.id) : exampleId(ctx, open[0]!.panel)}\`.`,
+    );
+    return true;
+  }
+  await openDirect(ctx, message, open[0]!.panel, open[0]!.displayName, req, text);
+  return true;
+}
+
+/** The one panel the person means, and may use: start the conversation as the button would, and carry out what they sent. */
+async function openDirect(ctx: BotContext, message: Message, panel: Panel, displayName: string | null, req: DirectRequest, text: string): Promise<void> {
+  const user = message.author;
+  const now = ctx.now();
+  if (req.purpose === 'backup') {
+    // Only when no flight was named: a named one is told why it cannot be stood by for (it is theirs, it has a free leg, it has a backup).
+    if (!req.ids && ctx.jobs.backupCandidates(panel, user.id).length === 0) {
+      await say(user, NO_BACKUP_TEXT);
+      return;
+    }
+  } else if (ctx.jobs.listed(panel).length === 0) {
+    await say(user, 'There are no open flights to reserve right now.');
+    return;
+  }
+  // If the airline's sheet will carry this person's name, start from their server nickname (they can change it with `name …`), as the button does.
+  if (ctx.writeback?.enabledFor(panel) && !ctx.store.getPilotName(user.id)) {
+    ctx.store.setPilotName(user.id, str(displayName ?? user.globalName ?? user.username, 40) ?? user.username, now);
+  }
+  const base = { discordId: user.id, panelId: panel.id, purpose: req.purpose, expiresAt: now + SESSION_TTL_MS };
+  // Someone who hasn't told me their FsHub pilot ID is asked for it first, and what they sent is done as soon as they have answered.
+  if (ctx.store.getPilotId(user.id) === null) {
+    ctx.store.upsertSession({ ...base, step: 'await_pilot', pendingText: req.ids ? text : null });
+    await say(user, `${askPilotIdText(panel, ctx.fshub !== null, req.purpose)}${req.ids ? `\nThen I'll carry on with \`${truncate(text, 80)}\`.` : ''}`);
+    return;
+  }
+  ctx.store.upsertSession({ ...base, step: 'await_code' });
+  if (!req.ids) {
+    await say(user, req.purpose === 'backup' ? askBackupCodeText(ctx, panel, user.id) : askCodeText(ctx, panel));
+    return;
+  }
+  await handleCode(ctx, user, ctx.store.getSession(user.id, now)!, panel, text);
+}
+
 /** Found the flight: take it straight away if it has one leg, otherwise ask which legs. `note` is said first (what was wrong with other IDs sent with it). */
 async function proceedWithJob(
   ctx: BotContext,
@@ -1265,6 +1564,7 @@ const typedList = (typed: string[]): string => typed.map((t) => `\`${t}\``).join
 async function reserveSeveral(ctx: BotContext, user: Message['author'], session: DmSession, panel: Panel, found: FoundIds): Promise<void> {
   const flights = found.items.flatMap((i) => (i.kind === 'flight' ? [i.view] : []));
   const unknown = found.items.flatMap((i) => (i.kind === 'unknown' ? [i.typed] : []));
+  const several = found.items.flatMap((i) => (i.kind === 'several' ? [i] : []));
   const beyond = flights.filter((v) => !ctx.jobs.isListed(panel, v));
   const listed = flights.filter((v) => ctx.jobs.isListed(panel, v));
   const singles = listed.filter((v) => v.legs.length === 1);
@@ -1274,6 +1574,10 @@ async function reserveSeveral(ctx: BotContext, user: Message['author'], session:
   const unusable: string[] = [];
   if (unknown.length > 0) unusable.push(`❓ I can't find ${unknown.length === 1 ? 'an open flight with the ID' : 'open flights with the IDs'} ${typedList(unknown)}.`);
   if (beyond.length > 0) unusable.push(beyondDaysManyText(panel.showDays, beyond.map((v) => v.job.code)));
+  // A number flown on more than one day is not guessed at in a batch: it is said, and the person sends it on its own to be asked which day.
+  for (const n of several) {
+    unusable.push(`↪️ **${plainText(n.typed)}** is flown on more than one day (${andList(n.views.slice(0, 6).map((v) => `\`${v.job.code}\``))}${n.views.length > 6 ? ' …' : ''}). Send it on its own and I'll ask which day.`);
+  }
   if (found.skipped.length > 0) {
     const shown = found.skipped.slice(0, 5);
     const more = found.skipped.length - shown.length;
@@ -1353,7 +1657,7 @@ async function reserveSeveral(ctx: BotContext, user: Message['author'], session:
     );
   }
   // Still something to do: keep the conversation going, unless the person started another meanwhile.
-  if ((multis.length > 0 || found.skipped.length > 0) && !ctx.store.getSession(user.id, ctx.now())) {
+  if ((multis.length > 0 || several.length > 0 || found.skipped.length > 0) && !ctx.store.getSession(user.id, ctx.now())) {
     ctx.store.upsertSession({ ...session, step: 'await_code', jobId: null, pendingLegs: [], attempts: 0, expiresAt: ctx.now() + SESSION_TTL_MS });
     notes.push('Say `cancel` when you are done.');
   }
@@ -1395,13 +1699,18 @@ async function handleDmAction(ctx: BotContext, interaction: ButtonInteraction | 
   const session = ctx.store.getSession(user.id, ctx.now());
   const expired = { content: 'That conversation has closed. Press **Reserve** on the panel to start again.', components: [] as Row[], allowedMentions: noPings };
 
-  if (!session || session.jobId === null) {
-    await interaction.update(expired);
+  // The buttons under the question about which day: a day, or Cancel (there is no flight in the conversation yet, so these come first).
+  if (action === 'pick') {
+    await pickDay(ctx, interaction, session);
     return;
   }
-  if (action === 'cancel') {
+  if (action === 'cancel' && session) {
     ctx.store.deleteSession(user.id);
     await interaction.update({ content: 'Okay, cancelled.', components: [], allowedMentions: noPings });
+    return;
+  }
+  if (!session || session.jobId === null) {
+    await interaction.update(expired);
     return;
   }
 

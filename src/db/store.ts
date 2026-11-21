@@ -1,4 +1,4 @@
-import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite';
 import { callerPath } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
 import { installReservationAudit, type AuditRow } from './debugAudit.js';
@@ -325,6 +325,8 @@ export interface DmSession {
   jobId: number | null;
   pendingLegs: number[];
   attempts: number;
+  /** What the person sent when they asked for a flight straight in a DM before giving their FsHub pilot ID: done once they have. */
+  pendingText: string | null;
   expiresAt: number;
 }
 
@@ -549,18 +551,44 @@ export class Store {
     }
   }
 
+  private closed = false;
+
+  /** True once the database has been closed, so work that is still under way (a slow read finishing after shutdown began) knows to put its result down quietly. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** Close the database. Closing it again (a shutdown that comes from two places) does nothing. */
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.statements.clear();
     this.db.close();
   }
 
+  /** The statements already prepared, by their SQL. Preparing one is most of the cost of a small query (about four times its running), and the same few hundred are asked over and over. */
+  private readonly statements = new Map<string, StatementSync>();
+  /** The most statements kept. The SQL is almost all fixed; the few that vary (a list of IDs of a different length) must not be able to fill memory. */
+  private static readonly MAX_STATEMENTS = 400;
+
+  private stmt(sql: string): StatementSync {
+    let s = this.statements.get(sql);
+    if (!s) {
+      s = this.db.prepare(sql);
+      if (this.statements.size >= Store.MAX_STATEMENTS) this.statements.clear();
+      this.statements.set(sql, s);
+    }
+    return s;
+  }
+
   private get(sql: string, ...p: SQLInputValue[]): Row | undefined {
-    return this.db.prepare(sql).get(...p) as Row | undefined;
+    return this.stmt(sql).get(...p) as Row | undefined;
   }
   private all(sql: string, ...p: SQLInputValue[]): Row[] {
-    return this.db.prepare(sql).all(...p) as Row[];
+    return this.stmt(sql).all(...p) as Row[];
   }
   private run(sql: string, ...p: SQLInputValue[]): { changes: number; lastId: number } {
-    const r = this.db.prepare(sql).run(...p);
+    const r = this.stmt(sql).run(...p);
     if (this.audit) this.flushAudit(sql);
     return { changes: Number(r.changes), lastId: Number(r.lastInsertRowid) };
   }
@@ -1691,12 +1719,13 @@ export class Store {
     jobId?: number | null;
     pendingLegs?: number[];
     attempts?: number;
+    pendingText?: string | null;
     expiresAt: number;
   }): void {
     this.run(
-      `INSERT INTO dm_sessions(discord_id, panel_id, step, purpose, job_id, pending_legs, attempts, expires_at) VALUES (?,?,?,?,?,?,?,?)
+      `INSERT INTO dm_sessions(discord_id, panel_id, step, purpose, job_id, pending_legs, attempts, pending_text, expires_at) VALUES (?,?,?,?,?,?,?,?,?)
        ON CONFLICT(discord_id) DO UPDATE SET panel_id = excluded.panel_id, step = excluded.step, purpose = excluded.purpose, job_id = excluded.job_id,
-         pending_legs = excluded.pending_legs, attempts = excluded.attempts, expires_at = excluded.expires_at`,
+         pending_legs = excluded.pending_legs, attempts = excluded.attempts, pending_text = excluded.pending_text, expires_at = excluded.expires_at`,
       sess.discordId,
       sess.panelId,
       sess.step,
@@ -1704,6 +1733,7 @@ export class Store {
       sess.jobId ?? null,
       JSON.stringify(sess.pendingLegs ?? []),
       sess.attempts ?? 0,
+      sess.pendingText ?? null,
       sess.expiresAt,
     );
   }
@@ -1719,6 +1749,7 @@ export class Store {
       jobId: nn(r.job_id),
       pendingLegs: parseJsonArray<number>(r.pending_legs, []).map(Number),
       attempts: n(r.attempts),
+      pendingText: typeof r.pending_text === 'string' ? r.pending_text : null,
       expiresAt: n(r.expires_at),
     };
   }

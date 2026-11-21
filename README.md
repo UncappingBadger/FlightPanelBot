@@ -2,7 +2,7 @@
 
 A Discord bot for virtual-airline communities. An admin names the airline; the bot keeps a **panel** in a
 channel listing the airline's open flights (route, required airframe, when it must be completed by). Pilots
-press **Reserve**, the bot DMs them, they reply with the flight's ID, and the panel shows their name (and
+press **Reserve**, the bot DMs them, they reply with the flight's ID (or they skip the button and DM the bot the ID), and the panel shows their name (and
 FsHub pilot ID) next to the flight. Multi-leg flights can be split between pilots leg by leg. It can also look
 up fuel prices (`/fuel`), show the AeroDAQ in-game market in a channel, and keep a weather board in a channel: a grid of airports, press one for its METAR.
 
@@ -36,7 +36,8 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
            2 EGCC → EGPH — open
    ```
 2. Press **Reserve**. The bot DMs you. The first time it asks for your **FsHub pilot ID** (see below); after
-   that it goes straight to: *"Reply with the flight ID shown on the panel."*
+   that it goes straight to: *"Reply with the flight ID shown on the panel."* **Or skip the button**: DM the bot the flight ID
+   yourself (see [Reserving straight from a DM](#reserving-straight-from-a-dm)).
 3. Reply with the ID (`DMO-004`, `dmo4` and `4` all work; where your airline's schedule gives flights their own
    numbers, such as `SKY123`, that number is the ID: see [Flight numbers](#flight-numbers)).
    **To reserve several flights at once, send all their IDs in one message**: `DMO-004, DMO-007, DMO-011`, or one to a
@@ -47,7 +48,7 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    reserve ...") are ignored. A flight with several legs is not taken for you in a batch, because the bot has to ask
    which legs you want; it names those flights and keeps the conversation open, so you send each one on its own and
    answer the usual buttons. Up to 10 flights are taken from one message; the bot lists any it did not get to so you
-   can send them again. (Standing by as backup is still one flight at a time.)
+   can send them again. (Standing by as backup is still one flight at a time: send more than one ID there and the bot says so.)
 4. One-leg flight: you're booked and the panel updates. Several legs: the bot asks **All legs** or **Some
    legs**. For some, pick from a menu of the legs still free. If you ask for all but someone holds a leg, it
    tells you who and offers the legs that are free.
@@ -82,6 +83,73 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    that ended, a manager changing your FsHub pilot ID, and every answer to something you did yourself (reserving, the buttons,
    your commands). A warning switched off is not counted as sent, so switching it back on before the latest take-off still
    warns you in time.
+9. **Commands** (DM the bot **`commands`**, or run **`/commands`** in a server) lists everything you can do with the bot **at your
+   level**: what a DM understands (`reserve`, `backup`, `flights`, `my contributions`, `metar`, `notifications`, `name`, `fshub`,
+   `/banking`, `/monitor`, `cancel`), the commands anyone can use in a server, and, for each server you share with the bot,
+   whether you are a member (and which airlines you may reserve for, naming the role one needs when you lack it), a **manager**
+   (a role the admins chose with `/setup refresh-roles`: `/setup refresh` and `/setup id-add`) or a **server admin** (Manage Server:
+   every `/setup` command, each with what it does). The list is read from the commands themselves, so it cannot fall behind them;
+   a long one comes as several messages, and in a server it is shown only to you. `help` works in a DM too.
+
+### A flight number flown on more than one day
+
+When the same flight number is flown on several days, each of those flights carries its day (`SKY216-21NOV`, `SKY216-22NOV`), so
+the ID names one flight. A pilot who types just the number (`SKY216`) is **asked which day**, in the DM, instead of being told the
+flight cannot be found:
+
+```
+SKY216 is flown on more than one day. Which one do you want to reserve?
+• SKY216-21NOV · Sat 21 Nov · EGLL → EGKK · open
+• SKY216-22NOV · Sun 22 Nov · EGLL → EGKK · taken
+Press a day below, or reply with the date (like 21 Nov) or the full ID. Days are Zulu (UTC), like the IDs. Say cancel to stop.
+[Sat 21 Nov · EGLL → EGKK] [Sun 22 Nov · EGLL → EGKK] [Cancel]
+```
+
+- **Answer with a button, a date or the full ID.** A date is read the way the Search form reads one (`21 Nov`, `21NOV`, `Sat 21 Nov`, `21/11`,
+  `tomorrow`) as a Zulu day, and the flight on that day is taken. A date that is not a day of that flight is said so and the question
+  is asked again (five misses close the conversation, as five wrong IDs do). Anything else is read as a new flight ID, and the question
+  is over.
+- **It is asked wherever a flight is reserved or stood by for**: after the **Reserve** or **Backup pilot** buttons, and when the ID is sent
+  straight in a DM (`SKY216`, `reserve SKY216`, `backup SKY216`). The question says *reserve* or *stand by for*, and shows what each day is
+  (open, taken, still has a free leg, has a backup). Whichever day is chosen then goes through every rule of a typed ID (legs, the airline's
+  sheet, the panel's days, who has it).
+- **Only open flights count.** A day already flown, completed or past its deadline is not one of the choices. If only one flight of that
+  number is open, the bare number is that flight and nothing is asked.
+- **Days the panel does not list yet** (beyond its 1 to 7 days) are shown but cannot be pressed. If **no** day can be booked yet, nothing is
+  asked and the bot says, as for any flight too far ahead, when the soonest opens.
+- **Several IDs in one message** (`SKY329, SKY216`): the bot reserves the ones that are one flight, says that `SKY216` is flown on more
+  than one day (naming the IDs) and keeps the conversation open, so sending `SKY216` on its own asks the question.
+- **`/eta flight:SKY216`** names the days (`SKY216-21NOV`, ...) instead of saying it does not know the flight, and an admin's
+  **`/setup release code:SKY216`** must say which day, and is told the choices (it never frees the wrong day).
+- **A flight whose ID lost its day** (the other days left the schedule, so `SKY216-21NOV` became `SKY216`) is still found by the dated ID
+  it had, while that is the day it opens.
+
+### Reserving straight from a DM
+
+You do not have to press **Reserve** first. DM the bot a flight ID and it reserves the flight for you, the same as if you had
+pressed the button and replied with it:
+
+- `DMO-004`, `reserve DMO-004`, `book DMO-004` or `please reserve DMO-004 for me` all work, and so do several flights in one message
+  (`DMO-004, DMO-007`), with every rule of a reply in the Reserve conversation: one-leg flights are taken at once, a flight with
+  several legs asks *all or some* with the usual buttons, the airline's sheet gets your name, a flight beyond the panel's days is
+  turned down.
+- **Standing by as backup works the same way**: `backup DMO-004` (or `back up DMO-004`). Backup is one flight at a time, and you are
+  told the reason when the flight cannot have a backup (it still has a free leg, it has one already, it is yours).
+- **A bare number is never taken for a flight**: a message with no word that says what to do (`reserve`, `book`, `backup`) has to
+  look like a flight ID itself, with letters and digits together (`DMO-004`, `SKY330`). So `7`, `thanks 2` or `A320` are just
+  messages and get the usual pointer, and the short forms (`dmo4`, `4`) need the word: `reserve 4`.
+- **The word on its own** (`reserve`, `book a flight`, `backup`) opens the conversation and asks for the flight, as the button does.
+  If you can use more than one airline there, the bot asks you to send the ID with it.
+- **The first time**, the bot asks for your FsHub pilot ID before anything else, as the button does, and then carries out what you
+  sent (it keeps your message for the ten minutes the conversation stays open) rather than asking for the flight again.
+- **The bot looks for the flight on the panels of the servers you are in**, and asks Discord about you before reserving, because a
+  DM, unlike a button on a panel, proves nothing about who sent it. You must be a **member of that server**, hold **the role the
+  panel is limited to** (server admins always count), and be able to **see the panel's channel**: a server that keeps its panel
+  private by hiding the channel stays private. If you are not in the airline's server the message is simply answered as any other;
+  if you lack the role, you are told so, naming it; if Discord cannot be asked just then, nothing is reserved and you are told to
+  try again. If the same ID is on the panels of two airlines you can use, the bot asks you to press **Reserve** on the one you mean.
+- A conversation you already have open carries on as before (a bare ID goes to it); only a word that says what to do starts
+  something new, and a conversation waiting for your FsHub pilot ID is left to its answer.
 
 **Looking for a flight.** **Search** (under the panel) opens a small form with four optional boxes: where you want to
 fly **from**, where you want to fly **to**, the **date**, and the **aircraft type**. Fill in any of them, one or together,
@@ -102,7 +170,7 @@ the first eight matches and asks you to narrow it down if there are more.
 
 **Backup pilot.** **Backup pilot** (under the panel) lets you put yourself down as the backup for a flight that is already
 taken, so there is someone ready if the pilot who has it can't fly it. It works the way **Reserve** does: the bot sends you
-a DM asking for the ID of the flight (the first time it asks for your FsHub pilot ID too), and you reply with it. A flight
+a DM asking for the ID of the flight (the first time it asks for your FsHub pilot ID too), and you reply with it. **Or skip the button and DM `backup DMO-004`** (see [Reserving straight from a DM](#reserving-straight-from-a-dm)). A flight
 needs every leg taken (until then you can simply reserve the free legs), you can't back up a flight you're flying, and each
 flight has one backup; if the flight you name can't be backed up, the bot says why and you can send a different ID. The
 panel shows the backup's name on the flight (*BACKUP*). If the pilot gives the flight back, an
@@ -606,7 +674,9 @@ line of control. To go further, choose a role with the `role` option on `/setup 
 with `/setup panel-role` (leave the role empty to remove the requirement, or pick `@everyone`). The panel then
 says "Reserving is open to members with @Role", and anyone without it who presses Reserve is told why. Server
 admins can always reserve. The role only gates *starting* a reservation; people can still see the panel, view
-**My flights** and give flights back.
+**My flights** and give flights back. **Reserving from a DM** (`reserve DMO-004`) is held to the same rules: the bot asks Discord
+whether the person is a member of the panel's server, holds the role, and can see the panel's channel (see
+[Reserving straight from a DM](#reserving-straight-from-a-dm)), so hiding the channel or naming a role works for both ways in.
 
 ### Reading your airline's Google Sheet
 
@@ -684,7 +754,8 @@ own `PREFIX-NNN` one. The rules, so nothing surprising happens:
   that flight keeps its automatic ID and the row is reported in `/setup sheet`, `/setup refresh` and `/setup panels`.
 - **A number has to name one flight.** A number that is on two or more rows (the same flight flown on several days)
   gets the day on the end of each of those flights, in the aviation way: `SKY123` on 12 November and 13 November
-  become `SKY123-12NOV` and `SKY123-13NOV`. Pilots type that whole ID. A number that is on one row stays as it is. If
+  become `SKY123-12NOV` and `SKY123-13NOV`. Pilots can type that whole ID, or just the number and be asked which day (see
+  [below](#a-flight-number-flown-on-more-than-one-day)). A number that is on one row stays as it is. If
   it still can't tell the flights apart (the same number twice on the same day, or a dated number another row already
   is), none of those flights uses it: they keep their automatic IDs and the sheet read says so. Because a flight's ID
   follows its number, it changes if the number starts being repeated (a new row for the same number) or stops being
@@ -773,8 +844,11 @@ The check runs once a minute, in the same background lane as the FsHub reads and
 ### Live tracking: take-offs and landings
 
 The bot follows the pilots who hold flights, using FsHub's **public live feed** (`movements.fshub.io`: no account or token is
-needed, the bot asks it for the list of pilots online and then, for a pilot who holds a flight and is online, for that one
-pilot's current flight). It uses what it learns for two things:
+needed). It reads each airline's own list of flights, one request for the airline however many pilots there are (the list the landing
+estimates use too, below), which names every pilot flying or just landed, and takes each followed pilot's state from it. Only for a
+followed pilot that no airline's list has (they are not a pilot of that airline, or the list could not be read) does it ask for the list of
+pilots online and then, for one who is online, that one pilot's current flight, as it always did. Whether a pilot is in the air is
+decided the same way as for the landing estimates (see below). It uses what it learns for two things:
 
 - **The late-departure warning skips a pilot who is already flying.** If the feed shows the holder in the air on that flight (or
   in the air with no flight plan filed, which is most pilots), no warning is sent. A pilot who filed a plan for different airports
@@ -798,14 +872,21 @@ how long from now), and `/eta` (anyone) lists every flight in the air, or answer
 airline itself flies are followed:
 
 - the **callsign** starts with the airline's code and a number (`SKY290` for an airline whose flight IDs start `SKY`; the code is the
-  panel's short name when it has one, otherwise the prefix of its flight IDs),
+  panel's short name when it has one, otherwise the prefix of its flight IDs). A pilot who flies under a callsign of their own but files the
+  airline's number as the **flight plan's flight number** is followed too,
 - a **flight plan** is filed, and its two airports are the two ends of a leg of a flight on the panel (when several flights of the
   panel have that route, the callsign being the flight's number, the landing falling inside the window, or the pilot holding it
   decides; if that still does not settle it, none is shown rather than a guess),
-- the aircraft is **in the air** and FsHub gives an estimate.
+- the aircraft is **in the air** and FsHub gives an estimate. In the air means FsHub's phase is one of the air (take-off, climbing, level
+  flight, cruise, descending, approach) **or** the phase is one it has not worked out and the aircraft itself says it is off the ground. FsHub
+  shows `calculating` until it has worked the phase out, which can be hours into a long-haul flight (one was seen at 37,000 ft and 494 knots
+  with its phase still `calculating`), so a flight is not ignored for that; a phase of the ground (awaiting departure, taxiing, landed,
+  arrived), or an aircraft on the ground, is never followed. The same rule decides whether a pilot is flying for live tracking and `/monitor`.
 
-A pilot of the airline flying under another callsign, or without a flight plan, is ignored: they are not flying one of its flights.
-The bot asks the feed once a minute for each airline, in one request (`movements.fshub.io/airline/SKY`), and the panel is only
+A pilot of the airline flying under another callsign (with no airline flight number in the plan), or without a flight plan, is ignored: they
+are not flying one of its flights. (FsHub gives a flight with no flight plan no destination, so it has no estimate to show.)
+The bot asks the feed once a minute for each airline, in one request (`movements.fshub.io/airline/SKY`). The landing estimates, live
+tracking and `/monitor` share each read for 20 seconds, so an airline is asked about once whichever of them wants it first. The panel is only
 redrawn when a time first appears, goes, or has moved by about three minutes (at most every five minutes), so the card does not
 change every minute; the "in 37 minutes" beside the time counts down by itself. A time is dropped after the feed stops showing the
 flight for two looks, and none is trusted after four minutes without a good read. It follows the panel's live-tracking setting.
@@ -836,7 +917,8 @@ two airports and landing window (the end of a window may differ by up to two min
 - **The panel has to be linked to its airline's FsHub roster** (`/setup fshub`), since Aeroconomy's contracts name the airline by its
   FsHub number. The bot reads the contracts awarded to that airline that are still running.
 - **A number flown on several days carries the day**: `SKY330-17NOV`. A number flown only once is plain. Pilots can type just
-  `SKY330` when only one such flight is open.
+  `SKY330` when only one such flight is open; when more than one is, the bot asks which day (see
+  [below](#a-flight-number-flown-on-more-than-one-day)).
 - **It never guesses.** A flight of several legs, a row with no landing window, a flight that two Aeroconomy flights could be, or two rows
   that want the same flight keep their automatic ID. A number the sheet gives itself (a *Flight Number* column) is never replaced.
 - **It fills the sheet's Flight Number column in.** Where the bot writes to the sheet and the sheet has a *Flight Number* column, each
@@ -1113,13 +1195,13 @@ board if one is switched on, and the channel, messages and chosen airports of a 
 are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
 account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no passwords from users, and a token only from a pilot who turned on `/banking` (see *Payment messages*): sealed, in a table of its own, and deleted when they turn it off. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
-server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on.
+server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on. What a pilot sends in a DM to reserve a flight before the bot has their FsHub pilot ID is kept, as written, for the ten minutes the conversation stays open and then forgotten. When someone reserves from a DM, or asks for `commands`, Discord is asked, by their ID, whether they are a member of the server (and what roles they hold and whether they can see the panel's channel); nothing about the answer is kept.
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
 the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `aeroconomy.com` banking (`/banking/accounts` and each account's transactions, read with a pilot's own token, in plain `GET` requests, only for a pilot who turned on `/banking`, every five minutes for each account they chose; see *Payment messages*); `movements.fshub.io` is also asked for the airline of any flight someone is watching with `/monitor`, once a minute (see *Watching a flight*);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`, presses an airport on a weather board or uses its Search button, and, for a server with a weather board, once every ten minutes, all its airports in one request; only the airport codes are sent; read-only; see *Weather reports* and *The weather board*);
-`movements.fshub.io` (FsHub's public live-flight feed, no account or key: the list of pilots online, and the current flight of a pilot who holds a flight and is online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
+`movements.fshub.io` (FsHub's public live-flight feed, no account or key: an airline's list of flights, one request for the airline about once a minute, shared by the landing estimates, live tracking and `/monitor`; and, only for a followed pilot that list does not have, the list of pilots online and the current flight of that pilot if online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
 `api.github.com` (the Windows app's daily update check, which can be switched off); and `fshub.io`, **only if
 the host saved a FsHub token** (to check a typed pilot ID and to read a linked airline's roster and recent flights; read-only, the
 token travels in a request header to `fshub.io` and nowhere else). It does not contact the Aeroconomy site, and

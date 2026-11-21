@@ -1,5 +1,5 @@
 import type { JobView, Panel, Store } from '../db/store.js';
-import { isAirbornePhase, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
+import { isFlying, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
@@ -46,17 +46,20 @@ export function callsignCode(panel: Pick<Panel, 'airlineAbbr' | 'prefix'>): stri
   return (panel.airlineAbbr?.trim() || panel.prefix).trim().toUpperCase();
 }
 
+/** The names a live flight goes by: its callsign, and the flight number of its plan (a pilot may fly under a callsign of their own and file the airline's number). */
+const namesOf = (f: AirlineFlight): string[] => [f.callsign, f.flightNo ?? null].filter((n): n is string => typeof n === 'string' && n !== '');
+
 /**
  * Whether this live flight is one of the airline's own that the bot may follow. An airline's flights are flown under its own callsign (its
- * abbreviation and a number, like `SKY290`) with a flight plan filed, and the aircraft has to be in the air with an estimate that is
- * believable. Anything else a pilot of the airline is flying (another callsign, no plan) is not one of its flights and is ignored.
+ * abbreviation and a number, like `SKY290`), or filed with its number as the plan's flight number, with a flight plan filed, and the aircraft
+ * has to be in the air (see `isFlying`) with an estimate that is believable. Anything else a pilot of the airline is flying (another
+ * callsign, no plan) is not one of its flights and is ignored.
  */
 export function isOwnFlight(f: AirlineFlight, abbr: string): boolean {
   const code = abbr.trim().toUpperCase();
-  const call = f.callsign;
-  if (!code || !call || !call.startsWith(code) || !/^\d/.test(call.slice(code.length))) return false;
+  if (!code || !namesOf(f).some((n) => n.startsWith(code) && /^\d/.test(n.slice(code.length)))) return false;
   if (!f.dep || !f.arr) return false;
-  if (f.onGround === true || !isAirbornePhase(f.phase)) return false;
+  if (!isFlying(f.phase, f.onGround)) return false;
   return f.etaMinutes !== null && f.etaMinutes >= 0 && f.etaMinutes <= MAX_ETA_MIN;
 }
 
@@ -83,8 +86,8 @@ export function matchFlight(f: AirlineFlight, views: JobView[], now: number): Ma
 
   // The callsign being the flight's number settles it: either as the flight's whole ID, or with the day on the end (`SKY330-17NOV`),
   // in which case the days that share the number are still told apart below.
-  const number = f.callsign === null ? null : normalizeFlightNumber(f.callsign);
-  const numbered = route.filter((m) => number !== null && (m.view.job.code === number || (m.view.job.code.startsWith(`${number}-`) && /^\d{2}[A-Z]{3}$/.test(m.view.job.code.slice(number.length + 1)))));
+  const numbers = namesOf(f).flatMap((n) => normalizeFlightNumber(n) ?? []);
+  const numbered = route.filter((m) => numbers.some((number) => m.view.job.code === number || (m.view.job.code.startsWith(`${number}-`) && /^\d{2}[A-Z]{3}$/.test(m.view.job.code.slice(number.length + 1)))));
   if (numbered.length === 1) return numbered[0] as Match;
   if (numbered.length > 1) route.splice(0, route.length, ...numbered);
 

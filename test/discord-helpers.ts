@@ -177,7 +177,10 @@ export class FakeChannel {
   existsOnServer(id: string): boolean {
     return this.server.has(id);
   }
+  /** Sending never finishes (Discord is not answering): for tests of what waits on a redraw. */
+  hang = false;
   async send(payload: any) {
+    if (this.hang) await new Promise<never>(() => undefined);
     const m = new FakeMessage(this, `${this.id}-m${this.next++}`, payload);
     this.server.set(m.id, m);
     this.cache.set(m.id, m);
@@ -217,7 +220,8 @@ export class FakeClient {
   readonly guilds = {
     fetch: async (_id: string) => ({
       members: {
-        fetch: async (userId: string) => {
+        fetch: async (arg: string | { user: string; force?: boolean }) => {
+          const userId = typeof arg === 'string' ? arg : arg.user;
           if (this.members && !this.members.has(userId)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
           return { id: userId, permissions: { has: () => false }, roles: { cache: { has: () => false } } };
         },
@@ -261,20 +265,46 @@ export class FakeClient {
  * A DM sent to the bot. The sender belongs to the panels' server (the one every test panel is in), unless `guilds` names
  * the servers they are in.
  */
-export function fakeDm(user: FakeUser, content: string, o: { guilds?: string[] } = {}): Message {
-  const member = (guildId: string) => (o.guilds ?? [GUILD]).includes(guildId);
-  const client = {
-    guilds: {
-      cache: new Map(),
-      fetch: async (guildId: string) => ({
-        members: {
-          fetch: async () => {
-            if (!member(guildId)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
-            return { id: user.id };
-          },
-        },
-      }),
+export interface FakeDmOptions {
+  /** The servers the sender is a member of (default: the one every test panel is in). */
+  guilds?: string[];
+  /** The servers the bot is in (default: those the sender is in, and the test panels' one). */
+  botGuilds?: string[];
+  /** The role IDs the sender holds (in every server they are in). */
+  roles?: string[];
+  /** The names of roles, by ID, as the server has them. */
+  roleNames?: Record<string, string>;
+  /** The sender has Manage Server. */
+  admin?: boolean;
+  /** The sender can see the panels' channel (default yes). */
+  canSee?: boolean;
+  /** What the server calls the sender. */
+  nickname?: string;
+  /** Looking the sender up fails with this (Discord busy, say) instead of answering. */
+  memberError?: unknown;
+  /** Every request made to look the sender up as a member is put here, to see what was asked. */
+  memberFetches?: unknown[];
+}
+
+export function fakeDm(user: FakeUser, content: string, o: FakeDmOptions = {}): Message {
+  const inGuild = (guildId: string) => (o.guilds ?? [GUILD]).includes(guildId);
+  const guild = (guildId: string) => ({
+    id: guildId,
+    name: guildId === GUILD ? 'Test Server' : `Server ${guildId}`,
+    roles: { cache: new Map(Object.entries(o.roleNames ?? {}).map(([id, name]) => [id, { name }])) },
+    members: {
+      fetch: async (arg?: unknown) => {
+        o.memberFetches?.push(arg);
+        if (o.memberError) throw o.memberError;
+        if (!inGuild(guildId)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
+        return { id: user.id, displayName: o.nickname ?? user.username, permissions: { has: () => !!o.admin }, roles: { cache: { has: (r: string) => (o.roles ?? []).includes(r) } } };
+      },
     },
+  });
+  const botGuilds = o.botGuilds ?? [...new Set([GUILD, ...(o.guilds ?? [])])];
+  const client = {
+    guilds: { cache: new Map(botGuilds.map((id) => [id, guild(id)])), fetch: async (guildId: string) => guild(guildId) },
+    channels: { fetch: async () => ({ permissionsFor: () => ({ has: () => o.canSee !== false }) }) },
   };
   return { author: user, guildId: null, content, client } as unknown as Message;
 }
@@ -297,7 +327,8 @@ function memberClient(o: ComponentOptions) {
     guilds: {
       fetch: async (_guildId: string) => ({
         members: {
-          fetch: async (userId: string) => {
+          fetch: async (arg: string | { user: string; force?: boolean }) => {
+            const userId = typeof arg === 'string' ? arg : arg.user;
             if (o.notMember) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
             return { id: userId, permissions: { has: () => !!o.admin }, roles: { cache: { has: (r: string) => (o.roles ?? []).includes(r) } } };
           },
@@ -410,7 +441,7 @@ export interface FakeInteractionOptions {
 
 /** A slash command or autocomplete interaction. */
 export function fakeInteraction(o: FakeInteractionOptions = {}) {
-  const calls = { defers: [] as any[], edits: [] as any[], replies: [] as any[], responds: [] as any[] };
+  const calls = { defers: [] as any[], edits: [] as any[], replies: [] as any[], responds: [] as any[], followUps: [] as any[] };
   const opts = o.options ?? {};
   const get = (name: string, required?: boolean) => {
     const v = opts[name];
@@ -447,6 +478,9 @@ export function fakeInteraction(o: FakeInteractionOptions = {}) {
     reply: async (p: any) => {
       i.replied = true;
       calls.replies.push(p);
+    },
+    followUp: async (p: any) => {
+      calls.followUps.push(p);
     },
     respond: async (choices: any) => {
       calls.responds.push(choices);

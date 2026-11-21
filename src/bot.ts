@@ -356,9 +356,11 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const stop = async () => {
     twitch?.stop();
     scheduler.stop();
-    // The FsHub lane may be mid-request; give it a moment to finish rather than closing the database under it.
-    await Promise.race([scheduler.idle(), new Promise<void>((r) => setTimeout(r, 3_000).unref?.())]);
+    // Nothing new starts from here: no new reads or redraws, and the slow Aeroconomy read stops at its next step.
+    aeroNumbers.stop();
     panels.stop();
+    // The FsHub lane and any redraw may be mid-request; give them a moment to finish rather than closing the database under them.
+    await Promise.race([Promise.all([scheduler.idle(), aeroNumbers.idle(), panels.drain(3_000)]), new Promise<void>((r) => setTimeout(r, 3_000).unref?.())]);
     await client.destroy();
     store.close();
   };

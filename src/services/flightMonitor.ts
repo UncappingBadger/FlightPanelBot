@@ -1,5 +1,5 @@
 import type { FlightMonitor, Store } from '../db/store.js';
-import { isAirbornePhase, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
+import { isFlying, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
 import { silentLogger, type Logger } from '../util/log.js';
 
 /**
@@ -63,11 +63,11 @@ export interface FlightMonitorsDeps {
   now?: () => number;
 }
 
-const liveOf = (f: AirlineFlight): LiveNow => ({ phase: f.phase, airborne: isAirbornePhase(f.phase) && f.onGround !== true, dep: f.dep, arr: f.arr, etaMinutes: f.etaMinutes });
+const liveOf = (f: AirlineFlight): LiveNow => ({ phase: f.phase, airborne: isFlying(f.phase, f.onGround), dep: f.dep, arr: f.arr, etaMinutes: f.etaMinutes });
 
 /** The flight with this callsign: the one in the air when two share it. */
 function pick(flights: AirlineFlight[], flightNo: string): AirlineFlight | null {
-  const same = flights.filter((f) => f.callsign === flightNo);
+  const same = flights.filter((f) => f.callsign === flightNo || f.flightNo === flightNo);
   return same.find((f) => liveOf(f).airborne) ?? same[0] ?? null;
 }
 

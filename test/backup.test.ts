@@ -325,8 +325,9 @@ describe('the Backup pilot button and the DM that asks for the flight', () => {
     assert.match(bob.lastText, /^Okay, cancelled\. Press \*\*Backup pilot\*\* on the panel whenever you want to start again\.$/);
     assert.equal(session(bob), null);
     await say(bob, 'TST-001');
-    assert.match(bob.lastText, /press \*\*Reserve\*\* on a flight panel/, 'a flight ID with no conversation open reserves nothing');
-    assert.equal(backupOf('taken'), null);
+    assert.match(bob.lastText, /already taken by/, 'a flight ID with no conversation open is a fresh request to reserve it, and TST-001 is taken');
+    assert.equal(session(bob), null);
+    assert.equal(backupOf('taken'), null, 'so no backup was added');
   });
 
   it('says the flight is not there when it has gone from the schedule since the button was pressed', async () => {
