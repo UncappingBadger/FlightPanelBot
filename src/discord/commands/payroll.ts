@@ -1,11 +1,17 @@
 import { InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type AutocompleteInteraction } from 'discord.js';
+import { AeroconomyError } from '../../aeroconomy/http.js';
+import type { BankAccount } from '../../aeroconomy/banking.js';
 import type { Panel, PayrollSettings } from '../../db/store.js';
 import { parseSheetUrl, sheetRefOf, sheetViewUrl } from '../../jobs/sheet.js';
+import { NOT_CONNECTED_TEXT } from '../../services/payGateway.js';
 import { cleanAccount, dollarsText, isAccount } from '../../services/payroll.js';
+import { PayrollError, type Payroll } from '../../services/payrollService.js';
+import { planTestTransfer, TEST_MAX_CENTS, TestTransferError } from '../../services/payTest.js';
 import { airlineLabel, plainText, truncate, ts } from '../../util/format.js';
 import type { BotContext, Command } from '../context.js';
 import { UserError } from '../errors.js';
 import { requireAdmin } from '../guard.js';
+import { askTest } from '../payTestUi.js';
 import { runTimeText, sendList } from '../payrollUi.js';
 import { noPings } from '../ui.js';
 import { pickPanel } from './setup.js';
@@ -28,6 +34,16 @@ function parseTimeOfDay(text: string): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
+/** The accounts the bot's FsHub token can see, or an error an admin can read. */
+async function seeAccounts(payroll: Payroll): Promise<BankAccount[]> {
+  try {
+    return await payroll.listAccounts();
+  } catch (e) {
+    if (e instanceof PayrollError || e instanceof AeroconomyError) throw new UserError(e.message);
+    throw e;
+  }
+}
+
 /** What is set up, in words, and what is still missing. */
 export function payrollSettingsText(ctx: BotContext, panel: Panel, s: PayrollSettings | null): string {
   const connected = ctx.payroll?.gateway.connected ?? false;
@@ -48,7 +64,7 @@ export function payrollSettingsText(ctx: BotContext, panel: Panel, s: PayrollSet
     ctx.writeback?.enabledFor(panel)
       ? '• After a payment goes through, I tick **Pilot Paid** on its row in the sheet (only an empty box is ever ticked).'
       : "• After a payment goes through, **Pilot Paid** can't be ticked for you: writing to the sheet isn't switched on for this panel (`/setup writeback`), so the Pay result lists the rows to tick by hand.",
-    connected ? '• The bank connection is **on**.' : "• ⚠️ **Paying isn't connected to Aeroconomy yet** (the bot has no access to the airline's bank account). You get the list and can check and amend it, but **Pay** stops there: nothing is sent and nothing is recorded as paid.",
+    connected ? '• The bank connection is **on**. Before the first real payment, `/payroll test-transfer` sends a dollar between two of your accounts to prove it works.' : "• ⚠️ **Paying isn't connected to Aeroconomy yet** (the bot has no access to the airline's bank account). You get the list and can check and amend it, but **Pay** stops there: nothing is sent and nothing is recorded as paid.",
     "• A payment is only ever made once: each has a unique ID that is kept. The pay is taken from the sheet's Pilot Pay column, but never less than **$2,000** a flight, and a flight that lost money gets $2,000 for its first 1,000 nm and $1,000 more for every further 500 nm, by the distance FsHub recorded. `/payroll run` makes a list now.",
   ].join('\n');
 }
@@ -85,6 +101,21 @@ export const payrollCommand: Command = {
       s
         .setName('history')
         .setDescription('The latest payments the bot has made or tried')
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('accounts')
+        .setDescription('The Aeroconomy bank accounts the bot can see (to find the source account, or for a test transfer)')
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('test-transfer')
+        .setDescription('Send a small test payment between two accounts the bot can see, to prove paying works')
+        .addStringOption((o) => o.setName('from').setDescription('The account the money comes from: its number, or its name').setRequired(true).setMaxLength(60))
+        .addStringOption((o) => o.setName('to').setDescription('The account it goes to: its number, or its name').setRequired(true).setMaxLength(60))
+        .addNumberOption((o) => o.setName('amount').setDescription(`In dollars, $0.01 to $${TEST_MAX_CENTS / 100} (a dollar if left out)`).setMinValue(0.01).setMaxValue(TEST_MAX_CENTS / 100))
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     ),
 
@@ -169,6 +200,39 @@ export const payrollCommand: Command = {
           return;
         }
         await sendList(ctx, panel, settings, draft, { askerId: interaction.user.id, interaction });
+        return;
+      }
+
+      case 'accounts': {
+        const accounts = await seeAccounts(payroll);
+        if (accounts.length === 0) {
+          await interaction.editReply({ content: "I can't see any Aeroconomy bank accounts with the FsHub token.", allowedMentions: noPings });
+          return;
+        }
+        const shown = accounts.slice(0, 25);
+        await interaction.editReply({
+          content: [
+            '💷 **The accounts the bot can see** (with the FsHub token it was given)',
+            ...shown.map((a) => `• **${plainText(truncate(a.name, 50))}**${a.type ? ` · ${plainText(a.type)}` : ''} · \`${a.number}\``),
+            ...(accounts.length > shown.length ? [`…and ${accounts.length - shown.length} more.`] : []),
+            'Use one as the `source-account` of `/payroll settings`, or in `/payroll test-transfer`.',
+          ].join('\n'),
+          allowedMentions: noPings,
+        });
+        return;
+      }
+
+      case 'test-transfer': {
+        if (!payroll.gateway.connected) throw new UserError(NOT_CONNECTED_TEXT);
+        const accounts = await seeAccounts(payroll);
+        let transfer;
+        try {
+          transfer = planTestTransfer(accounts, interaction.options.getString('from', true), interaction.options.getString('to', true), interaction.options.getNumber('amount'));
+        } catch (e) {
+          if (e instanceof TestTransferError) throw new UserError(e.message);
+          throw e;
+        }
+        await interaction.editReply({ ...askTest(ctx, interaction.user.id, guildId, panel.airlineName, transfer), allowedMentions: noPings });
         return;
       }
 

@@ -17,7 +17,7 @@ import { BankingService } from './services/banking.js';
 import { FlightMonitors } from './services/flightMonitor.js';
 import { SecretBox } from './services/secretBox.js';
 import { PayrollDaily } from './discord/payrollUi.js';
-import { PAYROLL_FLAG, payrollEnabled } from './features.js';
+import { PAYROLL_OFF_FLAG, payrollEnabled } from './features.js';
 import { registerInteractionRouter } from './discord/router.js';
 import { DEMO } from './discord/ui.js';
 import { loadServiceAccount, tokenProvider } from './google/serviceAccount.js';
@@ -37,11 +37,13 @@ import { JobEvents } from './services/events.js';
 import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { HardLandings } from './services/hardLanding.js';
+import { HARD_LANDINGS_CSV, managerRoles, tellDoubts, type ManagerLookup } from './services/safetyReport.js';
 import { JobService } from './services/jobs.js';
 import { AeroconomyAccountClient } from './aeroconomy/account.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
 import { AirlineProfits } from './services/airlineProfits.js';
-import { NotConnectedGateway } from './services/payGateway.js';
+import { AeroconomyGateway, NotConnectedGateway } from './services/payGateway.js';
+import { AeroconomyPaymentsClient } from './aeroconomy/payments.js';
 import { Payroll } from './services/payrollService.js';
 import { AeroNumbers } from './services/aeroNumbers.js';
 import { HourlySlot } from './services/hourlySlot.js';
@@ -145,7 +147,14 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const fshub = config.fshubToken ? new FsHubClient({ token: config.fshubToken, logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }) : null;
   // A pilot FsHub shows landing very hard gets a light-hearted message (they can switch it off). It only needs FsHub's flights, so it rides on that read.
   let notifier: Notifier | null = null;
-  const hardLandings = new HardLandings(store, async (discordId, content) => (await notifier?.dm(discordId, content)) === true, { logger: log });
+  const managersOf: ManagerLookup = async (panel) => (await notifier?.managerIds(panel.guildId, managerRoles(store, panel))) ?? [];
+  const hardLandings = new HardLandings(store, async (discordId, content) => (await notifier?.dm(discordId, content)) === true, {
+    logger: log,
+    managers: managersOf,
+    nameOf: async (discordId) => (await notifier?.nameOf(discordId)) ?? null,
+    // The CSV of penalty landings sits in the data folder, beside the database (none for an in-memory one, which is for tests and demos).
+    csvFile: config.databasePath === ':memory:' ? null : join(dirname(config.databasePath), HARD_LANDINGS_CSV),
+  });
   const fshubSync = fshub ? new FsHubSync(store, fshub, panels, { logger: log, completed: (panelId) => jobs.completed(panelId), onFlights: (panel, flights) => hardLandings.check(panel, flights), slot }) : null;
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
@@ -223,10 +232,26 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const dailyNote = config.dailyNote
     ? new DailyNote({ store, target: config.dailyNote, send: async (userId, content) => (await notifier?.dm(userId, content)) === true, reachable: async (userId) => (await notifier?.sharesServerWith(userId)) !== false, airlineName: () => airlineOf(config.dailyNote!.userId), logger: log })
     : null;
-  // Paying pilots: the list of what is due is made from the airline's sheet, checked by an admin, and (once the bank is connected) paid. It is built
-  // but switched off (see src/features.ts) until the bank connection exists: unless a developer turns it on, nothing of it is registered or run.
-  const payroll = payrollEnabled() ? new Payroll({ store, gateway: new NotConnectedGateway(), writeback, fshub, logger: log }) : null;
-  if (payroll) log.info(`Paying pilots is switched on (${PAYROLL_FLAG}). There is no bank connection, so nothing can be paid.`);
+  // Paying pilots: the list of what is due is made from the airline's sheet, checked by an admin, and paid through Aeroconomy when they press Pay. It is on
+  // unless the person running the bot switched it off (src/features.ts). The money is sent with the saved FsHub token, which Aeroconomy accepts as its
+  // API key; without one nothing can be paid, and the bot says so.
+  const payroll = payrollEnabled()
+    ? (() => {
+        const token = config.fshubToken;
+        const userAgent = `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}`;
+        const bank = new AeroconomyBankingClient({ logger: log, userAgent });
+        return new Payroll({
+          store,
+          gateway: token ? new AeroconomyGateway(new AeroconomyPaymentsClient(token, { logger: log, userAgent })) : new NotConnectedGateway(),
+          accounts: token ? () => bank.accounts(token) : null,
+          writeback,
+          fshub,
+          logger: log,
+        });
+      })()
+    : null;
+  if (payroll) log.info(payroll.gateway.connected ? 'Paying pilots is available: an admin sets it up with /payroll settings, and nothing is paid until they press Pay.' : 'Paying pilots is available, but there is no FsHub token, so nothing can be paid.');
+  else log.info(`Paying pilots is switched off (${PAYROLL_OFF_FLAG}).`);
   let payrollDaily: PayrollDaily | null = null;
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
@@ -251,7 +276,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // `/setup profit`: reads the airline's aircraft logbooks on Aeroconomy with the host's FsHub token, which Aeroconomy accepts too. It is only
   // ever used when an admin runs that command (nothing is read, and nothing is written, by itself), and only for reading.
   const profits = config.fshubToken
-    ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), logger: log })
+    ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), onHeld: (panel, held) => tellDoubts({ store, send: async (discordId, content) => (await notifier?.dm(discordId, content)) === true, managers: managersOf, now: Date.now, log }, panel, held), logger: log })
     : null;
 
   const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };

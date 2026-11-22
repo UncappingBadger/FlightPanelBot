@@ -13,8 +13,18 @@ const REASON: Record<ReleasedNotice['reason'], string> = {
   admin: 'was released by a server admin',
 };
 
+/** A server's members are listed this many at a time, and at most this many times (so a very large server is not read in full). */
+const MEMBERS_PER_PAGE = 1000;
+const MEMBER_PAGES = 10;
+/** The most people one message to a role's members goes to. */
+const MAX_RECIPIENTS = 25;
+/** A list of a role's members is kept this long, so a run of messages to the same managers reads the server once. */
+const MANAGERS_KEPT_MS = 10 * 60_000;
+
 /** Redraws panels when jobs change, and tells people when a reservation of theirs is taken away. */
 export class Notifier {
+  private readonly managerCache = new Map<string, { at: number; ids: string[] }>();
+
   constructor(
     private readonly client: Client,
     private readonly panels: PanelService,
@@ -64,6 +74,48 @@ export class Notifier {
       }
     }
     return unsure;
+  }
+
+  /** A person's Discord name (the name they show, or their username), or null when it can't be found. */
+  async nameOf(discordId: string): Promise<string | null> {
+    try {
+      const user = await this.client.users.fetch(discordId);
+      return user.globalName ?? user.username;
+    } catch (e) {
+      this.log.debug(`Could not look up the name of ${discordId}`, e);
+      return null;
+    }
+  }
+
+  /**
+   * The people a message to an airline's managers goes to: the members of these roles. Discord only lets a bot list a server's members when "Server
+   * Members Intent" is switched on for it in the Developer Portal (the bot does not ask for the intent itself, so it connects either way). When the list
+   * cannot be read, or nobody in it has a role, or no role is set, the message goes to the server's owner instead, so a report is never lost.
+   */
+  async managerIds(guildId: string, roleIds: string[]): Promise<string[]> {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (!guild) return [];
+    const key = `${guildId}:${[...roleIds].sort().join(',')}`;
+    const kept = this.managerCache.get(key);
+    if (kept && Date.now() - kept.at < MANAGERS_KEPT_MS) return kept.ids;
+    const ids = new Set<string>();
+    if (roleIds.length > 0) {
+      try {
+        let after: string | undefined;
+        for (let page = 0; page < MEMBER_PAGES; page++) {
+          const members = await guild.members.list({ limit: MEMBERS_PER_PAGE, ...(after ? { after } : {}) });
+          for (const m of members.values()) if (!m.user.bot && roleIds.some((r) => m.roles.cache.has(r))) ids.add(m.id);
+          if (members.size < MEMBERS_PER_PAGE) break;
+          after = members.lastKey();
+        }
+      } catch (e) {
+        this.log.warn(`Could not list the members of server ${guildId} to find its managers (switch on "Server Members Intent" for the bot in the Discord Developer Portal)`, e);
+      }
+    }
+    if (ids.size === 0 && guild.ownerId) ids.add(guild.ownerId);
+    const out = [...ids].slice(0, MAX_RECIPIENTS);
+    this.managerCache.set(key, { at: Date.now(), ids: out });
+    return out;
   }
 
   /** Send a person a private message. True if it went out, false if they could not be reached (closed DMs, an unknown user). */

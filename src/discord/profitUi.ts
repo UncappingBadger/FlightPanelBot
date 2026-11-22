@@ -14,7 +14,7 @@ import {
 } from 'discord.js';
 import type { Panel, ProfitSendTo } from '../db/store.js';
 import { dayName, formatMoney } from '../services/contributions.js';
-import type { PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
+import type { HeldFlight, PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
 import { WriteBackError } from '../services/writeback.js';
 import { plainText, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler } from './context.js';
@@ -61,12 +61,38 @@ const PROBLEM_TEXT: Record<PayProblem, string> = {
   'distance-differs': "FsHub and Aeroconomy don't agree on the distance, so it isn't worked out",
 };
 
+/** Why a flight was left alone (safety pay is on), said briefly. */
+const HELD_TEXT: Record<HeldFlight['reason'], (h: HeldFlight) => string> = {
+  'no-landing-rate': () => 'FsHub has no landing rate for it',
+  'landing-rate-not-believed': (h) => `FsHub's landing rate for it (-${h.fpm ?? '?'} fpm) is too hard to believe as a touchdown`,
+};
+
+/** How a pay that was cut for a hard landing came about, in words. */
+function safetyHow(p: PayPlan): string {
+  const s = p.safety as NonNullable<PayPlan['safety']>;
+  const cut =
+    p.distanceNm !== null
+      ? `the usual loss pay for ${Math.round(p.distanceNm).toLocaleString('en-US')} nm${s.minimumLoss > 0 ? `, less ${s.minimumLoss}%` : ', with no cut'}`
+      : s.byMinimum
+        ? `the $2,000 minimum${s.minimumLoss > 0 ? `, less ${s.minimumLoss}%` : ' kept'}`
+        : `${s.share}% of the profit`;
+  return `Tier ${s.tier} safety: landed at -${s.fpm} fpm, ${cut}; ${formatMoney(s.normal)} without the cut`;
+}
+
 /** The pilot's pay for a row, in words and how it was worked out, or why there is none. Empty when its cell isn't going to be filled anyway. */
 function payText(p: PayPlan): string {
   if (p.cell === 'zeroed') return ' · pilot pay: left at $0 (it was set back to $0 after I wrote one)';
   if (p.cell !== 'empty') return '';
-  if (p.amount === null || p.problem !== null) return ` · pilot pay: ${p.problem ? PROBLEM_TEXT[p.problem] : 'not worked out'}`;
-  const how = p.basis === 'share' ? '15% of the profit' : p.basis === 'minimum' ? 'the $2,000 minimum' : `loss, ${Math.round(p.distanceNm ?? 0).toLocaleString('en-US')} nm flown`;
+  if (p.problem !== null) return ` · pilot pay: ${PROBLEM_TEXT[p.problem]}`;
+  if (p.amount === null) return p.basis === 'safety' && p.safety ? ` · pilot pay: nothing to write (${safetyHow(p)})` : ' · pilot pay: not worked out';
+  const how =
+    p.basis === 'safety'
+      ? safetyHow(p)
+      : p.basis === 'share'
+        ? '15% of the profit'
+        : p.basis === 'minimum'
+          ? 'the $2,000 minimum'
+          : `loss, ${Math.round(p.distanceNm ?? 0).toLocaleString('en-US')} nm flown`;
   return ` · pilot pay ${formatMoney(p.amount)} (${how})`;
 }
 
@@ -95,6 +121,16 @@ function addWithin(lines: string[], items: string[], budget: number, total = ite
   if (shown < total) lines.push(`…and ${total - shown} more.`);
 }
 
+/** Lines on landing safety, when it touches the rows: pay cut, flights left alone for want of a trustworthy reading, and flights held for a later run. */
+function safetyBullets(fills: ProfitFillPlan[], waiting: number, held: HeldFlight[]): string[] {
+  const cut = fills.filter((f) => f.payPlan.cell === 'empty' && f.payPlan.safety).length;
+  return [
+    ...(cut > 0 ? [`• ⚖️ **${cut}** have their pilot pay cut for a hard landing (safety pay)`] : []),
+    ...(held.length > 0 ? [`• ⏸️ **${held.length}** are left alone, profit and pay both, because safety pay is on and FsHub's landing rate for ${held.length === 1 ? 'it' : 'them'} can't be trusted: your managers are told, and can fill ${held.length === 1 ? 'it' : 'them'} in by hand`] : []),
+    ...(waiting > 0 ? [`• ⏳ **${waiting}** would be filled, but FsHub's landing rate for ${waiting === 1 ? 'it' : 'them'} couldn't be read yet, so ${waiting === 1 ? 'it waits' : 'they wait'} for the next run (safety pay is on)`] : []),
+  ];
+}
+
 /** One line on the pilots' pay beside the blank profits. */
 function payBullet(fills: ProfitFillPlan[]): string {
   const s = paySummary(fills);
@@ -119,6 +155,7 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
     `• ✏️ **${a.different.length}** have a Profit Made that is not what Aeroconomy says`,
     `• ⬜ **${a.fills.length}** have a blank Profit Made that Aeroconomy can fill in`,
     ...(a.fills.length > 0 ? [payBullet(a.fills)] : []),
+    ...safetyBullets(a.fills, a.waiting ?? 0, a.held ?? []),
     ...(a.unreadable > 0 ? [`• 🔒 **${a.unreadable}** have something in Profit Made that is not an amount (like TBD): left exactly as it is`] : []),
     `• ❔ **${a.unmatched}** I found no logbook flight for${a.unmatched > 0 ? " (Aeroconomy only lets me read the newest 100 entries of each aircraft's logbook, so older flights are out of reach)" : ''}, and **${a.ambiguous}** could be more than one flight (left alone)`,
   ];
@@ -131,6 +168,11 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
     lines.push('', '**Blank, could be filled in:**');
     const shown = a.fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)}${payText(f.payPlan)}`)}`);
     addWithin(lines, shown, REPORT_BUDGET, a.fills.length);
+  }
+  if (a.held && a.held.length > 0) {
+    lines.push('', '**Left alone (safety pay):**');
+    const shown = a.held.slice(0, SHOWN_FILLS).map((h) => `• ${row(h.row, `${flight(h.callsign, h.route, h.day)} · ${HELD_TEXT[h.reason](h)}`)}`);
+    addWithin(lines, shown, 1900, a.held.length);
   }
   return lines.join('\n');
 }

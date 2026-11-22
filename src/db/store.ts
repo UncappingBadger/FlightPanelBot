@@ -68,6 +68,12 @@ export interface Panel {
   liveTracking: boolean;
   /** Whether the flights take Aeroconomy's own flight numbers as their IDs (read from its public contracts; needs `fshubAirlineId`). Off by default. */
   flightNumbers: boolean;
+  /** Landing safety pay (see `services/safetyPay.ts`): when it was turned on, or null while it is off. A flight that landed before then is paid as it always was. */
+  safetyPaySince: number | null;
+  /** Whether the $2,000 minimum pay still applies to a flight whose pay is cut for a hard landing. */
+  /** The percentage (0 to 100) of the $2,000 minimum pay a pilot loses after a Tier 2 landing, and after a Tier 3 landing. */
+  safetyLossTier2: number;
+  safetyLossTier3: number;
   /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
   layout: 'cards' | 'grid';
   /** The order of day and month in the short dates on a grid panel's buttons: day first (16/11/26) or month first (11/16/26). */
@@ -400,6 +406,9 @@ const toPanel = (r: Row): Panel => ({
   departWarningMinutes: r.depart_warning_minutes === undefined || r.depart_warning_minutes === null ? 30 : Math.min(180, Math.max(0, Math.round(n(r.depart_warning_minutes)))),
   liveTracking: r.live_tracking === undefined || r.live_tracking === null ? true : n(r.live_tracking) !== 0,
   flightNumbers: r.flight_numbers !== undefined && r.flight_numbers !== null && n(r.flight_numbers) !== 0,
+  safetyPaySince: nn(r.safety_pay_since),
+  safetyLossTier2: r.safety_loss_tier2 === undefined || r.safety_loss_tier2 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier2))),
+  safetyLossTier3: r.safety_loss_tier3 === undefined || r.safety_loss_tier3 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier3))),
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
   profitSendTo: s(r.profit_send_to) === 'dm' ? 'dm' : s(r.profit_send_to) === 'channel' ? 'channel' : 'here',
@@ -672,6 +681,9 @@ export class Store {
       departWarningMinutes: number;
       liveTracking: boolean;
       flightNumbers: boolean;
+      safetyPaySince: number | null;
+      safetyLossTier2: number;
+      safetyLossTier3: number;
       layout: 'cards' | 'grid';
       gridDates: 'dmy' | 'mdy';
       profitSendTo: ProfitSendTo;
@@ -712,6 +724,9 @@ export class Store {
       sets.push('show_days = ?');
       params.push(patch.showDays);
     }
+    if (patch.safetyPaySince !== undefined) (sets.push('safety_pay_since = ?'), params.push(patch.safetyPaySince));
+    if (patch.safetyLossTier2 !== undefined) (sets.push('safety_loss_tier2 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier2)))));
+    if (patch.safetyLossTier3 !== undefined) (sets.push('safety_loss_tier3 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier3)))));
     if (patch.fshubAutoComplete !== undefined) (sets.push('fshub_autocomplete = ?'), params.push(patch.fshubAutoComplete ? 1 : 0));
     if (patch.fshubAutoCompleteAt !== undefined) (sets.push('fshub_autocomplete_at = ?'), params.push(patch.fshubAutoCompleteAt));
     if (patch.fshubConfirm !== undefined) (sets.push('fshub_confirm = ?'), params.push(patch.fshubConfirm ? 1 : 0));
@@ -1149,6 +1164,48 @@ export class Store {
   /* ------------------------------------------------------------------ remarks on very hard landings */
 
   /** Has the bot already dealt with this FsHub flight (told the pilot, or decided not to)? */
+  /**
+   * What has been done about a Tier 1, 2 or 3 landing so far, or null if nothing has: whether the pilot was sent the safety notice (`sent`) or could not be
+   * (`closed`, their DMs are closed), null while they have not been tried, whether a row was written to the CSV, and whether the managers were told.
+   */
+  getSafetyLanding(panelId: number, flightId: number): { told: 'sent' | 'closed' | null; logged: boolean; reported: boolean } | null {
+    const r = this.get('SELECT told, logged, reported FROM safety_landings WHERE panel_id = ? AND flight_id = ?', panelId, flightId);
+    if (r === undefined) return null;
+    const told = n(r.told);
+    return { told: told === 1 ? 'sent' : told === 2 ? 'closed' : null, logged: n(r.logged) !== 0, reported: n(r.reported) !== 0 };
+  }
+
+  /** Remember that these steps have been done for this landing (a step already done stays done). */
+  saveSafetyLanding(panelId: number, flightId: number, done: { told?: 'sent' | 'closed'; logged?: boolean; reported?: boolean }, now: number): void {
+    this.run(
+      `INSERT INTO safety_landings(panel_id, flight_id, told, logged, reported, handled_at) VALUES (?,?,?,?,?,?)
+       ON CONFLICT(panel_id, flight_id) DO UPDATE SET
+         told = CASE WHEN safety_landings.told = 0 THEN excluded.told ELSE safety_landings.told END,
+         logged = max(logged, excluded.logged), reported = max(reported, excluded.reported)`,
+      panelId,
+      flightId,
+      done.told === 'sent' ? 1 : done.told === 'closed' ? 2 : 0,
+      done.logged ? 1 : 0,
+      done.reported ? 1 : 0,
+      now,
+    );
+  }
+
+  /** Forget landings handled before this, and doubts noted before it. */
+  pruneSafety(before: number): void {
+    this.run('DELETE FROM safety_landings WHERE handled_at < ?', before);
+    this.run('DELETE FROM safety_doubts WHERE noted_at < ?', before);
+  }
+
+  /** Whether managers have already been told that this sheet row was left unfilled for want of a usable landing rate. */
+  hasSafetyDoubt(panelId: number, sourceKey: string): boolean {
+    return this.get('SELECT 1 AS x FROM safety_doubts WHERE panel_id = ? AND source_key = ?', panelId, sourceKey) !== undefined;
+  }
+
+  noteSafetyDoubt(panelId: number, sourceKey: string, now: number): void {
+    this.run('INSERT OR IGNORE INTO safety_doubts(panel_id, source_key, noted_at) VALUES (?,?,?)', panelId, sourceKey, now);
+  }
+
   hasLandingRemark(flightId: number): boolean {
     return this.get('SELECT 1 AS x FROM landing_remarks WHERE flight_id = ?', flightId) !== undefined;
   }

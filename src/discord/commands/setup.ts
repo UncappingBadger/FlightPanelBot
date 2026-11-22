@@ -29,6 +29,7 @@ import type { BotContext, Command } from '../context.js';
 import { checkPilotId, pilotLabel, rememberPilotId } from '../dm.js';
 import { isDmClosed, UserError } from '../errors.js';
 import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
+import { safetyPayCommand } from '../safetyUi.js';
 import type { PanelRefreshResult } from '../panel.js';
 import { applyProfitSettings, profitReport, profitSettingsText, showPreview } from '../profitUi.js';
 import { noPings, reminderTarget } from '../ui.js';
@@ -444,6 +445,39 @@ export const setupCommand: Command = {
             .setName('mode')
             .setDescription('Turn live tracking on or off')
             .addChoices({ name: 'On: follow pilots flights live (the default)', value: 'on' }, { name: 'Off: do not use the live feed', value: 'off' }),
+        )
+        .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('safety-pay')
+        .setDescription('Link pilot pay to landing safety: a hard landing cuts the pay (empty: show)')
+        .addStringOption((o) =>
+          o
+            .setName('mode')
+            .setDescription('Turn it on (I ask what percentage of the $2,000 minimum a pilot loses) or off')
+            .addChoices({ name: 'On: hard landings cut the pilot pay, and pilots are sent a safety notice', value: 'on' }, { name: 'Off: pay as it always was (the default)', value: 'off' }),
+        )
+        .addIntegerOption((o) =>
+          o
+            .setName('minimum-loss')
+            .setDescription('Per cent of the $2,000 minimum a pilot loses after a hard landing, for both tiers (0 keeps it all)')
+            .setMinValue(0)
+            .setMaxValue(100),
+        )
+        .addIntegerOption((o) =>
+          o
+            .setName('tier2-loss')
+            .setDescription('Per cent of the $2,000 minimum a pilot loses after a Tier 2 landing (to set the tiers apart)')
+            .setMinValue(0)
+            .setMaxValue(100),
+        )
+        .addIntegerOption((o) =>
+          o
+            .setName('tier3-loss')
+            .setDescription('Per cent of the $2,000 minimum a pilot loses after a Tier 3 landing (to set the tiers apart)')
+            .setMinValue(0)
+            .setMaxValue(100),
         )
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     )
@@ -931,6 +965,17 @@ export const setupCommand: Command = {
           ].join('\n'),
           allowedMentions: noPings,
         });
+        return;
+      }
+
+      case 'safety-pay': {
+        const panel = pickPanel(ctx, guildId, airlineOpt());
+        const reply = safetyPayCommand(ctx, panel, interaction.options.getString('mode'), {
+          both: interaction.options.getInteger('minimum-loss'),
+          tier2: interaction.options.getInteger('tier2-loss'),
+          tier3: interaction.options.getInteger('tier3-loss'),
+        });
+        await interaction.editReply({ ...reply, allowedMentions: noPings });
         return;
       }
 

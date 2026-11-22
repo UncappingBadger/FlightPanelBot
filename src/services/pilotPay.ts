@@ -1,3 +1,5 @@
+import { fineShare, type FineTier, type SafetyFine } from './safetyPay.js';
+
 /**
  * What a pilot is paid for a flight, by the rule the airline's CEO gave:
  *
@@ -19,12 +21,17 @@ export const BASE_COVERS_NM = 1000;
 export const PAY_PER_STRETCH = 1000;
 export const STRETCH_NM = 500;
 
-/** How the pay was worked out: a share of the profit, the minimum (the share was less), or the rule for a flight that lost money. */
-export type PayBasis = 'share' | 'minimum' | 'distance';
+/** How the pay was worked out: a share of the profit, the minimum (the share was less), the rule for a flight that lost money, or a safety fine for a hard landing. */
+export type PayBasis = 'share' | 'minimum' | 'distance' | 'safety';
 
 export interface PilotPay {
   amount: number;
   basis: PayBasis;
+  /**
+   * For a flight whose pay was cut after a hard landing: the tier, the share of the profit it pays, what the flight would have paid without the cut, the
+   * percentage of the minimum pay the pilot lost, and whether the (reduced) minimum is what decided the pay (a profit whose share came to less).
+   */
+  safety?: { tier: FineTier; share: number; normal: number; minimumLoss: number; byMinimum: boolean };
 }
 
 /** Whether the pay of a flight with this profit depends on how far it was flown (it does when the flight lost money). */
@@ -33,8 +40,29 @@ export const paidByDistance = (profit: number): boolean => profit < 0;
 /**
  * The pay for a flight that made `profit` dollars (negative for a loss) and was flown `distanceNm` nautical miles. A flight that lost
  * money needs its distance: without one (`null`, or anything that is not a distance) there is no pay to work out, and this says so with null.
+ *
+ * With a `fine` (a Tier 2 or Tier 3 landing, see `safetyPay.ts`) the pay is cut, and the airline has chosen what percentage of the $2,000 minimum pay
+ * the pilot loses (`minimumLoss`, 0 to 100):
+ *  - A flight that made a profit pays that tier's share of it (8% or 5%, rounded up to the next whole dollar) instead of 15%, but never less than the
+ *    minimum after the loss: $2,000 less `minimumLoss` per cent (rounded up). With no loss that is the whole $2,000; with all of it lost, there is no minimum.
+ *  - A share of a loss makes no sense, so a flight that lost money is paid by its distance as usual, less `minimumLoss` per cent (rounded up).
+ * Where the whole minimum is lost, a flight that made no profit, or lost money, pays nothing (0).
  */
-export function pilotPay(profit: number, distanceNm: number | null): PilotPay | null {
+export function pilotPay(profit: number, distanceNm: number | null, fine?: Pick<SafetyFine, 'tier' | 'minimumLoss'> | null): PilotPay | null {
+  const normal = normalPay(profit, distanceNm);
+  if (normal === null || !fine) return normal;
+  const share = fineShare(fine.tier);
+  const loss = Math.min(100, Math.max(0, fine.minimumLoss));
+  const kept = 100 - loss;
+  const lost = paidByDistance(profit);
+  const portion = lost ? 0 : Math.ceil((profit * share) / 100);
+  const floor = lost ? 0 : Math.ceil((PAY_MINIMUM * kept) / 100);
+  const amount = lost ? Math.ceil((normal.amount * kept) / 100) : Math.max(portion, floor);
+  return { amount, basis: 'safety', safety: { tier: fine.tier, share, normal: normal.amount, minimumLoss: loss, byMinimum: !lost && floor > portion } };
+}
+
+/** The pay by the airline's usual rule, with no safety fine. */
+function normalPay(profit: number, distanceNm: number | null): PilotPay | null {
   if (!Number.isFinite(profit)) return null;
   if (paidByDistance(profit)) {
     if (distanceNm === null || !Number.isFinite(distanceNm) || distanceNm < 0) return null;

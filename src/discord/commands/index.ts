@@ -4,6 +4,8 @@ import { bankingHandler } from '../banking.js';
 import { dmHandler, panelHandler } from '../dm.js';
 import { noticesHandler } from '../notices.js';
 import { payrollHandler } from '../payrollUi.js';
+import { payTestHandler } from '../payTestUi.js';
+import { safetyHandler } from '../safetyUi.js';
 import { profitHandler } from '../profitUi.js';
 import { weatherHandler } from '../weatherBoard.js';
 import { commandsCommand } from './commands.js';
@@ -17,9 +19,9 @@ import { setupCommand } from './setup.js';
 /** Only admins configure anything; everyone else uses the buttons on the panel, `/fuel`, `/eta`, `/commands`, and `/hideunavailable` for their own view. */
 export const commandSet = (withPayroll: boolean): Command[] => [setupCommand, helpCommand, commandsCommand, fuelCommand, etaCommand, hideUnavailableCommand, ...(withPayroll ? [payrollCommand] : [])];
 
-export const handlerSet = (withPayroll: boolean): ComponentHandler[] => [panelHandler, dmHandler, noticesHandler, profitHandler, weatherHandler, bankingHandler, ...(withPayroll ? [payrollHandler] : [])];
+export const handlerSet = (withPayroll: boolean): ComponentHandler[] => [panelHandler, dmHandler, noticesHandler, profitHandler, weatherHandler, bankingHandler, safetyHandler, ...(withPayroll ? [payrollHandler, payTestHandler] : [])];
 
-/** Paying pilots is built but switched off until the bank connection exists (see `src/features.ts`), so by default it is neither registered nor handled. */
+/** Paying pilots is on unless the person running the bot switched it off (see `src/features.ts`); off, it is neither registered nor handled. */
 export const commands: Command[] = commandSet(payrollEnabled());
 
 export const componentHandlers: ComponentHandler[] = handlerSet(payrollEnabled());

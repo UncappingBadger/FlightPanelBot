@@ -461,6 +461,7 @@ export function fakeInteraction(o: FakeInteractionOptions = {}) {
       getSubcommand: () => o.sub,
       getString: get,
       getInteger: get,
+      getNumber: get,
       getBoolean: get,
       getUser: get,
       getChannel: get,

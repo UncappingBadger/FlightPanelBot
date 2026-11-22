@@ -32,7 +32,7 @@ describe('asking for the commands', () => {
     });
     it('knows which are for everyone and which are for admins', () => {
       assert.deepEqual(slash.filter((c) => !c.adminOnly).map((c) => c.name).sort(), ['commands', 'eta', 'fuel', 'help', 'hideunavailable']);
-      assert.deepEqual(slash.filter((c) => c.adminOnly).map((c) => c.name), ['setup']);
+      assert.deepEqual(slash.filter((c) => c.adminOnly).map((c) => c.name).sort(), ['payroll', 'setup']);
     });
     it('knows the parts of /setup, with what each does', () => {
       const names = slash.find((c) => c.name === 'setup')!.subs.map((s) => s.name);

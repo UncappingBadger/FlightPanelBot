@@ -5,7 +5,8 @@ import { previewText, profitReport } from '../src/discord/profitUi.js';
 import { FsHubError, distanceNmOf, parseFlightPage, type FlightPage, type FsHubFlight } from '../src/fshub/client.js';
 import { tokenProvider } from '../src/google/serviceAccount.js';
 import { SheetsApi } from '../src/google/sheetsApi.js';
-import { AirlineProfits, compareProfits, planPay, type ProfitAnalysis, type ProfitFillPlan } from '../src/services/airlineProfits.js';
+import { AirlineProfits, compareProfits, planPay, ProfitError, type HeldFlight, type ProfitAnalysis, type ProfitFillPlan } from '../src/services/airlineProfits.js';
+import type { Panel } from '../src/db/store.js';
 import { pilotPay } from '../src/services/pilotPay.js';
 import { SheetWriteBack } from '../src/services/writeback.js';
 import type { LogFlight } from '../src/aeroconomy/account.js';
@@ -258,6 +259,8 @@ describe('working out the pay when reading an airline', () => {
   let sheet: string[][];
   let logbook: LogFlight[];
   let asked: Array<[number, number, number]>;
+  /** What the managers would have been told about: one entry for each analysis that held a flight. */
+  let heldCalls: HeldFlight[][];
   let answer: (cursor: number) => Promise<FlightPage>;
   const panel = () => h.store.getPanel(h.panel.id)!;
   const page = (flights: Array<Partial<FsHubFlight> & { id: number }>): FlightPage => ({
@@ -267,9 +270,10 @@ describe('working out the pay when reading an airline', () => {
     firstAt: null,
     lastAt: null,
   });
-  const profits = (withFsHub = true) =>
+  const profits = (withFsHub = true, onHeld: (panel: Panel, held: HeldFlight[]) => unknown = (_panel, held) => void heldCalls.push(held)) =>
     new AirlineProfits({
       store: h.store,
+      onHeld,
       account: {
         ownedAircraft: async (b: number) => [{ serial: 151, registration: null, type: 'B738', ownerType: 'airline', ownerAirlineId: AIRLINE, businessId: b }],
         aircraft: async () => null,
@@ -302,6 +306,7 @@ describe('working out the pay when reading an airline', () => {
     h.store.updatePanel(h.panel.id, { sheetId: SHEET_ID, sheetGid: String(TAB_GID), fshubAirlineId: AIRLINE });
     h.store.setKv(`aero.business.${AIRLINE}`, String(BUSINESS));
     asked = [];
+    heldCalls = [];
     answer = async (cursor) => page([{ id: cursor + 1, distanceNm: 1502 }]);
     sheet = [
       GRID_HEADER,
@@ -338,6 +343,213 @@ describe('working out the pay when reading an airline', () => {
     const a = await profits().analyse(panel());
     assert.deepEqual([a.fills[1]!.pay, a.fills[1]!.payPlan.problem], [null, 'no-distance']);
     assert.equal(a.fills[0]!.pay, 8174, 'the profit\'s pay does not depend on it');
+  });
+
+  describe('with landing safety pay', () => {
+    /** The landing rate FsHub gives, by flight (absent: the flight is listed with no rate). */
+    let rates: Map<number, number | null>;
+    const day = 24 * HOUR;
+    const turnOn = (minimumLoss: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier2: minimumLoss, safetyLossTier3: minimumLoss });
+    const turnOnSplit = (tier2: number, tier3: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier2: tier2, safetyLossTier3: tier3 });
+    beforeEach(() => {
+      rates = new Map();
+      answer = async (cursor) => page([{ id: cursor + 1, distanceNm: 1502, landingRate: rates.get(cursor + 1) ?? null }]);
+    });
+    const byRow = (a: ProfitAnalysis) => a.fills.map((f) => [f.row, f.pay, f.payPlan.basis]);
+
+    it('changes nothing while it is off, and asks FsHub for nothing it did not ask for before', async () => {
+      rates.set(5000, -900);
+      rates.set(5001, -900);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(asked, [[AIRLINE, 5000, 1]], 'only the loss, for its distance');
+      assert.deepEqual(byRow(a), [[2, 8174, 'share'], [3, 4000, 'distance']]);
+      assert.ok(a.fills.every((f) => f.payPlan.safety === undefined));
+      assert.equal(a.waiting, 0);
+      assert.deepEqual(a.held, []);
+      assert.deepEqual(heldCalls, [], 'and nobody is told anything');
+    });
+
+    it('asks FsHub about every flight whose pay is to be written, and cuts the pay of a Tier 2 or Tier 3 landing (nothing lost of the minimum)', async () => {
+      turnOn(0);
+      rates.set(5000, -450); // Tier 2 on a profit of $54,489
+      rates.set(5001, -650); // Tier 3 on a loss: $4,000 by distance
+      const a = await profits().analyse(panel());
+      assert.deepEqual(asked, [[AIRLINE, 4999, 1], [AIRLINE, 5000, 1]], 'a request for each of the two flights');
+      assert.deepEqual(byRow(a), [[2, 4360, 'safety'], [3, 4000, 'safety']], '8% of $54,489 is $4,359.12, up to $4,360; a loss pay loses nothing when none of the minimum is lost');
+      assert.deepEqual(a.fills[0]!.payPlan.safety, { tier: 2, fpm: 450, share: 8, normal: 8174, minimumLoss: 0, byMinimum: false });
+      assert.deepEqual(a.fills[1]!.payPlan.safety, { tier: 3, fpm: 650, share: 5, normal: 4000, minimumLoss: 0, byMinimum: false });
+    });
+
+    it('takes the airline\'s percentage off the pay of a flight that lost money, and keeps a profit\'s share above the reduced minimum', async () => {
+      turnOn(25);
+      rates.set(5000, -650);
+      rates.set(5001, -450);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, 3000, 'safety']], '5% of $54,489 is $2,724.45, up to $2,725, above the $1,500 floor; $4,000 less 25% is $3,000');
+    });
+
+    it('uses each tier\'s own percentage when the airline set the tiers apart', async () => {
+      turnOnSplit(10, 40);
+      rates.set(5000, -650); // Tier 3 on a profit of $54,489
+      rates.set(5001, -450); // Tier 2 on a loss: $4,000 by distance
+      const a = await profits().analyse(panel());
+      assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, 3600, 'safety']], '5% of $54,489 is $2,725, above the Tier 3 floor of $1,200; $4,000 less the Tier 2 10% is $3,600');
+      assert.equal(a.fills[0]!.payPlan.safety!.minimumLoss, 40);
+      assert.equal(a.fills[1]!.payPlan.safety!.minimumLoss, 10);
+      const swapped = (rates.set(5000, -450), rates.set(5001, -650), await profits().analyse(panel()));
+      assert.deepEqual(byRow(swapped), [[2, 4360, 'safety'], [3, 2400, 'safety']], '8% of $54,489 is $4,360; the Tier 3 loss pay is $4,000 less 40%');
+    });
+
+    it('gives a small profit the floor of its own tier: the $2,000 minimum less that tier\'s percentage', async () => {
+      turnOnSplit(10, 40);
+      logbook = [lf({ profit: 10000, distanceNm: 500, flightId: 5000 }), logbook[1] as LogFlight];
+      rates.set(5000, -450);
+      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1800, 'Tier 2: $2,000 less 10%');
+      rates.set(5000, -650);
+      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1200, 'Tier 3: $2,000 less 40%');
+    });
+
+    it('writes nothing for a flight that lost money where the airline takes all of the minimum, and the preview says so', async () => {
+      turnOn(100);
+      rates.set(5000, -650);
+      rates.set(5001, -450);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, null, 'safety']]);
+      assert.match(profitReport('Test Air', a), /pilot pay: nothing to write \(Tier 2 safety: landed at -450 fpm, the usual loss pay for 1,502 nm, less 100%; \$4,000 without the cut\)/);
+    });
+
+    it('pays a small profit the reduced minimum, and says it was the minimum that decided it', async () => {
+      turnOn(25);
+      logbook = [lf({ profit: 10000, distanceNm: 500, flightId: 5000 }), logbook[1] as LogFlight];
+      rates.set(5000, -450);
+      const a = await profits().analyse(panel());
+      assert.equal(a.fills[0]!.pay, 1500, '8% of $10,000 is $800; the $2,000 minimum less 25% is $1,500');
+      assert.equal(a.fills[0]!.payPlan.safety!.byMinimum, true);
+      assert.match(profitReport('Test Air', a), /pilot pay \$1,500 \(Tier 2 safety: landed at -450 fpm, the \$2,000 minimum, less 25%; \$2,000 without the cut\)/);
+    });
+
+    it('does not cut the pay for a Tier 1 landing or a gentler one, and pays it the usual way', async () => {
+      turnOn(0);
+      rates.set(5000, -399);
+      rates.set(5001, -200);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(byRow(a), [[2, 8174, 'share'], [3, 4000, 'distance']]);
+      assert.ok(a.fills.every((f) => !f.payPlan.safety));
+      assert.deepEqual(a.held, []);
+    });
+
+    it('if in doubt leaves the flight out of the fill, profit and pay both, and tells the managers once: no landing rate, or one too hard to believe', async () => {
+      turnOn(0);
+      rates.set(5000, null);
+      rates.set(5001, -3100);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(a.fills, [], 'nothing is filled in');
+      assert.deepEqual(
+        a.held!.map((x) => [x.row, x.callsign, x.route, x.pilot, x.flightId, x.reason, x.fpm]),
+        [[2, 'TST101', 'EGLL → EGCC', 'Alex', 5000, 'no-landing-rate', null], [3, 'TST202', 'KMIA → KORD', 'Sam', 5001, 'landing-rate-not-believed', 3100]],
+      );
+      assert.equal(heldCalls.length, 1);
+      assert.deepEqual(heldCalls[0]!.map((x) => x.sourceKey), a.held!.map((x) => x.sourceKey));
+      const text = profitReport('Test Air', a);
+      assert.match(text, /• ⏸️ \*\*2\*\* are left alone, profit and pay both, because safety pay is on and FsHub's landing rate for them can't be trusted: your managers are told/);
+      assert.match(text, /\*\*Left alone \(safety pay\):\*\*/);
+      assert.match(text, /row 2 · TST101 EGLL → EGCC · [^\n]*FsHub has no landing rate for it/);
+      assert.match(text, /row 3 · TST202 KMIA → KORD · [^\n]*landing rate for it \(-3100 fpm\) is too hard to believe as a touchdown/);
+    });
+
+    it('holds a flight the logbook names no FsHub flight for, since there is no landing rate to find', async () => {
+      turnOn(0);
+      logbook = [logbook[0] as LogFlight, { ...(logbook[1] as LogFlight), flightId: null }];
+      rates.set(5000, -450);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(a.fills.map((f) => f.row), [2]);
+      assert.deepEqual(a.held!.map((x) => [x.row, x.flightId, x.reason]), [[3, null, 'no-landing-rate']]);
+    });
+
+    it('fills the flights it is sure of, and holds the others', async () => {
+      turnOn(0);
+      rates.set(5000, -450);
+      rates.set(5001, null);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(byRow(a), [[2, 4360, 'safety']]);
+      assert.deepEqual(a.held!.map((x) => x.row), [3]);
+    });
+
+    it('holds a flight whose landing rate could not be read, profit and all, without telling the managers: a later run can fill it with the right pay', async () => {
+      turnOn(0);
+      rates.set(5000, -450);
+      answer = async (cursor) => (cursor + 1 === 5001 ? page([]) : page([{ id: cursor + 1, distanceNm: 1502, landingRate: rates.get(cursor + 1) ?? null }]));
+      const a = await profits().analyse(panel());
+      assert.deepEqual(a.fills.map((f) => f.row), [2], 'the flight FsHub did not answer for is not filled');
+      assert.equal(a.waiting, 1);
+      assert.deepEqual(a.held, []);
+      assert.deepEqual(heldCalls, [], 'it is only a wait');
+      assert.match(profitReport('Test Air', a), /• ⏳ \*\*1\*\* would be filled, but FsHub's landing rate for it couldn't be read yet, so it waits for the next run/);
+    });
+
+    it('holds nothing when FsHub fails outright for the rest of a run: those flights wait, the ones already answered are used', async () => {
+      turnOn(0);
+      rates.set(5000, -450);
+      answer = async (cursor) => {
+        if (cursor + 1 === 5001) throw new FsHubError('rate-limited', 'busy');
+        return page([{ id: cursor + 1, distanceNm: 1502, landingRate: rates.get(cursor + 1) ?? null }]);
+      };
+      const a = await profits().analyse(panel());
+      assert.deepEqual(a.fills.map((f) => [f.row, f.pay]), [[2, 4360]]);
+      assert.equal(a.waiting, 1);
+    });
+
+    it('leaves a flight that landed before safety pay was turned on exactly as it always was, and does not ask FsHub about its landing', async () => {
+      turnOn(0, D12 + 15 * HOUR); // after the profit flight landed (10:00), before the loss (20:00)
+      rates.set(5000, -900);
+      rates.set(5001, -900);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(asked.map((x) => x[1]), [5000], 'only the later flight, the loss, is asked about');
+      assert.equal(a.fills[0]!.pay, 8174, 'a Tier 3 landing from before it was turned on costs nothing');
+      assert.equal(a.fills[0]!.payPlan.safety, undefined);
+      assert.equal(a.fills[1]!.payPlan.basis, 'safety');
+    });
+
+    it('does not ask about a flight whose Pilot Pay cell is not going to be written, and does not hold it', async () => {
+      turnOn(0);
+      sheet = [GRID_HEADER, row('EGLL-EGCC', '11/12/2026', 'Alex', true, '', '$5,000'), row('KMIA-KORD', '11/12/2026', 'Sam', true, '', '')];
+      rates.set(5001, -450);
+      const a = await profits().analyse(panel());
+      assert.deepEqual(asked.map((x) => x[1]), [5000], 'only the flight with a blank pay');
+      assert.equal(a.fills[0]!.payPlan.cell, 'filled');
+      assert.equal(a.fills[0]!.pay, null);
+      assert.deepEqual(a.held, [], 'a landing rate nobody can use is no doubt about a pay that is not going to be written');
+    });
+
+    it('says what it cut in the preview, with the landing, the share and what the pay would have been', async () => {
+      turnOn(25);
+      rates.set(5000, -450);
+      rates.set(5001, -650);
+      const text = profitReport('Test Air', await profits().analyse(panel()));
+      assert.match(text, /pilot pay \$4,360 \(Tier 2 safety: landed at -450 fpm, 8% of the profit; \$8,174 without the cut\)/);
+      assert.match(text, /pilot pay \$3,000 \(Tier 3 safety: landed at -650 fpm, the usual loss pay for 1,502 nm, less 25%; \$4,000 without the cut\)/);
+      assert.match(text, /• ⚖️ \*\*2\*\* have their pilot pay cut for a hard landing \(safety pay\)/);
+    });
+
+    it('still gives the analysis when the hook that tells managers fails', async () => {
+      turnOn(0);
+      rates.set(5000, null);
+      rates.set(5001, null);
+      const throws = await profits(true, () => {
+        throw new Error('discord is on fire');
+      }).analyse(panel());
+      assert.equal(throws.held!.length, 2);
+      const rejects = await profits(true, async () => {
+        throw new Error('discord is on fire');
+      }).analyse(panel());
+      assert.equal(rejects.held!.length, 2);
+      await settle(5);
+    });
+
+    it('cannot work the pay out without FsHub: it says so instead of paying normally', async () => {
+      turnOn(0);
+      await assert.rejects(profits(false).analyse(panel()), (e: unknown) => e instanceof ProfitError && /needs FsHub's landing rate/.test(e.message));
+    });
   });
 
   it('works out no pay for a loss when FsHub and the logbook disagree about the distance', async () => {

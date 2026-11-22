@@ -14,7 +14,7 @@ describe('command definitions', () => {
   const defs = commands.map((c) => c.data.toJSON());
 
   it('only exposes admin setup, help, /commands, the fuel lookup, /eta and /hideunavailable: pilots use the panel buttons for everything else', () => {
-    assert.deepEqual(defs.map((d) => d.name).sort(), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'setup']);
+    assert.deepEqual(defs.map((d) => d.name).sort(), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
   });
 
   it('obeys the Discord limits that the API would otherwise reject at registration', () => {
@@ -49,7 +49,7 @@ describe('command definitions', () => {
   });
 
   it('every component prefix used in custom IDs has a handler', () => {
-    assert.deepEqual(componentHandlers.map((h) => h.prefix).sort(), ['banking', 'dm', 'notices', 'panel', 'profit', 'weather']);
+    assert.deepEqual(componentHandlers.map((h) => h.prefix).sort(), ['banking', 'dm', 'notices', 'panel', 'payroll', 'paytest', 'profit', 'safety', 'weather']);
   });
 });
 

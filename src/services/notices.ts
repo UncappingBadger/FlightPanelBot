@@ -16,7 +16,7 @@ export const NOTICE_INFO: Record<NoticeKind, { name: string; what: string }> = {
   },
   landing: {
     name: 'Hard-landing remarks',
-    what: 'When FsHub shows you landed very hard, a light-hearted message about it. A normal landing never gets one.',
+    what: 'When FsHub shows you landed very hard, a light-hearted message about it. A normal landing never gets one. (An airline that links pay to landing safety also sends a safety notice first, and that is not optional: it is about your pay. This message, if you keep it on, follows it.)',
   },
 };
 

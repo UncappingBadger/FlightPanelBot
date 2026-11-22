@@ -2,6 +2,10 @@ import type { FlownFlight, Panel, Store } from '../db/store.js';
 import { plainText, routeText, truncate } from '../util/format.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { FIRE_KEVIN, REHIRE_KEVIN } from './dailyNote.js';
+import { IMPLAUSIBLE_FPM, lossForTier, readLanding, safetyNotice, safetyPolicyOf, type SafetyPolicy } from './safetyPay.js';
+import { appendPenaltyCsv, flightNumberOf, penaltyMessage, type ManagerLookup, type PenaltyReport } from './safetyReport.js';
+
+export { IMPLAUSIBLE_FPM };
 
 /**
  * A light-hearted message to a pilot whose landing FsHub recorded as very hard, written in the voice of the airline's scheduler.
@@ -27,11 +31,11 @@ export const HARD_FPM = 600;
 export const VERY_HARD_FPM = 800;
 /** The strongest words are kept for a landing at least this hard. */
 export const SEVERE_FPM = 1000;
-/** A rate beyond this is not believed as a touchdown (a bad reading from the sim or the tracker) and is left alone. */
-export const IMPLAUSIBLE_FPM = 2500;
 
 /** Only a landing this recent is remarked on, so reading a week of flights for the first time does not send a week of jokes. */
 export const FRESH_FOR_MS = 3 * HOUR;
+/** A safety notice is about pay, so it is still sent for a landing this old (a bot that was off for a while catches up), and no older. A penalty is reported to managers for as long. */
+export const SAFETY_FRESH_FOR_MS = 3 * DAY;
 /** A pilot gets at most one remark in this long, so a bad evening is not a string of messages. */
 export const QUIET_AFTER_MS = 6 * HOUR;
 /** A flight that was dealt with without a message going out is remembered this long (one that was told about is kept). */
@@ -87,6 +91,26 @@ export const REMARKS: Record<Severity, readonly string[]> = {
   ],
 };
 
+/**
+ * When an airline links pay to landing safety, a hard landing gets the airline's own safety notice first, and then the remark, which has to follow something
+ * stern and a fine. So it says it is the unofficial message, before the joke, and sends the pilot off kindly after it.
+ */
+export const AFTER_NOTICE_INTROS: readonly string[] = [
+  'The serious message you just had was written by someone in a tie. This one is written by someone holding a mug.',
+  'Head office has had its say. I get the unofficial bit, which comes with sympathy and no spreadsheet.',
+  "I'm only allowed to be funny once the stern note has gone out. The stern note has gone out.",
+  "You've had the official letter. Here's the unofficial one: nobody is cross with you, they're just very good at maths.",
+  'Right, the paperwork is done. Pencils down, and a deep breath.',
+];
+export const AFTER_NOTICE_CLOSERS: readonly string[] = [
+  'Everyone has one of these in the logbook. Mine is in a drawer, under the stapler that jumped.',
+  "Chin up, Captain. The runway has forgiven you. It's the accountants who need a biscuit.",
+  "The next one will be a greaser. I believe in you, and I'm not even paid to.",
+  'You still got everyone on the ground, which is the bit that counts. Fly safe.',
+  'The fine is the airline\'s. The sympathy is mine, and it\'s free.',
+  "Tomorrow is a new flight and a new runway. Mind the paint.",
+];
+
 /** The heading and signature of a remark, as with the scheduler's other notes. */
 const HEADING = '☕ **Kevin, Scheduler**';
 const SIGNATURE = '— Kevin';
@@ -98,6 +122,8 @@ export interface RemarkSubject {
   aircraft: string | null;
   airline: string | null;
   flightId: number;
+  /** The airline's own safety notice has just gone out for this landing (safety pay is on), so the remark is gentler. */
+  afterNotice?: boolean;
 }
 
 /** The remark for a landing: which words, chosen by the flight so the same flight always gets the same ones, and who it is from. */
@@ -110,6 +136,12 @@ export function composeRemark(s: RemarkSubject): string {
     .split('{route}').join(s.route)
     .split('{aircraft}').join(s.aircraft ? plainText(truncate(s.aircraft, 20)) : 'aircraft')
     .split('{airline}').join(s.airline ? plainText(truncate(s.airline, 60)) : 'the airline');
+  if (s.afterNotice) {
+    const id = Math.abs(s.flightId);
+    const intro = AFTER_NOTICE_INTROS[id % AFTER_NOTICE_INTROS.length] as string;
+    const closer = AFTER_NOTICE_CLOSERS[Math.floor(id / 7) % AFTER_NOTICE_CLOSERS.length] as string;
+    return [HEADING, intro, text, closer, SIGNATURE, OFF_LINE].join('\n');
+  }
   return [HEADING, text, SIGNATURE, OFF_LINE].join('\n');
 }
 
@@ -146,21 +178,41 @@ export type SendRemark = (discordId: string, content: string) => Promise<boolean
  * - The pilot must be a known Discord account: the airline's roster says so, or they typed the ID and no roster says it is someone else's.
  *   An ID shared by two accounts is nobody's, and nothing is sent.
  * - Someone who has switched the remarks off is not sent one; someone who got one lately is not sent another straight away.
+ *
+ * For an airline that has landing safety pay on (`/setup safety-pay`) the same look does more, and does it first: a landing that reaches a tier is
+ * answered with the airline's safety notice to the pilot, and one that cuts pay (Tier 2 or 3) is also written to the CSV and reported to the managers.
+ * The light-hearted remark, for the landings hard enough to get one, comes after the notice, in gentler words.
  */
 export class HardLandings {
   private readonly now: () => number;
   private readonly log: Logger;
+  private readonly airlineName: (panel: Panel) => string;
+  private readonly managers: ManagerLookup | null;
+  private readonly nameOf: ((discordId: string) => Promise<string | null>) | null;
+  private readonly csvFile: string | null;
 
   constructor(
     private readonly store: Store,
     private readonly send: SendRemark,
-    opts: { now?: () => number; logger?: Logger; airlineName?: (panel: Panel) => string } = {},
+    opts: {
+      now?: () => number;
+      logger?: Logger;
+      airlineName?: (panel: Panel) => string;
+      /** Who a penalty is reported to (the airline's managers). Without it nobody is told. */
+      managers?: ManagerLookup;
+      /** The Discord name of an account, for the report. */
+      nameOf?: (discordId: string) => Promise<string | null>;
+      /** The CSV file penalties are added to. Without it none is kept. */
+      csvFile?: string | null;
+    } = {},
   ) {
     this.now = opts.now ?? Date.now;
     this.log = opts.logger ?? silentLogger;
     this.airlineName = opts.airlineName ?? ((p) => p.airlineName);
+    this.managers = opts.managers ?? null;
+    this.nameOf = opts.nameOf ?? null;
+    this.csvFile = opts.csvFile ?? null;
   }
-  private readonly airlineName: (panel: Panel) => string;
 
   /** The one Discord account a FsHub pilot ID belongs to, or null if it is nobody's or more than one person's. */
   private ownerOf(fshubId: number): string | null {
@@ -170,13 +222,121 @@ export class HardLandings {
     return claimed.length === 1 ? (claimed[0] as { discordId: string }).discordId : null;
   }
 
-  /** Deal with these flights, which have just been read for this panel. Never throws. Returns how many remarks went out. */
+  /**
+   * What an airline with safety pay on does about one landing that reaches a tier (Tier 1, 2 or 3): the pilot is sent the safety notice, whatever their
+   * `notifications` say (it is about their pay, so it is not one of the optional messages) and with no pause after an earlier one. A Tier 2 or Tier 3 landing,
+   * which cuts the pay, is also written to the CSV and reported to the managers. Each step is done once per flight; a step that did not work (the CSV
+   * was open in another program) is tried again the next time the flight is seen. Only a landing since safety pay was turned on, and recent enough, counts.
+   * Returns how many private messages went out (to the pilot and the managers).
+   */
+  private async safety(panel: Panel, policy: SafetyPolicy, f: FlownFlight, now: number): Promise<number> {
+    const read = readLanding(f.landingRate);
+    if (read.kind !== 'ok' || read.tier === null) return 0;
+    if (f.arrivedAt < policy.since || now - f.arrivedAt > SAFETY_FRESH_FOR_MS || f.arrivedAt > now + HOUR) return 0;
+    const penalty = read.tier >= 2;
+    const prior = this.store.getSafetyLanding(panel.id, f.flightId) ?? { told: null, logged: false, reported: false };
+    const owner = this.ownerOf(f.pilotId);
+    const wantsLog = penalty && this.csvFile !== null && !prior.logged;
+    const wantsReport = penalty && this.managers !== null && !prior.reported;
+    const wantsNotice = prior.told === null && owner !== null;
+    if (!wantsNotice && !wantsLog && !wantsReport) return 0;
+
+    let sent = 0;
+    let told = prior.told;
+    if (wantsNotice && owner !== null) {
+      let ok = false;
+      try {
+        ok = await this.send(owner, safetyNotice({ tier: read.tier, fpm: read.fpm, route: routeText([{ dep: f.dep, arr: f.arr }]), airline: this.airlineName(panel), minimumLoss: lossForTier(policy, read.tier) }));
+      } catch (e) {
+        this.log.debug(`Could not send a safety notice to ${owner}`, e);
+      }
+      // A notice that could not be delivered (closed DMs) is not tried again; the pay is cut in the sheet all the same.
+      told = ok ? 'sent' : 'closed';
+      this.store.saveSafetyLanding(panel.id, f.flightId, { told }, now);
+      if (ok) {
+        sent++;
+        this.log.info(`Sent a Tier ${read.tier} safety notice (flight ${f.flightId})`);
+      }
+    }
+    if (!wantsLog && !wantsReport) return sent;
+
+    // The report: who, which flight, where, when, how hard. The CSV first, so the message to the managers can say whether it was added.
+    const report = await this.reportOf(panel, f, read.tier as 2 | 3, read.fpm, owner, now);
+    let logged = prior.logged;
+    if (wantsLog && this.csvFile !== null) {
+      try {
+        appendPenaltyCsv(this.csvFile, report);
+        logged = true;
+        this.store.saveSafetyLanding(panel.id, f.flightId, { logged: true }, now);
+      } catch (e) {
+        this.log.warn(`Could not add flight ${f.flightId} to the hard-landings CSV (is it open in another program?)`, e);
+      }
+    }
+    if (wantsReport && this.managers !== null) {
+      const text = penaltyMessage(report, owner === null ? null : told === 'sent', this.csvFile === null ? null : logged);
+      let people: string[] = [];
+      try {
+        people = await this.managers(panel);
+      } catch (e) {
+        this.log.debug('Could not work out who to report a hard landing to', e);
+      }
+      for (const id of people) {
+        try {
+          if (await this.send(id, text)) sent++;
+        } catch (e) {
+          this.log.debug(`Could not send a hard-landing report to ${id}`, e);
+        }
+      }
+      // Once per flight, whoever could be reached: a report that arrives late is no use, and the CSV has the row.
+      this.store.saveSafetyLanding(panel.id, f.flightId, { reported: true }, now);
+    }
+    return sent;
+  }
+
+  /** The facts of a penalty landing, for the managers and the CSV. */
+  private async reportOf(panel: Panel, f: FlownFlight, tier: 2 | 3, fpm: number, owner: string | null, now: number): Promise<PenaltyReport> {
+    let discordName: string | null = null;
+    if (owner !== null && this.nameOf) {
+      try {
+        discordName = (await this.nameOf(owner))?.trim() || null;
+      } catch {
+        discordName = null;
+      }
+    }
+    const fsName = f.pilotName?.trim() || null;
+    const pilotName = discordName ?? fsName ?? `FsHub pilot ${f.pilotId}`;
+    return {
+      airline: this.airlineName(panel),
+      tier,
+      rate: -fpm,
+      landedAt: f.arrivedAt,
+      pilotName,
+      fshubId: f.pilotId,
+      // FsHub's name for the pilot, only when it is not the name already given.
+      fshubUsername: fsName !== null && fsName.toLowerCase() !== pilotName.toLowerCase() ? fsName : null,
+      flightNumber: flightNumberOf(this.store, panel, f, now),
+      dep: f.dep,
+      arr: f.arr,
+      flightId: f.flightId,
+    };
+  }
+
+  /** Deal with these flights, which have just been read for this panel. Never throws. Returns how many messages went out. */
   async check(panel: Panel, flights: FlownFlight[]): Promise<number> {
     let sent = 0;
     try {
       const now = this.now();
       this.store.pruneLandingRemarks(now - KEEP_MS);
+      this.store.pruneSafety(now - KEEP_MS);
+      const policy = safetyPolicyOf(panel);
       for (const f of flights) {
+        // An airline with safety pay on sends its own notice (and reports a penalty) before anything light-hearted.
+        let afterNotice = false;
+        if (policy) {
+          sent += await this.safety(panel, policy, f, now);
+          const read = readLanding(f.landingRate);
+          afterNotice = read.kind === 'ok' && read.tier !== null && f.arrivedAt >= policy.since;
+        }
         const severity = severityOf(f.landingRate);
         if (severity === null || f.landingRate === null || f.landingRate === undefined) continue;
         if (now - f.arrivedAt > FRESH_FOR_MS || f.arrivedAt > now + HOUR) continue;
@@ -195,6 +355,7 @@ export class HardLandings {
             aircraft: f.aircraftIcao,
             airline: this.airlineName(panel),
             flightId: f.flightId,
+            afterNotice,
           });
           try {
             told = await this.send(owner, content);

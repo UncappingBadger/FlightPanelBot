@@ -1,10 +1,13 @@
+import type { AeroconomyPaymentsClient } from '../aeroconomy/payments.js';
+import { MAX_PAYMENT_CENTS } from './payroll.js';
+
 /**
  * The one place money leaves the airline's account. Everything else in paying pilots (reading the sheet, working out the list, the admin
  * checking it, the ledger that keeps a payment from being made twice) is done without it; this is only "send this much from that account to
  * that one, under this unique ID".
  *
- * Nothing real is behind it yet: Aeroconomy's payment interface needs a key that gives access to the airline's bank account, and the bot has
- * none. Until it has, `NotConnectedGateway` stands in, says so, and `Payroll` never records a payment as made.
+ * `AeroconomyGateway` is the real one: it sends the payment to Aeroconomy with the unique ID as the payment's idempotency key. Where the bot has
+ * no FsHub token to send it with, `NotConnectedGateway` stands in, says so, and `Payroll` never records a payment as made.
  */
 
 export interface PayRequest {
@@ -21,8 +24,8 @@ export interface PayRequest {
 }
 
 export type PayResult =
-  /** The bank took the payment. `reference` is its own number for it, when it gave one. */
-  | { ok: true; reference: string | null }
+  /** The bank took the payment. `reference` is its own number for it, when it gave one, and `balanceCents` what the source account then held, when it said. */
+  | { ok: true; reference: string | null; balanceCents?: number | null }
   /** The bank said no (not enough money, no such account...): nothing was sent. */
   | { ok: false; reason: string };
 
@@ -45,3 +48,30 @@ export class NotConnectedGateway implements PaymentGateway {
     return { ok: false, reason: NOT_CONNECTED_TEXT };
   }
 }
+
+/**
+ * The bank connection: Aeroconomy's itemised payment (`POST /banking/payments`), sent with the payment's unique ID as its idempotency key, so a
+ * payment sent twice is taken once. The money comes from the account the FsHub token's user controls. A refusal is "nothing was sent"; no answer at
+ * all is an error that the caller leaves as "sent, no answer" and never tries again by itself (see `AeroconomyPaymentsClient.pay`).
+ */
+export class AeroconomyGateway implements PaymentGateway {
+  readonly connected = true;
+
+  constructor(private readonly client: Pick<AeroconomyPaymentsClient, 'pay'>) {}
+
+  async pay(request: PayRequest): Promise<PayResult> {
+    if (!Number.isInteger(request.cents) || request.cents <= 0 || request.cents > MAX_PAYMENT_CENTS) {
+      return { ok: false, reason: 'That amount is not one the bot will send, so nothing was sent.' };
+    }
+    const out = await this.client.pay({
+      idempotencyKey: request.uniqueId,
+      sourceAccount: request.sourceAccount,
+      recipientAccount: request.recipientAccount,
+      description: request.description,
+      cents: request.cents,
+    });
+    if (!out.ok) return { ok: false, reason: out.reason };
+    return { ok: true, reference: out.transactionId === null ? null : String(out.transactionId), balanceCents: out.balanceCents };
+  }
+}
+

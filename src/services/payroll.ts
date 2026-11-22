@@ -43,11 +43,15 @@ export interface PayAmount {
  *
  * A cell that already holds more than the rule is paid as it stands. Null when the cell holds no amount (or $0, which is how an unfinished
  * row is kept): no pay is due yet.
+ *
+ * Where the airline links pay to landing safety (`trustCell`), the cell is the pay as it stands, whatever it holds: a flight that landed hard has
+ * had its pay cut when the cell was filled, and raising it to the usual minimum or distance rule would undo the fine.
  */
-export function payAmount(f: Pick<SheetFlight, 'payRaw' | 'profit'>, nm: number | null): PayAmount | null {
+export function payAmount(f: Pick<SheetFlight, 'payRaw' | 'profit'>, nm: number | null, trustCell = false): PayAmount | null {
   const dollars = parseMoney(f.payRaw);
   if (dollars === null || dollars <= 0) return null;
   const cell = centsOf(dollars);
+  if (trustCell) return { cents: cell, sheetCents: null, lossNm: null, needsDistance: false };
   const lost = f.profit !== null && f.profit < 0;
   const byDistance = lost && nm !== null ? pilotPay(f.profit as number, nm) : null;
   const rule = centsOf(byDistance ? byDistance.amount : PAY_MINIMUM);
@@ -241,6 +245,8 @@ export interface BuildInput {
   flightRef(row: SheetFlight): string | null;
   /** The distance FsHub recorded for flights, in nautical miles, by the flight's key in the sheet: what a flight that lost money is paid by. */
   distances?: ReadonlyMap<string, number>;
+  /** The airline links pay to landing safety, so the Pilot Pay cell is paid as it stands (see `payAmount`). */
+  trustCell?: boolean;
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -279,7 +285,7 @@ export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: n
   for (const f of input.flights) {
     if (!f.completed || f.pilot.trim() === '' || (input.startDay !== null && f.day < input.startDay)) continue;
     if (f.pilotPaid === true || ledger.isTaken(f.sourceKey, f.pilot)) continue;
-    const pay = payAmount(f, input.distances?.get(f.sourceKey) ?? null);
+    const pay = payAmount(f, input.distances?.get(f.sourceKey) ?? null, input.trustCell === true);
     if (pay === null) {
       waiting++;
       continue;

@@ -5,7 +5,7 @@ import { MIGRATIONS } from '../src/db/db.js';
 import { Store, type FlownFlight } from '../src/db/store.js';
 import { commands, commandSet, componentHandlers, handlerSet } from '../src/discord/commands/index.js';
 import { payrollCommand } from '../src/discord/commands/payroll.js';
-import { PAYROLL_FLAG, payrollEnabled } from '../src/features.js';
+import { PAYROLL_OFF_FLAG, payrollEnabled } from '../src/features.js';
 import { amendModal, lineText, outcomeText, paginate, PayrollDaily, payrollHandler, renderList, sendList, tickText } from '../src/discord/payrollUi.js';
 import { noPings } from '../src/discord/ui.js';
 import { readSheetFlights, type SheetFlight } from '../src/services/contributions.js';
@@ -1091,30 +1091,32 @@ describe('paying pilots', () => {
   });
 });
 
-/* ------------------------------------------------------------------ switched off until the bank connection exists */
+/* ------------------------------------------------------------------ on, unless the person running the bot switches it off */
 
-describe('paying pilots is switched off by default', () => {
-  it('is on only when the variable says so', () => {
-    assert.equal(PAYROLL_FLAG, 'FPB_ENABLE_PAYROLL');
-    assert.equal(payrollEnabled({}), false);
-    for (const on of ['1', 'true', 'TRUE', 'yes', 'On', ' 1 ']) assert.equal(payrollEnabled({ [PAYROLL_FLAG]: on }), true, on);
-    for (const off of ['', '0', 'false', 'no', 'off', 'maybe', '11', 'enabled']) assert.equal(payrollEnabled({ [PAYROLL_FLAG]: off }), false, off);
-    assert.equal(payrollEnabled({ SOMETHING_ELSE: '1' }), false);
+describe('paying pilots is on unless the person running the bot switches it off', () => {
+  it('is off only when the variable says so', () => {
+    assert.equal(PAYROLL_OFF_FLAG, 'FPB_DISABLE_PAYROLL');
+    assert.equal(payrollEnabled({}), true);
+    for (const off of ['1', 'true', 'TRUE', 'yes', 'On', ' 1 ']) assert.equal(payrollEnabled({ [PAYROLL_OFF_FLAG]: off }), false, off);
+    for (const on of ['', '0', 'false', 'no', 'off', 'maybe', '11', 'enabled']) assert.equal(payrollEnabled({ [PAYROLL_OFF_FLAG]: on }), true, on);
+    assert.equal(payrollEnabled({ SOMETHING_ELSE: '1' }), true);
+    assert.equal(payrollEnabled({ FPB_ENABLE_PAYROLL: '0' }), true, 'the old variable means nothing now');
   });
 
-  it('registers no /payroll command and handles none of its buttons unless it is on', () => {
+  it('registers no /payroll command and handles none of its buttons when it is off', () => {
     const names = (on: boolean) => commandSet(on).map((c) => c.data.name).sort();
     const prefixes = (on: boolean) => handlerSet(on).map((h) => h.prefix).sort();
     assert.deepEqual(names(false), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'setup']);
     assert.deepEqual(names(true), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
-    assert.deepEqual(prefixes(false), ['banking', 'dm', 'notices', 'panel', 'profit', 'weather']);
-    assert.deepEqual(prefixes(true), ['banking', 'dm', 'notices', 'panel', 'payroll', 'profit', 'weather']);
+    assert.deepEqual(prefixes(false), ['banking', 'dm', 'notices', 'panel', 'profit', 'safety', 'weather']);
+    assert.deepEqual(prefixes(true), ['banking', 'dm', 'notices', 'panel', 'payroll', 'paytest', 'profit', 'safety', 'weather']);
   });
 
-  it('is off in the set the bot actually uses, when nobody has turned it on', () => {
-    assert.equal(payrollEnabled(), false, `${PAYROLL_FLAG} must not be set when the tests run`);
-    assert.ok(!commands.some((c) => c.data.name === 'payroll'));
-    assert.ok(!componentHandlers.some((h) => h.prefix === 'payroll'));
+  it('is on in the set the bot actually uses, when nobody has switched it off', () => {
+    assert.equal(payrollEnabled(), true, `${PAYROLL_OFF_FLAG} must not be set when the tests run`);
+    assert.ok(commands.some((c) => c.data.name === 'payroll'));
+    assert.ok(componentHandlers.some((h) => h.prefix === 'payroll'));
+    assert.ok(componentHandlers.some((h) => h.prefix === 'paytest'));
   });
 
   it('refuses the command, even if it were called, when the bot has no payroll', async () => {
@@ -1222,13 +1224,13 @@ describe('/payroll and its buttons', () => {
   const connect = () => (d.ctx.payroll = new Payroll({ store: h.store, gateway: gw, writeback: wb, fetchFn, now: () => h.clock.now }));
 
   describe('the command', () => {
-    it('is for admins in a server, and has a subcommand for settings, for a list now, and for the history', () => {
+    it('is for admins in a server, and has a subcommand for settings, for a list now, for the history, for the accounts it can see and for a test transfer', () => {
       const json = payrollCommand.data.toJSON() as any;
       assert.equal(json.default_member_permissions, '32');
       assert.deepEqual(json.contexts, [0]);
-      assert.deepEqual(json.options.map((o: any) => o.name), ['settings', 'run', 'history']);
+      assert.deepEqual(json.options.map((o: any) => o.name), ['settings', 'run', 'history', 'accounts', 'test-transfer']);
       assert.ok(JSON.stringify(json).length < 6000);
-      for (const sub of ['settings', 'run', 'history']) {
+      for (const sub of ['settings', 'run', 'history', 'accounts', 'test-transfer']) {
         assert.ok(json.options.find((o: any) => o.name === sub).options.some((o: any) => o.name === 'airline' && o.autocomplete));
       }
     });

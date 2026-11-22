@@ -7,8 +7,9 @@ import { downloadSheetCsv, sheetRefOf } from '../jobs/sheet.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { isUnsetPay, readSheetFlights, type SheetFlight } from './contributions.js';
 import { callsignCode } from './flightEtas.js';
-import { fshubDistances } from './fshubDistances.js';
+import { fshubFlightFacts, type FlightFacts } from './fshubDistances.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
+import { fineFor, readLanding, safetyPolicyOf, type FineTier, type SafetyFine, type SafetyPolicy } from './safetyPay.js';
 import type { ProfitFill } from './writeback.js';
 
 /**
@@ -33,7 +34,7 @@ const CONTRACTS_TO_TRY = 12;
 const AIRCRAFT_TO_TRY = 4;
 /** FsHub and Aeroconomy give the same distance for a flight; if they differ by more than this many nautical miles, no pay is worked out from either. */
 const DISTANCE_AGREES_WITHIN_NM = 1;
-/** The most FsHub lookups (one per flight that lost money) one run makes: FsHub's request budget is shared with the rest of the bot. */
+/** The most FsHub lookups (one per flight whose pay needs its distance or its landing rate) one run makes: FsHub's request budget is shared with the rest of the bot. */
 const MAX_DISTANCE_LOOKUPS = 25;
 
 const businessKey = (airlineId: number) => `aero.business.${airlineId}`;
@@ -47,6 +48,28 @@ export type PayProblem =
   | 'no-distance'
   /** FsHub's distance and the logbook's are not the same. */
   | 'distance-differs';
+
+/** Why a flight was left unfilled when safety pay is on: FsHub gave no landing rate, or one too hard to believe as a touchdown (a bad reading from the sim or tracker). */
+export type HeldReason = 'no-landing-rate' | 'landing-rate-not-believed';
+
+/**
+ * A flight left out of the fill, profit and pay together, because safety pay is on and its landing rate cannot be trusted. If in doubt the bot leaves the sheet
+ * alone and tells the airline's managers, who can fill the cells in by hand.
+ */
+export interface HeldFlight {
+  sourceKey: string;
+  row: number;
+  route: string;
+  day: number;
+  /** The airline's own callsign for the flight, which is its flight number. */
+  callsign: string;
+  /** The pilot the sheet names. */
+  pilot: string;
+  flightId: number | null;
+  reason: HeldReason;
+  /** The landing rate FsHub gave when it was too hard to believe (feet per minute, no sign). */
+  fpm: number | null;
+}
 
 /**
  * What is in the sheet's Pilot Pay cell of the row: no pay (empty, or the $0 a money-formatted column shows: it can be filled), a figure above
@@ -63,6 +86,8 @@ export interface PayPlan {
   distanceNm: number | null;
   problem: PayProblem | null;
   cell: PayCell;
+  /** Set when the pay was cut for a hard landing (safety pay): the tier, the landing rate in feet per minute, the share of the profit it pays and what it would have paid. */
+  safety?: { tier: FineTier; fpm: number; share: number; normal: number; minimumLoss: number; byMinimum: boolean } | null;
 }
 
 /** One blank Profit Made cell that Aeroconomy's logbook can fill in, and the pilot's pay beside it. */
@@ -112,6 +137,10 @@ export interface ProfitAnalysis {
   /** Completed rows no logbook flight was found for, and rows more than one flight could be (left alone). */
   unmatched: number;
   ambiguous: number;
+  /** Rows that would be filled but are held for a later run because safety pay is on and FsHub's landing rate for the flight could not be read yet. */
+  waiting?: number;
+  /** Rows that would be filled but are left alone because safety pay is on and the flight's landing rate cannot be trusted (managers are told). */
+  held?: HeldFlight[];
   readAt: number;
 }
 
@@ -159,10 +188,16 @@ export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pa
  * distance flown, and that distance is FsHub's: `distances` holds what FsHub recorded for each flight it was asked about, and the logbook's
  * own figure has to agree with it. Without both, there is no pay to work out, and the plan says why instead of guessing.
  */
-export function planPay(value: number, row: SheetFlight, flightId: number | null, logbookNm: number | null, distances: ReadonlyMap<number, number>, wroteBefore = false): PayPlan {
-  // A cell with no pay in it (blank, or $0) is free to be written over, unless this bot wrote a pay there before: then it is back to nothing
-  // because somebody put it there, and that is theirs to decide.
-  const cell: PayCell = row.payRaw === null ? 'missing' : !isUnsetPay(row.payRaw) ? 'filled' : wroteBefore ? 'zeroed' : 'empty';
+export function planPay(
+  value: number,
+  row: SheetFlight,
+  flightId: number | null,
+  logbookNm: number | null,
+  distances: ReadonlyMap<number, number>,
+  wroteBefore = false,
+  fine: SafetyFine | null = null,
+): PayPlan {
+  const cell = payCellOf(row, wroteBefore);
   if (cell === 'zeroed') return { amount: null, basis: null, distanceNm: null, problem: null, cell };
   const none = (problem: PayProblem): PayPlan => ({ amount: null, basis: null, distanceNm: null, problem, cell });
   let nm: number | null = null;
@@ -173,19 +208,53 @@ export function planPay(value: number, row: SheetFlight, flightId: number | null
     if (logbookNm !== null && Math.abs(logbookNm - fshub) > DISTANCE_AGREES_WITHIN_NM) return none('distance-differs');
     nm = fshub;
   }
-  const pay = pilotPay(value, nm);
-  return pay ? { amount: pay.amount, basis: pay.basis, distanceNm: nm, problem: null, cell } : none('no-distance');
+  const pay = pilotPay(value, nm, fine);
+  if (!pay) return none('no-distance');
+  // A pay of nothing (a safety fine on a flight that made no profit, where the airline dropped the minimum) is nothing to write.
+  return {
+    amount: pay.amount > 0 ? pay.amount : null,
+    basis: pay.basis,
+    distanceNm: nm,
+    problem: null,
+    cell,
+    // Only set when safety pay had something to say, so a plan made with it off is exactly what it always was.
+    ...(pay.safety && fine ? { safety: { tier: pay.safety.tier, fpm: fine.fpm, share: pay.safety.share, normal: pay.safety.normal, minimumLoss: pay.safety.minimumLoss, byMinimum: pay.safety.byMinimum } } : {}),
+  };
+}
+
+/**
+ * What is in the sheet's Pilot Pay cell of the row: no pay in it (blank, or $0) is free to be written over, unless this bot wrote a pay there before:
+ * then it is back to nothing because somebody put it there, and that is theirs to decide.
+ */
+export function payCellOf(row: SheetFlight, wroteBefore = false): PayCell {
+  return row.payRaw === null ? 'missing' : !isUnsetPay(row.payRaw) ? 'filled' : wroteBefore ? 'zeroed' : 'empty';
+}
+
+/** How an airline's safety pay stands while its blank profits are compared: its policy, and the landing rate FsHub gave for each flight it was asked about (null: it gave none). */
+export interface SafetyContext {
+  policy: SafetyPolicy | null;
+  landing: ReadonlyMap<number, number | null>;
 }
 
 /** The comparison, from the sheet's rows and the logbook's flights (all of them; only the airline's own callsign is used). */
-export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: string, distances: ReadonlyMap<number, number> = new Map(), wrotePay: ReadonlySet<string> = new Set()): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> {
+export function compareProfits(
+  rows: SheetFlight[],
+  flights: LogFlight[],
+  code: string,
+  distances: ReadonlyMap<number, number> = new Map(),
+  wrotePay: ReadonlySet<string> = new Set(),
+  safety: SafetyContext = { policy: null, landing: new Map() },
+): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> & { needFacts: number[] } {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
   const completed = rows.filter((r) => r.completed);
   const { pairs, unmatched, ambiguous } = pairRows(completed, usable);
   const fills: ProfitFillPlan[] = [];
   const different: ProfitDifference[] = [];
+  const needFacts = new Set<number>();
   let agree = 0;
+  const held: HeldFlight[] = [];
   let unreadable = 0;
+  let waiting = 0;
   for (const { row, flight } of pairs) {
     if (row.profit === null) {
       // Only a cell with nothing in it is ever a candidate: one with a note in it (`TBD`) or a stray space is somebody's, and is left alone.
@@ -195,7 +264,39 @@ export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: 
       }
       // Up, not to the nearest (Aeroconomy has no cents): $54,203.58 is $54,204, and a loss of $8,093.66 is -$8,093. The + 0 turns a -0 into 0.
       const value = Math.ceil(flight.profit) + 0;
-      const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances, wrotePay.has(row.sourceKey));
+      const wrote = wrotePay.has(row.sourceKey);
+      const cell = payCellOf(row, wrote);
+      // FsHub is asked about a flight whose pay depends on it: its distance when it lost money, and its landing rate when safety pay applies to it.
+      const safetyApplies = safety.policy !== null && flight.landedAt >= safety.policy.since;
+      if (flight.flightId !== null && cell === 'empty' && (paidByDistance(value) || safetyApplies)) needFacts.add(flight.flightId);
+      let fine: SafetyFine | null = null;
+      if (safetyApplies && cell === 'empty') {
+        // If in doubt the row is left alone, profit and pay together (a pay is only ever written beside a profit written in the same run), and the managers are told.
+        const hold = (reason: HeldReason, fpm: number | null): void => {
+          held.push({ sourceKey: row.sourceKey, row: row.row, route: row.route, day: row.day, callsign: flight.callsign ?? '', pilot: row.pilot, flightId: flight.flightId, reason, fpm });
+        };
+        if (flight.flightId === null) {
+          hold('no-landing-rate', null); // the logbook names no FsHub flight, so there is no landing rate to find
+          continue;
+        }
+        if (!safety.landing.has(flight.flightId)) {
+          // FsHub has not been asked (or could not be) for this flight's landing rate, so its pay cannot be worked out: the flight, profit and all,
+          // waits for a later run rather than being filled with a pay that might need cutting.
+          waiting++;
+          continue;
+        }
+        const read = readLanding(safety.landing.get(flight.flightId));
+        if (read.kind === 'none') {
+          hold('no-landing-rate', null);
+          continue;
+        }
+        if (read.kind === 'unreliable') {
+          hold('landing-rate-not-believed', read.fpm);
+          continue;
+        }
+        fine = fineFor(read, flight.landedAt, safety.policy);
+      }
+      const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances, wrote, fine);
       fills.push({
         sourceKey: row.sourceKey,
         value,
@@ -216,7 +317,8 @@ export function compareProfits(rows: SheetFlight[], flights: LogFlight[], code: 
   }
   fills.sort((a, b) => a.row - b.row);
   different.sort((a, b) => a.row - b.row);
-  return { logbookFlights: flights.length, usableFlights: usable.length, sheetCompleted: completed.length, matched: pairs.length, agree, fills, different, unreadable, unmatched: unmatched.length, ambiguous: ambiguous.length };
+  held.sort((a, b) => a.row - b.row);
+  return { logbookFlights: flights.length, usableFlights: usable.length, sheetCompleted: completed.length, matched: pairs.length, agree, fills, different, unreadable, unmatched: unmatched.length, ambiguous: ambiguous.length, waiting, held, needFacts: [...needFacts] };
 }
 
 /** Why a panel cannot be checked, in words an admin can act on. */
@@ -235,6 +337,8 @@ export interface AirlineProfitsDeps {
   publicClient: Pick<AeroconomyClient, 'pilotAircraftOwner'> & Partial<Pick<AeroconomyClient, 'airlineContracts' | 'manifests'>>;
   /** Reads FsHub, for the distance of a flight that lost money (the pilot's pay for it depends on that). Without it, such pay is not worked out. */
   fshub?: Pick<FsHubApi, 'airlineFlights'>;
+  /** Told about the flights a run left unfilled because their landing rate cannot be trusted (safety pay), so the airline's managers can be told. Its result is not waited for. */
+  onHeld?: (panel: Panel, held: HeldFlight[]) => unknown;
   fetchFn?: typeof fetch;
   logger?: Logger;
   now?: () => number;
@@ -294,15 +398,30 @@ export class AirlineProfits {
     if (!sheet.hasProfit) throw new ProfitError("The sheet has no Profit Made column, so there is nothing to compare with or fill in.");
 
     const code = callsignCode(panel);
-    // A flight that lost money pays the pilot by the distance, so FsHub is asked how far each one was flown. Only the ones whose Pilot Pay is
-    // empty need it: a pay that will not be written is not worth a request.
+    // A flight that lost money pays the pilot by the distance, and with safety pay on a hard landing cuts the pay, so FsHub is asked about each
+    // such flight: how far it was flown and how hard it landed. Only the ones whose Pilot Pay is empty need it: a pay that will not be written is
+    // not worth a request.
     const wrotePay = this.d.store.payWrittenKeys(panel.id);
-    const ids = compareProfits(sheet.flights, flights, code, new Map(), wrotePay)
-      .fills.filter((f) => f.flightId !== null && paidByDistance(f.value) && f.payPlan.cell === 'empty')
-      .map((f) => f.flightId as number);
-    const distances = await this.fshubDistances(airlineId, ids);
-    const result = compareProfits(sheet.flights, flights, code, distances, wrotePay);
+    const policy = safetyPolicyOf(panel);
+    if (policy && !this.d.fshub) throw new ProfitError("Safety pay is on for this airline, and it needs FsHub's landing rate for each flight, but the bot has no FsHub token, so the pay cannot be worked out.");
+    const first = compareProfits(sheet.flights, flights, code, new Map(), wrotePay, { policy, landing: new Map() });
+    const facts = await this.fshubFacts(airlineId, first.needFacts);
+    const distances = new Map<number, number>();
+    const landing = new Map<number, number | null>();
+    for (const [id, f] of facts) {
+      if (f.distanceNm !== null) distances.set(id, f.distanceNm);
+      landing.set(id, f.landingRate);
+    }
+    const { needFacts: _needed, ...result } = compareProfits(sheet.flights, flights, code, distances, wrotePay, { policy, landing });
     this.log.info(`Compared ${result.matched} flights of ${panel.airlineName} with Aeroconomy's logbooks: ${result.agree} agree, ${result.fills.length} blank, ${result.different.length} differ`);
+    const held = result.held ?? [];
+    if (held.length > 0 && this.d.onHeld) {
+      try {
+        void Promise.resolve(this.d.onHeld(panel, held)).catch((e) => this.log.debug('Telling managers about held flights failed', e));
+      } catch (e) {
+        this.log.debug('Telling managers about held flights failed', e);
+      }
+    }
     return { business: businessId, aircraft: owned.length + leasedRead, leased: leasedRead, leasedHidden, leasedProblem, readAt: this.now(), ...result };
   }
 
@@ -310,9 +429,9 @@ export class AirlineProfits {
    * How far FsHub says each of these flights was flown, in nautical miles. A flight FsHub gave no distance for (or could not be asked
    * about) is simply absent from the answer. At most `MAX_DISTANCE_LOOKUPS` are asked, and asking stops if FsHub says it is busy.
    */
-  private async fshubDistances(airlineId: number, flightIds: number[]): Promise<Map<number, number>> {
+  private async fshubFacts(airlineId: number, flightIds: number[]): Promise<Map<number, FlightFacts>> {
     const fshub = this.d.fshub;
-    return fshub ? fshubDistances(fshub, airlineId, flightIds, MAX_DISTANCE_LOOKUPS, this.log) : new Map<number, number>();
+    return fshub ? fshubFlightFacts(fshub, airlineId, flightIds, MAX_DISTANCE_LOOKUPS, this.log) : new Map<number, FlightFacts>();
   }
 
   /**

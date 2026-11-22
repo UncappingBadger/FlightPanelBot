@@ -677,6 +677,34 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE dm_sessions ADD COLUMN pending_text TEXT;
   `,
+
+  /* v40: landing safety pay (`/setup safety-pay`). 'safety_pay_since' is when an airline turned it on (a flight that landed before that is paid as it always
+     was); NULL means it is off. 'safety_loss_tier2' and 'safety_loss_tier3' are the percentage of the $2,000 minimum pay a pilot loses after a Tier 2 and a Tier 3 landing (0: none); an airline that
+     wants one percentage for both tiers just has them equal.
+     'safety_landings' remembers, per flight, which of the three things a penalty landing causes have been done (the pilot told, the CSV row written, the
+     managers told), so none is done twice. 'safety_doubts' remembers which flights managers have already been told were left unfilled for want of a landing rate. */
+  `
+  ALTER TABLE panels ADD COLUMN safety_pay_since INTEGER;
+  ALTER TABLE panels ADD COLUMN safety_loss_tier2 INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE panels ADD COLUMN safety_loss_tier3 INTEGER NOT NULL DEFAULT 0;
+
+  CREATE TABLE safety_landings (
+    panel_id   INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    flight_id  INTEGER NOT NULL,
+    told       INTEGER NOT NULL DEFAULT 0,
+    logged     INTEGER NOT NULL DEFAULT 0,
+    reported   INTEGER NOT NULL DEFAULT 0,
+    handled_at INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, flight_id)
+  );
+
+  CREATE TABLE safety_doubts (
+    panel_id   INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    source_key TEXT NOT NULL,
+    noted_at   INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, source_key)
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

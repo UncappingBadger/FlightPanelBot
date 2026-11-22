@@ -1,3 +1,4 @@
+import type { BankAccount } from '../aeroconomy/banking.js';
 import type { Panel, PayrollSettings, Store } from '../db/store.js';
 import { ImportError } from '../jobs/import.js';
 import { downloadSheetCsv, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
@@ -42,6 +43,8 @@ export interface PaidTicker {
 export interface PayrollDeps {
   store: Store;
   gateway: PaymentGateway;
+  /** The Aeroconomy accounts the bot's FsHub token can see (for `/payroll accounts` and test transfers). Without it neither is possible. */
+  accounts?: (() => Promise<BankAccount[]>) | null;
   /** Ticks the Pilot Paid box of each flight that was paid. Without it (or where writing to the sheet is switched off) the boxes are left for a person to tick. */
   writeback?: PaidTicker | null;
   /** Reads FsHub, for the distance of a flight that lost money (its pay depends on that). Without it, such flights are flagged to be checked. */
@@ -96,6 +99,12 @@ export class Payroll {
     this.gateway = d.gateway;
   }
 
+  /** The accounts the bot's FsHub token can see on Aeroconomy. */
+  async listAccounts(): Promise<BankAccount[]> {
+    if (!this.d.accounts) throw new PayrollError("I can't look at Aeroconomy accounts: the bot has no FsHub token.");
+    return this.d.accounts();
+  }
+
   /** Is this panel's daily list due (switched on, past its time today, and none made yet today)? */
   isDue(settings: PayrollSettings, now: number): boolean {
     if (!settings.enabled) return false;
@@ -135,6 +144,7 @@ export class Payroll {
       ledger: this.ledgerView(panel.id),
       identities: this.identities(panel.id),
       flightRef: (f) => this.d.store.getJobBySourceKey(panel.id, f.sourceKey)?.code ?? f.flightNumber,
+      trustCell: panel.safetyPaySince !== null,
     };
     let built = buildPayLines(input);
     // A flight that lost money is paid by the distance flown. The first pass names the ones whose distance is not known yet; FsHub is asked

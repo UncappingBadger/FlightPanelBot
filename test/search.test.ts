@@ -555,7 +555,7 @@ describe('search through the interaction router', () => {
   });
 
   it('is not a slash command: pilots find it on the panel', () => {
-    assert.deepEqual(commands.map((c) => c.data.name).sort(), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'setup']);
+    assert.deepEqual(commands.map((c) => c.data.name).sort(), ['commands', 'eta', 'fuel', 'help', 'hideunavailable', 'payroll', 'setup']);
   });
 });
 
