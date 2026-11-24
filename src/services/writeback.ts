@@ -2,7 +2,7 @@ import type { Panel } from '../db/store.js';
 import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js';
 import { parseLegChain } from '../jobs/import.js';
 import { normalizeFlightNumber, type NumberlessRow } from '../jobs/types.js';
-import { isUnsetPay } from './contributions.js';
+import { isUnsetPay, parseMoney } from './contributions.js';
 import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
@@ -54,6 +54,8 @@ export interface ProfitFill {
   pilot: string;
   /** What the pilot is paid for the flight, in whole dollars, for the row's Pilot Pay cell; written only if that cell has no pay in it (empty, or $0) too. Null or missing: none. */
   pay?: number | null;
+  /** What a hard landing took off that pay, in whole dollars, for the row's Safety Deductions cell; written only if that cell is empty and the Pilot Pay cell has no pay in it. Null or missing: none. */
+  deduction?: number | null;
 }
 
 export interface ProfitFillResult {
@@ -61,8 +63,29 @@ export interface ProfitFillResult {
   /** Pilot Pay cells written beside the profits, and how many were asked for but left alone because the cell has something in it (or there is no such column). */
   paid: Array<{ sourceKey: string; cell: string; value: number }>;
   payLeft: number;
+  /** Safety Deductions cells written beside the pay, and how many were asked for but left alone (the cell has something in it, the pay cell has a pay, or there is no such column). */
+  deducted: Array<{ sourceKey: string; cell: string; value: number }>;
+  deductionLeft: number;
   /** Fills not written, and why: the row is gone or has moved, its pilot changed, it is not ticked as completed, or the cell is no longer blank. */
   skipped: Array<{ sourceKey: string; reason: 'gone' | 'moved' | 'changed' | 'not-completed' | 'filled' }>;
+}
+
+/** A Safety Deductions cell to write beside a pay that is already in the sheet, and what the row looked like when it was worked out. */
+export interface DeductionWrite {
+  sourceKey: string;
+  /** Whole dollars. */
+  value: number;
+  /** The row and the pilot's name it had a moment ago: if either has changed since, nothing is written to it. */
+  row: number;
+  pilot: string;
+  /** The Pilot Pay the sheet had then, in whole dollars (nothing at all, or $0, is 0): if the cell says anything else now, nothing is written. */
+  pay: number;
+}
+
+export interface DeductionWriteResult {
+  written: Array<{ sourceKey: string; cell: string; value: number }>;
+  /** Deductions not written, and why: the row is gone or has moved, its pilot changed, it is not ticked as completed, the Pilot Pay is not what it was, or the cell has something in it now. */
+  skipped: Array<{ sourceKey: string; reason: 'gone' | 'moved' | 'changed' | 'not-completed' | 'pay-changed' | 'filled' }>;
 }
 
 /** A flight whose Pilot Paid box is to be ticked, and what its row looked like when the pilot was paid. */
@@ -101,7 +124,8 @@ interface Located {
  * the tab afresh and finds the row again by the flight's route and date, so a sheet that has been
  * edited or re-sorted in the meantime is never written to blindly.
  *
- * Besides those it can write a blank Profit Made cell, and the pilot's pay in a blank (or $0) Pilot Pay cell beside it, and only when an
+ * Besides those it can write a blank Profit Made cell, and the pilot's pay in a blank (or $0) Pilot Pay cell beside it (and, where the airline asked, what a hard
+ * landing took off that pay in an empty Safety Deductions cell), and only when an
  * admin has asked for exactly that and confirmed it (`fillProfits`, from `/setup profit`); and blank Distance and Flight Number cells (`fillDistances`,
  * `fillFlightNumbers`, as a schedule is read). It never changes any other cell that has anything in it.
  * The one more is the Pilot Paid box of a flight whose pilot has just been paid (`markPilotsPaid`, from `/payroll`), which it only ever ticks.
@@ -249,7 +273,7 @@ export class SheetWriteBack {
   fillProfits(panel: Panel, fills: ProfitFill[]): Promise<ProfitFillResult> {
     return this.serial(async () => {
       const ref = this.refOf(panel);
-      const result: ProfitFillResult = { written: [], paid: [], payLeft: 0, skipped: [] };
+      const result: ProfitFillResult = { written: [], paid: [], payLeft: 0, deducted: [], deductionLeft: 0, skipped: [] };
       try {
         const tab = await this.api.readTab(ref);
         // What is really in the cells as well as what they show: a cell with a formula that shows nothing is still filled in.
@@ -291,18 +315,96 @@ export class SheetWriteBack {
           // The pilot's pay goes in beside it, but only into a Pilot Pay cell with no pay in it: nothing at all, or a plain zero (a column formatted
           // as money shows $0 for an empty cell). Both what it shows and what is stored in it must say so; a figure above zero, a note, a stray
           // space or a formula (even one that works out to zero) is somebody's and is left exactly as it is.
+          const payEmpty = parsed.cols.pay >= 0 && isUnsetPay(values[parsed.cols.pay]) && isUnsetPay(stored.values[row - 1]?.[parsed.cols.pay]);
           if (fill.pay !== undefined && fill.pay !== null) {
-            const empty = parsed.cols.pay >= 0 && isUnsetPay(values[parsed.cols.pay]) && isUnsetPay(stored.values[row - 1]?.[parsed.cols.pay]);
-            if (empty) {
+            if (payEmpty) {
               const payCell = `${colLetter(parsed.cols.pay)}${row}`;
               cells.push({ a1: payCell, value: fill.pay });
               result.paid.push({ sourceKey: fill.sourceKey, cell: payCell, value: fill.pay });
             } else result.payLeft++;
           }
+          // What the hard landing took off goes in the Safety Deductions cell beside it, on the same terms: only beside a Pilot Pay with no pay in it (the
+          // deduction is the reason for the pay this bot works out, not something to put next to a pay somebody else set), and only into an empty cell.
+          if (fill.deduction !== undefined && fill.deduction !== null && fill.deduction > 0) {
+            const free = payEmpty && parsed.cols.deduction >= 0 && isUnsetPay(values[parsed.cols.deduction]) && isUnsetPay(stored.values[row - 1]?.[parsed.cols.deduction]);
+            if (free) {
+              const cell = `${colLetter(parsed.cols.deduction)}${row}`;
+              cells.push({ a1: cell, value: fill.deduction });
+              result.deducted.push({ sourceKey: fill.sourceKey, cell, value: fill.deduction });
+            } else result.deductionLeft++;
+          }
         }
         if (cells.length > 0) {
           await this.api.update(ref, tab.title, cells);
           this.log.info(`Wrote ${result.written.length} blank Profit Made cell${result.written.length === 1 ? '' : 's'} and ${result.paid.length} blank Pilot Pay cell${result.paid.length === 1 ? '' : 's'} in the airline's sheet (asked for by an admin): ${cells.map((c) => c.a1).join(', ')}`);
+        }
+        return result;
+      } catch (e) {
+        throw this.wrap(e);
+      }
+    });
+  }
+
+  /**
+   * Write Safety Deductions beside pay that is already in the sheet (for flights filled in before deductions were switched on). The tab is read afresh, twice
+   * (what the cells show and what is stored in them), and each deduction is written only if its row is where it was, still names the same pilot, is ticked as
+   * completed, still has the Pilot Pay it had (exactly: a deduction is only true beside that pay) and the Safety Deductions cell is empty (nothing, or $0).
+   * Anything else is left alone and said so in the result. It touches no other cell, and replaces nothing.
+   */
+  fillDeductions(panel: Panel, writes: DeductionWrite[]): Promise<DeductionWriteResult> {
+    return this.serial(async () => {
+      const result: DeductionWriteResult = { written: [], skipped: [] };
+      if (writes.length === 0) return result;
+      const ref = this.refOf(panel);
+      try {
+        const tab = await this.api.readTab(ref);
+        const stored = await this.api.readTab(ref, 'FORMULA');
+        const parsed = parseScheduleValues(tab.values, this.now(), true);
+        if (!parsed || parsed.cols.pilot < 0 || parsed.cols.done < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find the Pilot and Flight Completed columns in that sheet.");
+        if (parsed.cols.pay < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find a Pilot Pay column in that sheet.");
+        if (parsed.cols.deduction < 0) throw new WriteBackError('NO_COLUMNS', "I couldn't find a Safety Deductions column in that sheet.");
+        const cells: Cell[] = [];
+        /** The dollars a pay cell holds, as it shows and as it is stored: nothing at all or $0 is 0; a note or a formula is no amount. */
+        const payOf = (shown: string | undefined, kept: string | undefined): number | null => {
+          const a = isUnsetPay(shown) ? 0 : parseMoney(shown);
+          const b = isUnsetPay(kept) ? 0 : parseMoney(kept);
+          return a !== null && a === b ? a : null;
+        };
+        for (const w of writes) {
+          const row = parsed.rowOf.get(w.sourceKey);
+          if (row === undefined) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'gone' });
+            continue;
+          }
+          if (row !== w.row) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'moved' });
+            continue;
+          }
+          const values = tab.values[row - 1] ?? [];
+          const pilot = (values[parsed.cols.pilot] ?? '').trim();
+          if (!same(pilot, w.pilot)) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'changed' });
+            continue;
+          }
+          if (!isTicked(values[parsed.cols.done] ?? '') || isCancelled(pilot)) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'not-completed' });
+            continue;
+          }
+          if (payOf(values[parsed.cols.pay], stored.values[row - 1]?.[parsed.cols.pay]) !== w.pay) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'pay-changed' });
+            continue;
+          }
+          if (!isUnsetPay(values[parsed.cols.deduction]) || !isUnsetPay(stored.values[row - 1]?.[parsed.cols.deduction])) {
+            result.skipped.push({ sourceKey: w.sourceKey, reason: 'filled' });
+            continue;
+          }
+          const a1 = `${colLetter(parsed.cols.deduction)}${row}`;
+          cells.push({ a1, value: w.value });
+          result.written.push({ sourceKey: w.sourceKey, cell: a1, value: w.value });
+        }
+        if (cells.length > 0) {
+          await this.api.update(ref, tab.title, cells);
+          this.log.info(`Wrote ${result.written.length} blank Safety Deductions cell${result.written.length === 1 ? '' : 's'} in the airline's sheet (asked for by an admin)`);
         }
         return result;
       } catch (e) {

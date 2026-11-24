@@ -202,7 +202,7 @@ describe('/setup safety-pay', () => {
     const j = setup.data.toJSON();
     const sub = (j.options as any[]).find((o) => o.name === 'safety-pay');
     assert.ok(sub, 'it exists');
-    assert.deepEqual(sub.options.map((o: any) => o.name), ['mode', 'minimum-loss', 'tier2-loss', 'tier3-loss', 'airline']);
+    assert.deepEqual(sub.options.map((o: any) => o.name), ['mode', 'minimum-loss', 'tier2-loss', 'tier3-loss', 'deductions', 'airline']);
     for (const name of ['minimum-loss', 'tier2-loss', 'tier3-loss']) {
       const loss = sub.options.find((o: any) => o.name === name);
       assert.deepEqual([loss.min_value, loss.max_value], [0, 100], name);
@@ -405,6 +405,132 @@ describe('/setup safety-pay', () => {
     assert.deepEqual([panel().safetyPaySince, ...both()], [NOW, 10, 40]);
   });
 
+  describe('writing the deductions in the sheet', () => {
+    const on = () => run({ mode: 'on', 'minimum-loss': 0 });
+
+    it('is off for a new panel, and the status says so and how to switch it on', async () => {
+      assert.equal(panel().safetyDeductions, false);
+      await on();
+      const t = text(await run());
+      assert.match(t, /\*\*In the sheet\.\*\* What a hard landing takes off the pay is not written in the sheet\. `\/setup safety-pay deductions:on` writes it in a \*\*Safety Deductions\*\* column beside the Pilot Pay/);
+    });
+
+    it('is switched on and off with deductions, and the status says what it does', async () => {
+      await on();
+      const t = text(await run({ deductions: 'on' }));
+      assert.equal(panel().safetyDeductions, true);
+      assert.match(t, /^Done: from now on `\/setup profit` also writes what a hard landing takes off a pilot's pay in the sheet's Safety Deductions column\. Landing safety pay is \*\*on\*\*/);
+      assert.match(t, /\*\*In the sheet\.\*\* What a hard landing takes off a pilot's pay \(what the flight would have paid, less what it pays\) is written in the sheet's \*\*Safety Deductions\*\* column, beside the Pilot Pay that `\/setup profit` fills in\. The sheet needs that column \(I never add one\)/);
+      assert.match(text(await run()), /is written in the sheet's \*\*Safety Deductions\*\* column/, 'and the plain status still says so');
+      assert.match(text(await run({ deductions: 'off' })), /^Done: deductions are no longer written in the sheet\. /);
+      assert.equal(panel().safetyDeductions, false);
+    });
+
+    it('says when it was already so, and changes nothing', async () => {
+      await on();
+      assert.match(text(await run({ deductions: 'off' })), /^Deductions were already not being written in the sheet\. /);
+      await run({ deductions: 'on' });
+      assert.match(text(await run({ deductions: 'on' })), /^Deductions were already being written in the sheet\. /);
+      assert.equal(panel().safetyDeductions, true);
+    });
+
+    it('is saved while safety pay is off too, and says it starts when safety pay is on', async () => {
+      assert.equal(panel().safetyPaySince, null);
+      const t = text(await run({ deductions: 'on' }));
+      assert.equal(panel().safetyDeductions, true);
+      assert.match(t, /^Done: from now on `\/setup profit` also writes[^]*Safety Deductions column \(once safety pay is on\)\. Landing safety pay is \*\*off\*\*/);
+      assert.equal(panel().safetyPaySince, null, 'and safety pay is not turned on by it');
+    });
+
+    it('goes with turning safety pay on: said first, and kept whatever is asked next', async () => {
+      const q = await run({ mode: 'on', deductions: 'on' });
+      assert.match(text(q), /^Done: from now on `\/setup profit` also writes[^]*\(once safety pay is on\)\.\n/);
+      assert.match(text(q), /Turn on landing safety pay/, 'the question about the percentage follows');
+      assert.equal(panel().safetyDeductions, true);
+      assert.equal(panel().safetyPaySince, null, 'the question has not been answered yet');
+      const given = text(await run({ mode: 'on', 'minimum-loss': 25, deductions: 'on' }));
+      assert.match(given, /^Deductions were already being written in the sheet\. Done\. Landing safety pay is \*\*on\*\*/);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2], [NOW, 25]);
+    });
+
+    it('is asked of admins only, like the rest of /setup', async () => {
+      await assert.rejects(run({ deductions: 'on' }, false), /Only server admins/);
+      assert.equal(panel().safetyDeductions, false);
+    });
+
+    it('is on the message after the buttons too, and is the one thing that does not change when the percentages do', async () => {
+      await run({ deductions: 'on' });
+      const f = fakeComponent(alice, `safety:25:${pid()}`, { admin: true });
+      await handler.handle(d.ctx, f.i);
+      assert.match(String(f.calls.updates[0].content), /is written in the sheet's \*\*Safety Deductions\*\* column/);
+      await run({ 'minimum-loss': 10 });
+      assert.equal(panel().safetyDeductions, true);
+    });
+  });
+
+  describe('who the status says the reports reach', () => {
+    const ROLE = '810000000000000001';
+    const withCheck = (check: { ids: string[]; found: number; readable: boolean }) => {
+      d.ctx.managerCheck = async () => check;
+    };
+    const reach = (t: string) => t.split('\n').find((l) => /Who is sent them/.test(l)) ?? '';
+
+    it('names the people holding the /setup refresh-roles role, when it can see them', async () => {
+      h.store.addRefreshRole(h.panel.guildId, ROLE, NOW);
+      withCheck({ ids: ['1001', '1002'], found: 2, readable: true });
+      const line = reach(text(await run({ mode: 'on', 'minimum-loss': 0 })));
+      assert.match(line, /the 2 members holding <@&810000000000000001> now: <@1001>, <@1002>\./);
+      assert.doesNotMatch(line, /⚠️/);
+      assert.match(reach(text(await run())), /<@1001>, <@1002>/, 'and the same in the status afterwards');
+    });
+
+    it("warns, and says how to fix it, when the member list can't be read", async () => {
+      h.store.addRefreshRole(h.panel.guildId, ROLE, NOW);
+      withCheck({ ids: ['555'], found: 0, readable: false });
+      const line = reach(text(await run({ mode: 'on', 'minimum-loss': 0 })));
+      assert.match(line, /^• ⚠️ \*\*Who is sent them:\*\* I can't read this server's member list/);
+      assert.match(line, /server owner \(<@555>\) alone/);
+      assert.match(line, /Server Members Intent/);
+    });
+
+    it('warns when nobody holds the role, and says so plainly when no role is set', async () => {
+      h.store.addRefreshRole(h.panel.guildId, ROLE, NOW);
+      withCheck({ ids: ['555'], found: 0, readable: true });
+      assert.match(reach(text(await run({ mode: 'on', 'minimum-loss': 0 }))), /⚠️ \*\*Who is sent them:\*\* nobody holds <@&810000000000000001> at the moment, so every report goes to the server owner \(<@555>\)/);
+      h.store.removeRefreshRole(h.panel.guildId, ROLE);
+      assert.match(reach(text(await run())), /only the server owner \(<@555>\), since no manager role is set\. `\/setup refresh-roles`/);
+    });
+
+    it('names at most ten people', async () => {
+      h.store.addRefreshRole(h.panel.guildId, ROLE, NOW);
+      const ids = Array.from({ length: 14 }, (_, i) => String(2000 + i));
+      withCheck({ ids, found: 14, readable: true });
+      const line = reach(text(await run({ mode: 'on', 'minimum-loss': 0 })));
+      assert.match(line, /the 14 members/);
+      assert.match(line, /<@2009> and 4 more\./);
+      assert.doesNotMatch(line, /<@2010>/);
+    });
+
+    it('says nothing of it where the bot has no way to look, or the look fails, and the status still works', async () => {
+      d.ctx.managerCheck = undefined;
+      assert.doesNotMatch(text(await run({ mode: 'on', 'minimum-loss': 0 })), /Who is sent them/);
+      d.ctx.managerCheck = async () => {
+        throw new Error('boom');
+      };
+      const t = text(await run());
+      assert.match(t, /Landing safety pay is \*\*on\*\*/);
+      assert.doesNotMatch(t, /Who is sent them/);
+    });
+
+    it('is on the message that follows the buttons too', async () => {
+      h.store.addRefreshRole(h.panel.guildId, ROLE, NOW);
+      withCheck({ ids: ['1001'], found: 1, readable: true });
+      const f = fakeComponent(alice, `safety:25:${pid()}`, { admin: true });
+      await handler.handle(d.ctx, f.i);
+      assert.match(String(f.calls.updates[0].content), /the 1 member holding <@&810000000000000001> now: <@1001>\./);
+    });
+  });
+
   describe('the buttons under the question', () => {
     const press = async (way: string, o: { admin?: boolean; guildId?: string | null } = {}, id: number | string = pid()) => {
       const f = fakeComponent(alice, `safety:${way}:${id}`, { admin: o.admin ?? true, ...(o.guildId !== undefined ? { guildId: o.guildId } : {}) });
@@ -585,6 +711,26 @@ describe('the safety pay settings in the database', () => {
     assert.deepEqual([row.s, row.k, row.j], [null, 0, 0]);
     assert.equal((old.prepare('SELECT count(*) AS c FROM safety_landings').get() as { c: number }).c, 0);
     assert.equal((old.prepare('SELECT count(*) AS c FROM safety_doubts').get() as { c: number }).c, 0);
+  });
+
+  it('keeps whether deductions are written in the sheet, off for a new panel, and adds that to a database that has panels without turning it on', async () => {
+    const h = await makeHarness();
+    try {
+      assert.equal(h.panel.safetyDeductions, false);
+      h.store.updatePanel(h.panel.id, { safetyDeductions: true });
+      assert.equal(h.store.getPanel(h.panel.id)!.safetyDeductions, true);
+      h.store.updatePanel(h.panel.id, { safetyDeductions: false });
+      assert.equal(h.store.getPanel(h.panel.id)!.safetyDeductions, false);
+    } finally {
+      await h.close();
+    }
+    const step = MIGRATIONS.findIndex((m) => m.includes('safety_deductions'));
+    assert.ok(step > 0, 'the step exists');
+    const old = new DatabaseSync(':memory:');
+    for (let v = 0; v < step; v++) old.exec(MIGRATIONS[v] as string);
+    old.prepare(`INSERT INTO panels(guild_id, airline_id, airline_name, prefix, channel_id, created_at) VALUES ('g', 1, 'Old Air', 'OLD', 'c', 1)`).run();
+    old.exec(MIGRATIONS[step] as string);
+    assert.equal((old.prepare('SELECT safety_deductions AS d FROM panels').get() as { d: number }).d, 0);
   });
 
   describe('what has been done about a landing', () => {

@@ -29,9 +29,9 @@ import type { BotContext, Command } from '../context.js';
 import { checkPilotId, pilotLabel, rememberPilotId } from '../dm.js';
 import { isDmClosed, UserError } from '../errors.js';
 import { isAdmin, memberHasAnyRole, requireGuild } from '../guard.js';
-import { safetyPayCommand } from '../safetyUi.js';
+import { reachText, safetyPayCommand } from '../safetyUi.js';
 import type { PanelRefreshResult } from '../panel.js';
-import { applyProfitSettings, profitReport, profitSettingsText, showPreview } from '../profitUi.js';
+import { applyProfitSettings, deductionReport, profitReport, profitSettingsText, showDeductionPreview, showPreview } from '../profitUi.js';
 import { noPings, reminderTarget } from '../ui.js';
 
 const REQUIRED_CHANNEL_PERMS = [
@@ -479,6 +479,12 @@ export const setupCommand: Command = {
             .setMinValue(0)
             .setMaxValue(100),
         )
+        .addStringOption((o) =>
+          o
+            .setName('deductions')
+            .setDescription("Write what a hard landing takes off the pay in the sheet's Safety Deductions column")
+            .addChoices({ name: "On: write each deduction in the Safety Deductions column, beside the Pilot Pay I fill in", value: 'on' }, { name: 'Off: do not write deductions in the sheet (the default)', value: 'off' }),
+        )
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     )
     .addSubcommand((s) =>
@@ -504,6 +510,7 @@ export const setupCommand: Command = {
             .addChoices(
               { name: 'Check: compare, and change nothing (the default)', value: 'check' },
               { name: 'Fill: show the blank cells I would fill, then ask you to confirm', value: 'fill' },
+              { name: 'Deductions: add missing Safety Deductions to flights already filled in, after you confirm', value: 'deductions' },
               { name: 'Settings: show where the fill preview goes and who can confirm it', value: 'settings' },
             ),
         )
@@ -970,11 +977,13 @@ export const setupCommand: Command = {
 
       case 'safety-pay': {
         const panel = pickPanel(ctx, guildId, airlineOpt());
-        const reply = safetyPayCommand(ctx, panel, interaction.options.getString('mode'), {
-          both: interaction.options.getInteger('minimum-loss'),
-          tier2: interaction.options.getInteger('tier2-loss'),
-          tier3: interaction.options.getInteger('tier3-loss'),
-        });
+        const reply = safetyPayCommand(
+          ctx,
+          panel,
+          interaction.options.getString('mode'),
+          { both: interaction.options.getInteger('minimum-loss'), tier2: interaction.options.getInteger('tier2-loss'), tier3: interaction.options.getInteger('tier3-loss'), deductions: interaction.options.getString('deductions') },
+          await reachText(ctx, panel),
+        );
         await interaction.editReply({ ...reply, allowedMentions: noPings });
         return;
       }
@@ -1062,6 +1071,26 @@ export const setupCommand: Command = {
         }
         const business = interaction.options.getInteger('business') ?? undefined;
         if (!ctx.profits) throw new UserError("This copy of the bot has no FsHub token, which is what I read Aeroconomy's aircraft logbooks with. Whoever runs the bot can add one on its setup page.");
+        if (action === 'deductions') {
+          let missing;
+          try {
+            missing = await ctx.profits.analyseDeductions(panel, business);
+          } catch (e) {
+            if (e instanceof ProfitError || e instanceof AeroconomyError) throw new UserError(e.message);
+            throw e;
+          }
+          const text = deductionReport(panel.airlineName, missing);
+          if (!ctx.writeback || !ctx.writeback.enabledFor(panel)) {
+            await interaction.editReply({ content: `${text}\n\nNothing was changed: writing to the sheet isn't switched on for this panel (it needs the Google key and \`/setup writeback\`), so I can only show you the numbers.`, allowedMentions: noPings });
+            return;
+          }
+          if (missing.fills.length === 0) {
+            await interaction.editReply({ content: `${text}\n\nThere are no deductions I can add, so nothing was changed.`, allowedMentions: noPings });
+            return;
+          }
+          await showDeductionPreview(ctx, interaction, panel, missing);
+          return;
+        }
         let found;
         try {
           found = await ctx.profits.analyse(panel, business);

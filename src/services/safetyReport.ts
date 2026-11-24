@@ -32,6 +32,14 @@ export function managerRoles(store: Store, panel: Panel): string[] {
 /** Who a managers' message goes to: the Discord accounts of the people it is for (empty when there is nobody the bot can reach). */
 export type ManagerLookup = (panel: Panel) => Promise<string[]>;
 
+/**
+ * The lookup the bot uses: the members of the panel's `managerRoles` (the `/setup refresh-roles` roles and the profit role), as far as `find` can
+ * tell who has them in a server. The wiring of the real bot and the tests use this one, so the two cannot differ.
+ */
+export function managersLookup(store: Store, find: (guildId: string, roleIds: string[]) => Promise<string[]>): ManagerLookup {
+  return (panel) => find(panel.guildId, managerRoles(store, panel));
+}
+
 /** Sends one person a private message. True if it went out. */
 export type SendDm = (discordId: string, content: string) => Promise<boolean>;
 

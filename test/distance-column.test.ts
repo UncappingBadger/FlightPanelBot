@@ -51,7 +51,7 @@ describe('reading the Distance and Daily Flight Sequence columns', () => {
     const a = jobs.get(KEYS.a)!;
     assert.deepEqual([a.legs.map((l) => `${l.dep}-${l.arr}`), a.aircraft, a.closed], [['EGLL-EGKK'], 'A320', false]);
     assert.equal(jobs.get(KEYS.e)!.closed, true, 'a cancelled flight is still closed');
-    assert.deepEqual(parseScheduleValues(grid(), T0)!.cols, { pilot: 5, done: 9, profit: 11, pay: 12, distance: 1, flightNo: -1 });
+    assert.deepEqual(parseScheduleValues(grid(), T0)!.cols, { pilot: 5, done: 9, profit: 11, pay: 12, deduction: -1, distance: 1, flightNo: -1 });
   });
 
   it('lists the flights whose Distance cell has nothing in it, and only those', () => {

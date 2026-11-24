@@ -197,6 +197,113 @@ describe('when the flight goes away or is given back', () => {
   });
 });
 
+describe('when the bot has written the pilot\'s name in the schedule and the pilot gives the flight back', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(() => h.close());
+  const pid = () => h.panel.id;
+  const ended = () => h.emitted.filter((e) => e.type === 'backup-ended').map((e: any) => [e.notice.discordId, e.notice.jobCode, e.notice.reason]);
+  /** The source row for flight 'a', with `name` in its Pilot cell when given. */
+  const row = (name?: string, chain = 'EGLL-EGKK') => {
+    const j = sj('a', chain);
+    if (name) j.legs[0]!.heldBy = name;
+    return j;
+  };
+  /** Pilot A reserves (the bot writes "Alice" in the sheet and the next read shows it), and B is put down as backup. */
+  const setup = () => {
+    h.jobs.sync(pid(), [row()]);
+    const id = h.jobs.open(pid())[0]!.job.id;
+    h.jobs.reserve(id, [1], USER_A);
+    h.store.setReservationSheetName(id, 1, 'Alice');
+    h.jobs.addBackup(id, USER_B);
+    h.jobs.sync(pid(), [row('Alice')]);
+    return id;
+  };
+
+  it('ends the backup and tells them, although the schedule still shows the pilot\'s name', () => {
+    const id = setup();
+    h.emitted.length = 0;
+    h.jobs.release(id, USER_A.discordId);
+    assert.deepEqual(ended(), [[USER_B.discordId, 'TST-001', 'freed']]);
+    assert.equal(h.jobs.view(id)!.backup, null);
+  });
+
+  it('ignores differences of capitals and spaces between the name the bot wrote and the one read back', () => {
+    const id = setup();
+    h.jobs.sync(pid(), [row('  ALICE ')]);
+    h.emitted.length = 0;
+    h.jobs.release(id, USER_A.discordId);
+    assert.deepEqual(ended(), [[USER_B.discordId, 'TST-001', 'freed']]);
+  });
+
+  it('does the same when an admin frees the flight', () => {
+    const id = setup();
+    h.emitted.length = 0;
+    h.jobs.adminRelease(h.panel, 'TST-001');
+    assert.deepEqual(ended(), [[USER_B.discordId, 'TST-001', 'freed']]);
+    assert.equal(h.jobs.view(id)!.backup, null);
+  });
+
+  it('keeps the backup when somebody else is named in the schedule for the flight', () => {
+    const id = setup();
+    h.jobs.sync(pid(), [row('Taylor')]); // a manager typed another pilot over the bot's name
+    h.emitted.length = 0;
+    h.jobs.release(id, USER_A.discordId);
+    assert.deepEqual(ended(), []);
+    assert.equal(h.jobs.view(id)!.backup?.discordId, USER_B.discordId);
+  });
+
+  it('keeps the backup while another leg is still flown', () => {
+    h.jobs.sync(pid(), [sj('a', 'EGLL-EGKK-EGCC')]);
+    const id = h.jobs.open(pid())[0]!.job.id;
+    h.jobs.reserve(id, [1], USER_A);
+    h.jobs.reserve(id, [2], USER_C);
+    h.store.setReservationSheetName(id, 1, 'Alice');
+    h.jobs.addBackup(id, USER_B);
+    h.emitted.length = 0;
+    h.jobs.release(id, USER_A.discordId);
+    assert.deepEqual(ended(), []);
+    assert.equal(h.jobs.view(id)!.backup?.discordId, USER_B.discordId);
+  });
+
+  it('ends a backup that was left behind earlier, the next time the schedule is read and nobody is flying the flight', () => {
+    const id = setup();
+    // As the old code left it: the reservation is gone, the backup stayed, and the schedule's name was cleared afterwards.
+    h.store.deleteReservation(id, 1);
+    assert.equal(h.jobs.view(id)!.backup?.discordId, USER_B.discordId);
+    h.emitted.length = 0;
+    h.jobs.sync(pid(), [row('Alice')]);
+    assert.deepEqual(ended(), [], 'a name still in the schedule is somebody flying it');
+    h.jobs.sync(pid(), [row()]);
+    assert.deepEqual(ended(), [[USER_B.discordId, 'TST-001', 'freed']]);
+    assert.equal(h.jobs.view(id)!.backup, null);
+    h.jobs.sync(pid(), [row()]);
+    assert.equal(ended().length, 1, 'told once, not at every read');
+  });
+
+  it('ends the backup when a manager takes the only pilot\'s name out of the schedule by hand', () => {
+    h.jobs.sync(pid(), [row('Taylor')]);
+    const id = h.jobs.open(pid())[0]!.job.id;
+    h.jobs.addBackup(id, USER_B);
+    h.emitted.length = 0;
+    h.jobs.sync(pid(), [row('Taylor')]);
+    assert.deepEqual(ended(), []);
+    h.jobs.sync(pid(), [row()]);
+    assert.deepEqual(ended(), [[USER_B.discordId, 'TST-001', 'freed']]);
+  });
+
+  it('leaves the backup of a flight a pilot has reserved alone at every read', () => {
+    const id = setup();
+    h.emitted.length = 0;
+    h.jobs.sync(pid(), [row('Alice')]);
+    h.jobs.sync(pid(), [row()]); // the cell was cleared in the schedule, the Discord reservation still stands
+    assert.deepEqual(ended(), []);
+    assert.equal(h.jobs.view(id)!.backup?.discordId, USER_B.discordId);
+  });
+});
+
 describe('the Backup pilot button and the DM that asks for the flight', () => {
   let h: Harness;
   let d: DiscordHarness;

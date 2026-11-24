@@ -705,6 +705,12 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (panel_id, source_key)
   );
   `,
+
+  /* v41: 'safety_deductions' is whether `/setup profit` also writes what a hard landing took off a pilot's pay (what the flight would have paid, less what it
+     pays) into the sheet's Safety Deductions column, beside the Pilot Pay it writes. Off by default. */
+  `
+  ALTER TABLE panels ADD COLUMN safety_deductions INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

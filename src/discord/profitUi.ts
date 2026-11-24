@@ -14,7 +14,7 @@ import {
 } from 'discord.js';
 import type { Panel, ProfitSendTo } from '../db/store.js';
 import { dayName, formatMoney } from '../services/contributions.js';
-import type { HeldFlight, PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
+import type { DeductionAnalysis, DeductionFill, HeldFlight, PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
 import { WriteBackError } from '../services/writeback.js';
 import { plainText, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler } from './context.js';
@@ -41,6 +41,8 @@ interface Pending {
   guildId: string;
   panelId: number;
   fills: ProfitFillPlan[];
+  /** Set when the preview is of Safety Deductions to add beside pay already in the sheet (`fills` is then empty). */
+  deductions?: DeductionFill[];
   /** Where the preview was shown: only to that admin in the reply, in their DMs, or in a channel. */
   where: ProfitSendTo;
   expiresAt: number;
@@ -96,6 +98,12 @@ function payText(p: PayPlan): string {
   return ` · pilot pay ${formatMoney(p.amount)} (${how})`;
 }
 
+/** What would go in the row's Safety Deductions cell, or why nothing would (the airline asked for deductions and this flight's pay is cut). */
+function deductionText(f: ProfitFillPlan): string {
+  if (f.deduction) return ` · deduction ${formatMoney(f.deduction)}`;
+  return f.deductionCell === 'filled' ? ' · deduction: the Safety Deductions cell already has something (left alone)' : '';
+}
+
 /** How the pay of the blank rows stands: to be filled, already filled in or set back to $0 on purpose (left alone), or not worked out. */
 function paySummary(fills: ProfitFillPlan[]): { fill: number; kept: number; zeroed: number; none: number; noColumn: number } {
   return {
@@ -121,11 +129,33 @@ function addWithin(lines: string[], items: string[], budget: number, total = ite
   if (shown < total) lines.push(`…and ${total - shown} more.`);
 }
 
+/** The counts of what the deductions would do (the airline asked for them to be written): to be written, already something in the cell, or no such column. */
+function deductionSummary(fills: ProfitFillPlan[]): { write: number; filled: number; missing: number } {
+  return {
+    write: fills.filter((f) => f.deduction).length,
+    filled: fills.filter((f) => f.deductionCell === 'filled').length,
+    missing: fills.filter((f) => f.deductionCell === 'missing').length,
+  };
+}
+
+/** One line on the Safety Deductions column, only where the airline asked for deductions and some flight's pay is cut. */
+function deductionBullet(fills: ProfitFillPlan[]): string[] {
+  const s = deductionSummary(fills);
+  if (s.write + s.filled + s.missing === 0) return [];
+  if (s.missing > 0 && s.write + s.filled === 0) return ['• 🧾 The sheet has no **Safety Deductions** column, so what the hard landings take off would not be written'];
+  const parts = [
+    ...(s.write > 0 ? [`**${s.write}** would be written (what the pay would have been, less what it is)`] : []),
+    ...(s.filled > 0 ? [`**${s.filled}** already have something in them (left exactly as they are)`] : []),
+  ];
+  return [`• 🧾 Safety Deductions beside those: ${parts.join(', ')}`];
+}
+
 /** Lines on landing safety, when it touches the rows: pay cut, flights left alone for want of a trustworthy reading, and flights held for a later run. */
 function safetyBullets(fills: ProfitFillPlan[], waiting: number, held: HeldFlight[]): string[] {
   const cut = fills.filter((f) => f.payPlan.cell === 'empty' && f.payPlan.safety).length;
   return [
     ...(cut > 0 ? [`• ⚖️ **${cut}** have their pilot pay cut for a hard landing (safety pay)`] : []),
+    ...deductionBullet(fills),
     ...(held.length > 0 ? [`• ⏸️ **${held.length}** are left alone, profit and pay both, because safety pay is on and FsHub's landing rate for ${held.length === 1 ? 'it' : 'them'} can't be trusted: your managers are told, and can fill ${held.length === 1 ? 'it' : 'them'} in by hand`] : []),
     ...(waiting > 0 ? [`• ⏳ **${waiting}** would be filled, but FsHub's landing rate for ${waiting === 1 ? 'it' : 'them'} couldn't be read yet, so ${waiting === 1 ? 'it waits' : 'they wait'} for the next run (safety pay is on)`] : []),
   ];
@@ -166,7 +196,7 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
   }
   if (a.fills.length > 0) {
     lines.push('', '**Blank, could be filled in:**');
-    const shown = a.fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)}${payText(f.payPlan)}`)}`);
+    const shown = a.fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)}${payText(f.payPlan)}${deductionText(f)}`)}`);
     addWithin(lines, shown, REPORT_BUDGET, a.fills.length);
   }
   if (a.held && a.held.length > 0) {
@@ -188,7 +218,7 @@ export function previewText(airline: string, fills: ProfitFillPlan[], note = '')
     `I would write the profit Aeroconomy gives, rounded up to a whole dollar (Aeroconomy has no cents), into **${fills.length}** Profit Made cell${fills.length === 1 ? '' : 's'} that ${fills.length === 1 ? 'is' : 'are'} empty today${payIntro(fills)}`,
     '',
   ];
-  const shown = fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)} (Aeroconomy: ${formatMoney(f.exact)})${payText(f.payPlan)}`)}`);
+  const shown = fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)} (Aeroconomy: ${formatMoney(f.exact)})${payText(f.payPlan)}${deductionText(f)}`)}`);
   addWithin(lines, shown, PREVIEW_BUDGET - closing.length - 2, fills.length);
   lines.push('', closing);
   return lines.join('\n');
@@ -203,11 +233,69 @@ function payIntro(fills: ProfitFillPlan[]): string {
     ...(s.none > 0 ? [`**${s.none}** have a pay I can't work out`] : []),
   ];
   const tail = left.length > 0 ? ` (${left.join('; ')}: left as they are)` : '';
-  const nothingElse = ' I would change nothing else, and no other cell that has anything in it.';
+  const d = deductionSummary(fills);
+  const deductions =
+    d.write > 0
+      ? ` I would also write what the hard landing takes off the pay (what it would have paid, less what it pays) into **${d.write}** empty Safety Deductions cell${d.write === 1 ? '' : 's'}.`
+      : d.missing > 0 && d.filled === 0
+        ? ' The sheet has no Safety Deductions column, so no deductions would be written.'
+        : '';
+  const nothingElse = `${deductions} I would change nothing else, and no other cell that has anything in it.`;
   if (s.noColumn === fills.length) return `. The sheet has no Pilot Pay column.${nothingElse}`;
   if (s.fill === 0) return `${tail}.${nothingElse}`;
   const rule = "15% of the profit, rounded up to a whole dollar (at least $2,000), or for a flight that lost money $2,000 plus $1,000 per 500 nm beyond the first 1,000, by FsHub's distance";
   return `, and the pilot's pay into **${s.fill}** Pilot Pay cell${s.fill === 1 ? '' : 's'} that ${s.fill === 1 ? 'is' : 'are'} empty or $0: ${rule}${tail}.${nothingElse}`;
+}
+
+/* ------------------------------------------------------------------ deductions for flights already filled in */
+
+/** The lines that say what a look for missing deductions found, besides the ones it could write. Only the kinds that have any are said. */
+function deductionCounts(a: DeductionAnalysis): string[] {
+  const n = (count: number, one: string, many: string = one) => `**${count}** ${count === 1 ? one : many}`;
+  return [
+    `• ✍️ ${n(a.fills.length, 'can have its deduction written: the Pilot Pay in the sheet is exactly what the cut gives', 'can have their deduction written: the Pilot Pay in the sheet is exactly what the cut gives')}`,
+    ...(a.paidInFull > 0 ? [`• 💵 ${n(a.paidInFull, 'landed hard but was paid in full in the sheet, so nothing was taken off and nothing is recorded', 'landed hard but were paid in full in the sheet, so nothing was taken off and nothing is recorded')}`] : []),
+    ...(a.differs > 0 ? [`• ✋ ${n(a.differs, 'has a Pilot Pay that is not what the cut gives (somebody changed it, or the percentages changed since): left alone', 'have a Pilot Pay that is not what the cut gives (somebody changed it, or the percentages changed since): left alone')}`] : []),
+    ...(a.unpaid > 0 ? [`• 💤 ${n(a.unpaid, 'has no Pilot Pay yet, so there is nothing to record a deduction against', 'have no Pilot Pay yet, so there is nothing to record a deduction against')}`] : []),
+    ...(a.already > 0 ? [`• 🔒 ${n(a.already, 'already has something in Safety Deductions (left exactly as it is)', 'already have something in Safety Deductions (left exactly as they are)')}`] : []),
+    ...(a.uncut > 0 ? [`• ➖ ${n(a.uncut, 'was not cut: it landed before safety pay was turned on, more gently than Tier 2, or the cut took nothing off', 'were not cut: they landed before safety pay was turned on, more gently than Tier 2, or the cut took nothing off')}`] : []),
+    ...(a.noRate > 0 ? [`• ❔ ${n(a.noRate, "has no landing rate (or distance) from FsHub that I can use, so I can't tell", "have no landing rate (or distance) from FsHub that I can use, so I can't tell")}`] : []),
+    ...(a.waiting > 0 ? [`• ⏳ ${n(a.waiting, "I haven't been able to ask FsHub about yet (I ask about at most 50 a run): run this again", "I haven't been able to ask FsHub about yet (I ask about at most 50 a run): run this again")}`] : []),
+  ];
+}
+
+/** What a look for missing deductions found, in words. Reading only. */
+export function deductionReport(airline: string, a: DeductionAnalysis): string {
+  const lines = [
+    `🧾 **Missing Safety Deductions: ${plainText(airline)}**`,
+    `I read ${a.aircraft} aircraft logbook${a.aircraft === 1 ? '' : 's'} from Aeroconomy and the sheet, and matched **${a.matched}** completed flights to the logbooks.`,
+    ...(a.leasedProblem ? [`• ⚠️ I couldn't list the airline's leased aircraft (${a.leasedProblem.replace(/\.$/, '')}), so only the aircraft it owns are in this.`] : []),
+    ...(a.leasedHidden > 0 ? [`• ⚠️ Aeroconomy wouldn't show **${a.leasedHidden}** leased aircraft logbook${a.leasedHidden === 1 ? '' : 's'} to this account, so ${a.leasedHidden === 1 ? 'its' : 'their'} flights are left out.`] : []),
+    ...deductionCounts(a),
+  ];
+  return lines.join('\n');
+}
+
+/** One flight to be given its deduction, as a line. */
+function deductionLine(f: DeductionFill): string {
+  return `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · Tier ${f.tier} (-${f.fpm} fpm) · paid ${formatMoney(f.pay)}, ${formatMoney(f.normal)} without the cut · deduction ${formatMoney(f.deduction)}`)}`;
+}
+
+/**
+ * What pressing the button would write, for the admin to read first. A `note` (who asked, who may press, or why it is not where it was meant to be) goes after
+ * the closing words, and is counted in the budget so the message always fits.
+ */
+export function deductionPreviewText(airline: string, a: DeductionAnalysis, note = ''): string {
+  const closing = `Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, its Pilot Pay is not what it is now, or the cell is no longer empty. Nothing is written unless you press **Write**.${note ? `\n${note}` : ''}`;
+  const lines = [
+    `✍️ **Add missing Safety Deductions: ${plainText(airline)}**`,
+    `I would write what each hard landing took off (what the flight would have paid, less what it was paid) into **${a.fills.length}** empty Safety Deductions cell${a.fills.length === 1 ? '' : 's'}, beside Pilot Pay that already matches the cut. I would change nothing else.`,
+    ...deductionCounts(a).slice(1),
+    '',
+  ];
+  addWithin(lines, a.fills.slice(0, SHOWN_FILLS).map(deductionLine), PREVIEW_BUDGET - closing.length - 2, a.fills.length);
+  lines.push('', closing);
+  return lines.join('\n');
 }
 
 export function profitButtons(token: string, count: number): ActionRowBuilder<MessageActionRowComponentBuilder>[] {
@@ -293,13 +381,32 @@ function whyNot(e: unknown, where: 'dm' | 'channel'): string {
  */
 export async function showPreview(ctx: BotContext, interaction: ChatInputCommandInteraction, panel: Panel, fills: ProfitFillPlan[]): Promise<void> {
   const now = ctx.now();
-  const count = fills.length + fills.filter((f) => f.pay !== null && f.pay !== undefined).length;
+  const count = fills.length + fills.filter((f) => f.pay !== null && f.pay !== undefined).length + fills.filter((f) => f.deduction).length;
   const asker = interaction.user.id;
-  const make = (where: ProfitSendTo, note: string) => {
+  await deliverPreview(ctx, interaction, panel, (where, note) => {
     const token = rememberFills({ userId: asker, guildId: panel.guildId, panelId: panel.id, fills, where }, now, where === 'here' ? PENDING_TTL_MS : SHARED_TTL_MS);
     return { token, message: { content: previewText(panel.airlineName, fills, note), components: profitButtons(token, count), allowedMentions: noPings } };
-  };
+  });
+}
 
+/** The same for the Safety Deductions to add beside pay that is already in the sheet (`/setup profit action:deductions`). */
+export async function showDeductionPreview(ctx: BotContext, interaction: ChatInputCommandInteraction, panel: Panel, found: DeductionAnalysis): Promise<void> {
+  const now = ctx.now();
+  const asker = interaction.user.id;
+  await deliverPreview(ctx, interaction, panel, (where, note) => {
+    const token = rememberFills({ userId: asker, guildId: panel.guildId, panelId: panel.id, fills: [], deductions: found.fills, where }, now, where === 'here' ? PENDING_TTL_MS : SHARED_TTL_MS);
+    return { token, message: { content: deductionPreviewText(panel.airlineName, found, note), components: profitButtons(token, found.fills.length), allowedMentions: noPings } };
+  });
+}
+
+/** Show a preview where the panel is set to show it (the reply, the admin's DMs or a channel), falling back to the reply with a line saying why. */
+async function deliverPreview(
+  ctx: BotContext,
+  interaction: ChatInputCommandInteraction,
+  panel: Panel,
+  make: (where: ProfitSendTo, note: string) => { token: string; message: { content: string; components: ActionRowBuilder<MessageActionRowComponentBuilder>[]; allowedMentions: typeof noPings } },
+): Promise<void> {
+  const asker = interaction.user.id;
   let instead = '';
   if (panel.profitSendTo === 'channel' && panel.profitChannelId) {
     const channelId = panel.profitChannelId;
@@ -341,6 +448,7 @@ const REASON_TEXT: Record<string, string> = {
   changed: 'the pilot named on the row changed',
   'not-completed': 'the row is no longer ticked as completed',
   filled: 'the cell has something in it now',
+  'pay-changed': 'the Pilot Pay is not what it was',
 };
 
 /**
@@ -401,6 +509,21 @@ export const profitHandler: ComponentHandler = {
       return;
     }
     try {
+      if (wanted.deductions) {
+        const done = await ctx.writeback.fillDeductions(
+          panel,
+          wanted.deductions.map((d) => ({ sourceKey: d.sourceKey, value: d.deduction, row: d.row, pilot: d.pilot, pay: d.pay })),
+        );
+        const left = new Map<string, number>();
+        for (const x of done.skipped) left.set(x.reason, (left.get(x.reason) ?? 0) + 1);
+        const text = [
+          `✅ Wrote **${done.written.length}** Safety Deductions cell${done.written.length === 1 ? '' : 's'} in the sheet at ${ts(now, 't')}${done.written.length > 0 ? `: ${done.written.slice(0, 12).map((w) => w.cell).join(', ')}${done.written.length > 12 ? '…' : ''}` : '.'}`,
+          ...(done.skipped.length > 0 ? [`Left alone, because they changed since the preview: ${[...left].map(([r, n]) => `${n} (${REASON_TEXT[r] ?? r})`).join('; ')}.`] : []),
+          ...(by ? [by.trim()] : []),
+        ];
+        await interaction.editReply({ content: text.join('\n'), components: [], allowedMentions: noPings });
+        return;
+      }
       const result = await ctx.writeback.fillProfits(panel, wanted.fills);
       // Remember which pay cells were written by this bot: one that is later set back to $0 is then known to be somebody's own choice.
       if (result.paid.length > 0) ctx.store.recordPayWrites(panel.id, result.paid.map((p) => ({ sourceKey: p.sourceKey, cents: Math.round(p.value * 100) })), now);
@@ -409,6 +532,8 @@ export const profitHandler: ComponentHandler = {
       const lines = [
         `✅ Wrote **${result.written.length}** Profit Made cell${result.written.length === 1 ? '' : 's'} in the sheet at ${ts(now, 't')}${result.written.length > 0 ? `: ${result.written.slice(0, 12).map((w) => w.cell).join(', ')}${result.written.length > 12 ? '…' : ''}` : '.'}`,
         ...(result.paid.length > 0 ? [`💵 And **${result.paid.length}** Pilot Pay cell${result.paid.length === 1 ? '' : 's'}: ${result.paid.slice(0, 12).map((w) => w.cell).join(', ')}${result.paid.length > 12 ? '…' : ''}`] : []),
+        ...(result.deducted.length > 0 ? [`🧾 And **${result.deducted.length}** Safety Deductions cell${result.deducted.length === 1 ? '' : 's'}: ${result.deducted.slice(0, 12).map((w) => w.cell).join(', ')}${result.deducted.length > 12 ? '…' : ''}`] : []),
+        ...(result.deductionLeft > 0 ? [`Left alone: **${result.deductionLeft}** Safety Deductions cell${result.deductionLeft === 1 ? '' : 's'} could not be written (${result.deductionLeft === 1 ? 'it has' : 'they have'} something in ${result.deductionLeft === 1 ? 'it' : 'them'}, the Pilot Pay beside ${result.deductionLeft === 1 ? 'it has' : 'them has'} a pay, or the column is gone).`] : []),
         ...(result.payLeft > 0 ? [`Left alone: **${result.payLeft}** Pilot Pay cell${result.payLeft === 1 ? '' : 's'} had something in ${result.payLeft === 1 ? 'it' : 'them'} by then.`] : []),
         ...(result.skipped.length > 0 ? [`Left alone, because they changed since the preview: ${[...skipped].map(([r, n]) => `${n} (${REASON_TEXT[r] ?? r})`).join('; ')}.`] : []),
         ...(by ? [by.trim()] : []),

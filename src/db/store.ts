@@ -74,6 +74,8 @@ export interface Panel {
   /** The percentage (0 to 100) of the $2,000 minimum pay a pilot loses after a Tier 2 landing, and after a Tier 3 landing. */
   safetyLossTier2: number;
   safetyLossTier3: number;
+  /** Whether what a hard landing took off a pilot's pay is also written in the sheet's Safety Deductions column. */
+  safetyDeductions: boolean;
   /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
   layout: 'cards' | 'grid';
   /** The order of day and month in the short dates on a grid panel's buttons: day first (16/11/26) or month first (11/16/26). */
@@ -409,6 +411,7 @@ const toPanel = (r: Row): Panel => ({
   safetyPaySince: nn(r.safety_pay_since),
   safetyLossTier2: r.safety_loss_tier2 === undefined || r.safety_loss_tier2 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier2))),
   safetyLossTier3: r.safety_loss_tier3 === undefined || r.safety_loss_tier3 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier3))),
+  safetyDeductions: r.safety_deductions !== undefined && r.safety_deductions !== null && n(r.safety_deductions) !== 0,
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
   profitSendTo: s(r.profit_send_to) === 'dm' ? 'dm' : s(r.profit_send_to) === 'channel' ? 'channel' : 'here',
@@ -684,6 +687,7 @@ export class Store {
       safetyPaySince: number | null;
       safetyLossTier2: number;
       safetyLossTier3: number;
+      safetyDeductions: boolean;
       layout: 'cards' | 'grid';
       gridDates: 'dmy' | 'mdy';
       profitSendTo: ProfitSendTo;
@@ -727,6 +731,7 @@ export class Store {
     if (patch.safetyPaySince !== undefined) (sets.push('safety_pay_since = ?'), params.push(patch.safetyPaySince));
     if (patch.safetyLossTier2 !== undefined) (sets.push('safety_loss_tier2 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier2)))));
     if (patch.safetyLossTier3 !== undefined) (sets.push('safety_loss_tier3 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier3)))));
+    if (patch.safetyDeductions !== undefined) (sets.push('safety_deductions = ?'), params.push(patch.safetyDeductions ? 1 : 0));
     if (patch.fshubAutoComplete !== undefined) (sets.push('fshub_autocomplete = ?'), params.push(patch.fshubAutoComplete ? 1 : 0));
     if (patch.fshubAutoCompleteAt !== undefined) (sets.push('fshub_autocomplete_at = ?'), params.push(patch.fshubAutoCompleteAt));
     if (patch.fshubConfirm !== undefined) (sets.push('fshub_confirm = ?'), params.push(patch.fshubConfirm ? 1 : 0));
@@ -952,6 +957,13 @@ export class Store {
        ORDER BY b.created_at, j.id`,
       panelId,
     ).map((r) => ({ jobId: n(r.job_id), discordId: s(r.discord_id), username: s(r.username), sourceKey: s(r.source_key), code: s(r.code) }));
+  }
+
+  /** The ids of this panel's open flights that have a backup pilot. */
+  listBackedJobIds(panelId: number): Set<number> {
+    return new Set(
+      this.all(`SELECT b.job_id FROM job_backups b JOIN jobs j ON j.id = b.job_id WHERE j.panel_id = ? AND j.status = 'open'`, panelId).map((r) => n(r.job_id)),
+    );
   }
 
   /** Take the backup off a job. With `discordId`, only if that person is the backup. True if one was removed. */

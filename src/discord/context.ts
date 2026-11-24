@@ -8,7 +8,7 @@ import type {
 } from 'discord.js';
 import type { AeroDaqClient } from '../aerodaq/client.js';
 import type { Config } from '../config.js';
-import type { Store } from '../db/store.js';
+import type { Panel, Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
 import type { MetarClient } from '../metar/client.js';
 import type { AutoCompleter } from '../services/autoComplete.js';
@@ -26,6 +26,7 @@ import type { Payroll } from '../services/payrollService.js';
 import type { SheetWriteBack } from '../services/writeback.js';
 import type { Logger } from '../util/log.js';
 import type { MarketService } from './market.js';
+import type { ManagerCheck } from './notifier.js';
 import type { PanelService } from './panel.js';
 import type { WeatherBoardService } from './weatherBoard.js';
 
@@ -66,6 +67,8 @@ export interface BotContext {
   profits?: AirlineProfits | null;
   /** Makes the list of pilot payments and (once the bank is connected) pays it, for `/payroll`; absent or null in tests that do not use it. */
   payroll?: Payroll | null;
+  /** Who a report to this panel's managers reaches, and whether the roles could be looked up; absent in tests that do not use it. */
+  managerCheck?: (panel: Panel) => Promise<ManagerCheck>;
   /** The one moment each hour at which all the hourly checks happen; absent in tests that do not use it. */
   slot?: HourlySlot;
   log: Logger;

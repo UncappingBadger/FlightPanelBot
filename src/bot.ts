@@ -37,7 +37,7 @@ import { JobEvents } from './services/events.js';
 import { FlightTimes } from './services/flightTime.js';
 import { FsHubSync } from './services/fshubSync.js';
 import { HardLandings } from './services/hardLanding.js';
-import { HARD_LANDINGS_CSV, managerRoles, tellDoubts, type ManagerLookup } from './services/safetyReport.js';
+import { HARD_LANDINGS_CSV, managerRoles, managersLookup, tellDoubts } from './services/safetyReport.js';
 import { JobService } from './services/jobs.js';
 import { AeroconomyAccountClient } from './aeroconomy/account.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
@@ -147,7 +147,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   const fshub = config.fshubToken ? new FsHubClient({ token: config.fshubToken, logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }) : null;
   // A pilot FsHub shows landing very hard gets a light-hearted message (they can switch it off). It only needs FsHub's flights, so it rides on that read.
   let notifier: Notifier | null = null;
-  const managersOf: ManagerLookup = async (panel) => (await notifier?.managerIds(panel.guildId, managerRoles(store, panel))) ?? [];
+  const managersOf = managersLookup(store, async (guildId, roleIds) => (await notifier?.managerIds(guildId, roleIds)) ?? []);
   const hardLandings = new HardLandings(store, async (discordId, content) => (await notifier?.dm(discordId, content)) === true, {
     logger: log,
     managers: managersOf,
@@ -279,7 +279,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), onHeld: (panel, held) => tellDoubts({ store, send: async (discordId, content) => (await notifier?.dm(discordId, content)) === true, managers: managersOf, now: Date.now, log }, panel, held), logger: log })
     : null;
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, managerCheck: async (panel) => (await notifier?.managerCheck(panel.guildId, managerRoles(store, panel))) ?? { ids: [], found: 0, readable: true }, log, now: Date.now, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({

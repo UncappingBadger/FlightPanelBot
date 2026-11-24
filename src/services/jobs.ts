@@ -169,6 +169,7 @@ export class JobService {
       if (!panel) throw new JobError('NOT_FOUND', 'That panel no longer exists.');
       const out: SyncResult = { added: 0, updated: 0, removed: 0, completed: 0, released: [], numberClashes: [], backupEnded: [] };
       const seen = new Set<number>();
+      const backed = this.store.listBackedJobIds(panelId);
       if (DEBUG_BUILD) dbg(this.log, `sync ${panel.airlineName} (panel ${panelId}): the source lists ${jobs.length} flight(s); ${this.store.listJobs(panelId, 'open').length} are open here now`);
       /** The ID a flight gets: its flight number when it has one that no other flight on the panel has, else the automatic one. */
       const claim = (wanted: string | null | undefined, ownCode?: string): string | null => {
@@ -301,8 +302,11 @@ export class JobService {
           if (nw) this.store.insertLeg(existing.id, i + 1, nw.dep, nw.arr, nw.heldBy ?? null);
         }
         if (changed) out.updated++;
-        // A change to the route took the pilots off it: a backup has nobody to stand in for now.
-        if (out.released.length > releasedBefore) this.endBackup(existing.id, 'freed', out.backupEnded!);
+        // A change to the route took the pilots off it: a backup has nobody to stand in for now. The same when an open flight with a backup
+        // has nobody flying it any more (a name taken out of the schedule by hand, or the bot's own name for the pilot who gave it back).
+        if (out.released.length > releasedBefore || (backed.has(existing.id) && status === 'open' && completedAt === null)) {
+          this.endBackup(existing.id, 'freed', out.backupEnded!);
+        }
       }
 
       for (const job of this.store.listJobs(panelId, 'open')) {
@@ -339,10 +343,13 @@ export class JobService {
    * nobody (no Discord pilot and no name in the schedule) is flying any leg. The notice is added to `into` for the caller to
    * announce. Call inside a transaction.
    */
-  private endBackup(jobId: number, reason: BackupNotice['reason'], into: BackupNotice[]): void {
+  private endBackup(jobId: number, reason: BackupNotice['reason'], into: BackupNotice[], ignoreNames: string[] = []): void {
     const view = this.store.getJobView(jobId);
     if (!view?.backup) return;
-    if (reason === 'freed' && view.legs.some((l) => l.holder || l.sheetHolder)) return;
+    // `ignoreNames`: names the bot itself wrote in the sheet for pilots who have just given the flight back. The sheet still shows them
+    // until the bot has taken them off again, and that is not someone flying the flight.
+    const ignored = new Set(ignoreNames.map((n) => n.trim().toLowerCase()));
+    if (reason === 'freed' && view.legs.some((l) => l.holder || (l.sheetHolder && !ignored.has(l.sheetHolder.trim().toLowerCase())))) return;
     const written = this.store.getBackupSheetName(jobId);
     this.store.deleteBackup(jobId);
     into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: view.job.code, reason, ...(written ? { sourceKey: written.sourceKey, sheetName: written.name } : {}) });
@@ -681,11 +688,15 @@ export class JobService {
       const view = this.store.getJobView(jobId);
       if (!view) return [] as number[];
       const out: number[] = [];
+      const written: string[] = [];
       for (const leg of view.legs) {
         if (legNos && !legNos.includes(leg.legNo)) continue;
-        if (leg.holder?.discordId === discordId && this.store.deleteReservation(jobId, leg.legNo)) out.push(leg.legNo);
+        if (leg.holder?.discordId === discordId && this.store.deleteReservation(jobId, leg.legNo)) {
+          out.push(leg.legNo);
+          if (leg.holder.sheetName) written.push(leg.holder.sheetName);
+        }
       }
-      if (out.length > 0) this.endBackup(jobId, 'freed', ended);
+      if (out.length > 0) this.endBackup(jobId, 'freed', ended, written);
       return out;
     });
     if (freed.length > 0) {
@@ -765,17 +776,19 @@ export class JobService {
     const view = this.findByCode(panel, codeInput);
     if (!view) throw new JobError('NOT_FOUND', `I can't find an open flight with the ID "${codeInput}" on this panel.`);
     const notices: ReleasedNotice[] = [];
+    const written: string[] = [];
     this.store.tx(() => {
       for (const leg of view.legs) {
         if (legNo !== undefined && leg.legNo !== legNo) continue;
         if (leg.holder && this.store.deleteReservation(view.job.id, leg.legNo)) {
           notices.push({ panelId: panel.id, discordId: leg.holder.discordId, jobCode: view.job.code, legNos: [leg.legNo], reason: 'admin' });
+          if (leg.holder.sheetName) written.push(leg.holder.sheetName);
         }
       }
     });
     const merged = mergeNotices(notices);
     const ended: BackupNotice[] = [];
-    if (merged.length > 0) this.store.tx(() => this.endBackup(view.job.id, 'freed', ended));
+    if (merged.length > 0) this.store.tx(() => this.endBackup(view.job.id, 'freed', ended, written));
     if (merged.length > 0) {
       this.events.emit({ type: 'changed', panelId: panel.id });
       for (const n of merged) this.events.emit({ type: 'released', notice: n });

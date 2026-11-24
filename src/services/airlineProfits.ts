@@ -5,7 +5,7 @@ import type { Panel, Store } from '../db/store.js';
 import type { FsHubApi } from '../fshub/client.js';
 import { downloadSheetCsv, sheetRefOf } from '../jobs/sheet.js';
 import { silentLogger, type Logger } from '../util/log.js';
-import { isUnsetPay, readSheetFlights, type SheetFlight } from './contributions.js';
+import { isUnsetPay, parseMoney, readSheetFlights, type SheetFlight, type SheetFlights } from './contributions.js';
 import { callsignCode } from './flightEtas.js';
 import { fshubFlightFacts, type FlightFacts } from './fshubDistances.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
@@ -36,6 +36,8 @@ const AIRCRAFT_TO_TRY = 4;
 const DISTANCE_AGREES_WITHIN_NM = 1;
 /** The most FsHub lookups (one per flight whose pay needs its distance or its landing rate) one run makes: FsHub's request budget is shared with the rest of the bot. */
 const MAX_DISTANCE_LOOKUPS = 25;
+/** A run that looks for deductions to add to flights already filled in asks FsHub about this many flights at most; the next run goes on with the rest. */
+const MAX_DEDUCTION_LOOKUPS = 50;
 
 const businessKey = (airlineId: number) => `aero.business.${airlineId}`;
 const norm = (s: string) => s.trim().toLowerCase();
@@ -90,6 +92,9 @@ export interface PayPlan {
   safety?: { tier: FineTier; fpm: number; share: number; normal: number; minimumLoss: number; byMinimum: boolean } | null;
 }
 
+/** What is in the sheet's Safety Deductions cell of the row: empty (it can be written), something already in it, or the sheet has no such column. */
+export type DeductionCell = 'empty' | 'filled' | 'missing';
+
 /** One blank Profit Made cell that Aeroconomy's logbook can fill in, and the pilot's pay beside it. */
 export interface ProfitFillPlan extends ProfitFill {
   route: string;
@@ -102,6 +107,8 @@ export interface ProfitFillPlan extends ProfitFill {
   flightId: number | null;
   logbookNm: number | null;
   payPlan: PayPlan;
+  /** Only where the airline asked for deductions to be written and this flight's pay is cut: what the Safety Deductions cell holds (`deduction` is the amount when it can be written). */
+  deductionCell?: DeductionCell;
 }
 
 /** A Profit Made that is in the sheet and is not what Aeroconomy says. */
@@ -184,6 +191,17 @@ export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pa
 }
 
 /**
+ * The distance a flight that lost money was flown, for its pay: FsHub's, and only when the logbook's own figure agrees with it. Otherwise the reason there is none.
+ */
+function distanceFor(flightId: number | null, logbookNm: number | null, distances: ReadonlyMap<number, number>): number | PayProblem {
+  if (flightId === null) return 'no-flight-id';
+  const fshub = distances.get(flightId);
+  if (fshub === undefined) return 'no-distance';
+  if (logbookNm !== null && Math.abs(logbookNm - fshub) > DISTANCE_AGREES_WITHIN_NM) return 'distance-differs';
+  return fshub;
+}
+
+/**
  * The pilot's pay for a flight whose profit is going to be filled in as `value` (whole dollars). A flight that lost money is paid by the
  * distance flown, and that distance is FsHub's: `distances` holds what FsHub recorded for each flight it was asked about, and the logbook's
  * own figure has to agree with it. Without both, there is no pay to work out, and the plan says why instead of guessing.
@@ -202,11 +220,9 @@ export function planPay(
   const none = (problem: PayProblem): PayPlan => ({ amount: null, basis: null, distanceNm: null, problem, cell });
   let nm: number | null = null;
   if (paidByDistance(value)) {
-    if (flightId === null) return none('no-flight-id');
-    const fshub = distances.get(flightId);
-    if (fshub === undefined) return none('no-distance');
-    if (logbookNm !== null && Math.abs(logbookNm - fshub) > DISTANCE_AGREES_WITHIN_NM) return none('distance-differs');
-    nm = fshub;
+    const got = distanceFor(flightId, logbookNm, distances);
+    if (typeof got === 'string') return none(got);
+    nm = got;
   }
   const pay = pilotPay(value, nm, fine);
   if (!pay) return none('no-distance');
@@ -234,6 +250,8 @@ export function payCellOf(row: SheetFlight, wroteBefore = false): PayCell {
 export interface SafetyContext {
   policy: SafetyPolicy | null;
   landing: ReadonlyMap<number, number | null>;
+  /** The airline asked for what a hard landing takes off the pay to be written in the Safety Deductions column too. */
+  deductions?: boolean;
 }
 
 /** The comparison, from the sheet's rows and the logbook's flights (all of them; only the airline's own callsign is used). */
@@ -297,11 +315,23 @@ export function compareProfits(
         fine = fineFor(read, flight.landedAt, safety.policy);
       }
       const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances, wrote, fine);
+      // What the hard landing took off: what the flight would have paid, less what it pays. Only written beside a pay this bot is writing too (the pay cell empty),
+      // into a Safety Deductions cell with nothing in it.
+      let deduction: number | null = null;
+      let deductionCell: DeductionCell | undefined;
+      if (safety.deductions && payPlan.safety && payPlan.cell === 'empty') {
+        const taken = payPlan.safety.normal - (payPlan.amount ?? 0);
+        if (taken > 0) {
+          deductionCell = row.deductionRaw === undefined || row.deductionRaw === null ? 'missing' : isUnsetPay(row.deductionRaw) ? 'empty' : 'filled';
+          if (deductionCell === 'empty') deduction = taken;
+        }
+      }
       fills.push({
         sourceKey: row.sourceKey,
         value,
         // The pay goes in only if it could be worked out and its cell is empty; the sheet is checked again when it is written.
         pay: payPlan.cell === 'empty' ? payPlan.amount : null,
+        ...(deduction !== null ? { deduction } : {}),
         row: row.row,
         pilot: row.pilot,
         route: row.route,
@@ -311,6 +341,7 @@ export function compareProfits(
         flightId: flight.flightId,
         logbookNm: flight.distanceNm,
         payPlan,
+        ...(deductionCell ? { deductionCell } : {}),
       });
     } else if (Math.abs(row.profit - flight.profit) <= SAME_WITHIN) agree++;
     else different.push({ row: row.row, route: row.route, day: row.day, callsign: flight.callsign ?? '', sheet: row.profit, aeroconomy: flight.profit });
@@ -321,12 +352,160 @@ export function compareProfits(
   return { logbookFlights: flights.length, usableFlights: usable.length, sheetCompleted: completed.length, matched: pairs.length, agree, fills, different, unreadable, unmatched: unmatched.length, ambiguous: ambiguous.length, waiting, held, needFacts: [...needFacts] };
 }
 
+/* ------------------------------------------------------------------ deductions for flights already filled in */
+
+/** A Safety Deductions cell that can be written beside a pay that is already in the sheet. */
+export interface DeductionFill {
+  sourceKey: string;
+  /** The row and the pilot's name it had when this was worked out: if either has changed by the time it is written, nothing is written. */
+  row: number;
+  pilot: string;
+  route: string;
+  /** Midnight (Zulu) of the sheet row's day. */
+  day: number;
+  callsign: string;
+  /** The Pilot Pay the sheet has (whole dollars): it is exactly what the cut gives, which is why a deduction is worth writing. Checked again when it is written. */
+  pay: number;
+  /** What the flight would have paid without the cut. */
+  normal: number;
+  /** What the cut took off: `normal` less `pay`. */
+  deduction: number;
+  tier: FineTier;
+  fpm: number;
+}
+
+/** What a look for missing deductions found. */
+export interface DeductionAnalysis {
+  /** The airline's backing business on Aeroconomy, and how many aircraft logbooks were read. */
+  business: number;
+  aircraft: number;
+  leased: number;
+  leasedHidden: number;
+  leasedProblem: string | null;
+  readAt: number;
+  /** Completed flights of the sheet matched to a logbook flight. */
+  matched: number;
+  fills: DeductionFill[];
+  /** Matched flights that already have something in Safety Deductions (left as it is). */
+  already: number;
+  /** Flights whose pay was not cut: landed before safety pay was turned on, a softer landing than Tier 2, or a cut that took nothing off. */
+  uncut: number;
+  /** Flights that landed hard enough to be cut but were paid in full in the sheet: nothing was taken off, so nothing is recorded. */
+  paidInFull: number;
+  /** Flights whose pay in the sheet is neither what the cut gives nor the usual pay (somebody changed it, or the airline's percentages have changed since): left alone. */
+  differs: number;
+  /** Flights whose pay is still empty, so there is no pay to record a deduction against yet. */
+  unpaid: number;
+  /** Flights FsHub gave no landing rate (or distance, for a flight that lost money) that could be used: nothing can be said about them. */
+  noRate: number;
+  /** Flights FsHub was not asked about yet (the run's limit, or FsHub was busy): a later run goes on with them. */
+  waiting: number;
+}
+
+/**
+ * Work out the deductions missing from flights already filled in: a completed flight that landed after safety pay was turned on, at Tier 2 or Tier 3, whose Safety
+ * Deductions cell is empty and whose Pilot Pay is exactly what the cut gives (worked out afresh from the profit in the sheet and FsHub's landing rate and
+ * distance), where the cut took something off. A pay that is not exactly that (paid in full, or changed by somebody) is left alone and counted: the deduction
+ * would say something the pay does not. `distances` and `landing` are what FsHub said about each flight it was asked about; a flight it has not been asked
+ * about is in `needFacts` and counted as waiting.
+ */
+export function compareDeductions(
+  rows: SheetFlight[],
+  flights: LogFlight[],
+  code: string,
+  distances: ReadonlyMap<number, number>,
+  landing: ReadonlyMap<number, number | null>,
+  policy: SafetyPolicy,
+): Omit<DeductionAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> & { needFacts: number[] } {
+  const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
+  const { pairs } = pairRows(rows.filter((r) => r.completed), usable);
+  const out = { matched: pairs.length, fills: [] as DeductionFill[], already: 0, uncut: 0, paidInFull: 0, differs: 0, unpaid: 0, noRate: 0, waiting: 0 };
+  const needFacts: number[] = [];
+  for (const { row, flight } of pairs) {
+    // A flight with no profit in the sheet yet is the ordinary fill's business, and one whose deduction cell has something in it is somebody's.
+    if (row.profit === null) continue;
+    if (row.deductionRaw === undefined || row.deductionRaw === null) continue;
+    if (!isUnsetPay(row.deductionRaw)) {
+      out.already++;
+      continue;
+    }
+    if (flight.landedAt < policy.since) {
+      out.uncut++;
+      continue;
+    }
+    if (flight.flightId === null) {
+      out.noRate++;
+      continue;
+    }
+    if (!landing.has(flight.flightId)) {
+      if (!needFacts.includes(flight.flightId)) needFacts.push(flight.flightId);
+      out.waiting++;
+      continue;
+    }
+    const read = readLanding(landing.get(flight.flightId));
+    if (read.kind !== 'ok') {
+      out.noRate++;
+      continue;
+    }
+    const fine = fineFor(read, flight.landedAt, policy);
+    if (fine === null) {
+      out.uncut++;
+      continue;
+    }
+    let nm: number | null = null;
+    if (paidByDistance(row.profit)) {
+      const got = distanceFor(flight.flightId, flight.distanceNm, distances);
+      if (typeof got === 'string') {
+        out.noRate++;
+        continue;
+      }
+      nm = got;
+    }
+    const cut = pilotPay(row.profit, nm, fine);
+    const usual = pilotPay(row.profit, nm, null);
+    if (!cut || !usual) {
+      out.noRate++;
+      continue;
+    }
+    const taken = usual.amount - cut.amount;
+    const sheetPay = isUnsetPay(row.payRaw) ? 0 : parseMoney(row.payRaw);
+    if (sheetPay === null) {
+      out.differs++;
+      continue;
+    }
+    if (sheetPay === cut.amount) {
+      // A pay of nothing has an empty cell, which is what the cut gives where the airline takes all of the minimum.
+      if (taken > 0) out.fills.push({ sourceKey: row.sourceKey, row: row.row, pilot: row.pilot, route: row.route, day: row.day, callsign: flight.callsign ?? '', pay: cut.amount, normal: usual.amount, deduction: taken, tier: fine.tier, fpm: fine.fpm });
+      else out.uncut++;
+    } else if (sheetPay === 0 && cut.amount > 0) out.unpaid++;
+    else if (sheetPay === usual.amount) out.paidInFull++;
+    else out.differs++;
+  }
+  out.fills.sort((a, b) => a.row - b.row);
+  return { ...out, needFacts };
+}
+
 /** Why a panel cannot be checked, in words an admin can act on. */
 export class ProfitError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ProfitError';
   }
+}
+
+/** What reading an airline's logbooks and sheet gives. */
+interface Gathered {
+  airlineId: number;
+  businessId: number;
+  /** How many aircraft logbooks were read (owned and leased), how many of those are leased, how many leased ones Aeroconomy would not show, and why the leased list could not be read. */
+  aircraft: number;
+  leased: number;
+  leasedHidden: number;
+  leasedProblem: string | null;
+  flights: LogFlight[];
+  sheet: SheetFlights;
+  /** The airline's callsign code. */
+  code: string;
 }
 
 export interface AirlineProfitsDeps {
@@ -353,11 +532,8 @@ export class AirlineProfits {
     this.log = d.logger ?? silentLogger;
   }
 
-  /**
-   * Read the airline's aircraft logbooks and its sheet, and compare. Reads only. `business` is the airline's Aeroconomy business number
-   * when an admin gave it; otherwise it is remembered from an earlier time, or found from the aircraft some of the airline's pilots fly.
-   */
-  async analyse(panel: Panel, business?: number): Promise<ProfitAnalysis> {
+  /** What both a profit check and a look for missing deductions start from: the airline's logbooks, and its sheet read as a schedule. */
+  private async gather(panel: Panel, business: number | undefined): Promise<Gathered> {
     const ref = sheetRefOf(panel);
     if (!ref) throw new ProfitError("This panel doesn't read a Google Sheet, so there are no Profit Made cells to compare with.");
     if (panel.fshubAirlineId === null) throw new ProfitError("This panel isn't linked to its airline's FsHub roster (`/setup fshub`), so I don't know which airline's aircraft to look at.");
@@ -395,16 +571,25 @@ export class AirlineProfits {
     const csv = await downloadSheetCsv(ref, this.d.fetchFn ?? fetch);
     const sheet = readSheetFlights(csv);
     if (!sheet) throw new ProfitError("I couldn't read that sheet as a schedule (it needs Route, Date, Pilot and Flight Completed columns).");
-    if (!sheet.hasProfit) throw new ProfitError("The sheet has no Profit Made column, so there is nothing to compare with or fill in.");
 
     const code = callsignCode(panel);
+    return { airlineId, businessId, aircraft: owned.length + leasedRead, leased: leasedRead, leasedHidden, leasedProblem, flights, sheet, code };
+  }
+
+  /**
+   * Read the airline's aircraft logbooks and its sheet, and compare. Reads only. `business` is the airline's Aeroconomy business number
+   * when an admin gave it; otherwise it is remembered from an earlier time, or found from the aircraft some of the airline's pilots fly.
+   */
+  async analyse(panel: Panel, business?: number): Promise<ProfitAnalysis> {
+    const { airlineId, businessId, aircraft, leased, leasedHidden, leasedProblem, flights, sheet, code } = await this.gather(panel, business);
+    if (!sheet.hasProfit) throw new ProfitError("The sheet has no Profit Made column, so there is nothing to compare with or fill in.");
     // A flight that lost money pays the pilot by the distance, and with safety pay on a hard landing cuts the pay, so FsHub is asked about each
     // such flight: how far it was flown and how hard it landed. Only the ones whose Pilot Pay is empty need it: a pay that will not be written is
     // not worth a request.
     const wrotePay = this.d.store.payWrittenKeys(panel.id);
     const policy = safetyPolicyOf(panel);
     if (policy && !this.d.fshub) throw new ProfitError("Safety pay is on for this airline, and it needs FsHub's landing rate for each flight, but the bot has no FsHub token, so the pay cannot be worked out.");
-    const first = compareProfits(sheet.flights, flights, code, new Map(), wrotePay, { policy, landing: new Map() });
+    const first = compareProfits(sheet.flights, flights, code, new Map(), wrotePay, { policy, landing: new Map(), deductions: panel.safetyDeductions });
     const facts = await this.fshubFacts(airlineId, first.needFacts);
     const distances = new Map<number, number>();
     const landing = new Map<number, number | null>();
@@ -412,7 +597,7 @@ export class AirlineProfits {
       if (f.distanceNm !== null) distances.set(id, f.distanceNm);
       landing.set(id, f.landingRate);
     }
-    const { needFacts: _needed, ...result } = compareProfits(sheet.flights, flights, code, distances, wrotePay, { policy, landing });
+    const { needFacts: _needed, ...result } = compareProfits(sheet.flights, flights, code, distances, wrotePay, { policy, landing, deductions: panel.safetyDeductions });
     this.log.info(`Compared ${result.matched} flights of ${panel.airlineName} with Aeroconomy's logbooks: ${result.agree} agree, ${result.fills.length} blank, ${result.different.length} differ`);
     const held = result.held ?? [];
     if (held.length > 0 && this.d.onHeld) {
@@ -422,16 +607,42 @@ export class AirlineProfits {
         this.log.debug('Telling managers about held flights failed', e);
       }
     }
-    return { business: businessId, aircraft: owned.length + leasedRead, leased: leasedRead, leasedHidden, leasedProblem, readAt: this.now(), ...result };
+    return { business: businessId, aircraft, leased, leasedHidden, leasedProblem, readAt: this.now(), ...result };
+  }
+
+  /**
+   * Look for the Safety Deductions missing from flights this airline's sheet already has filled in (see `compareDeductions`). Reads only. It needs the airline to
+   * have switched deductions on and safety pay to be on, the sheet to have a Pilot Pay and a Safety Deductions column, and the bot to have FsHub's token.
+   * At most `MAX_DEDUCTION_LOOKUPS` flights are asked about in a run; the others are counted as waiting, and a later run goes on with them.
+   */
+  async analyseDeductions(panel: Panel, business?: number): Promise<DeductionAnalysis> {
+    const policy = safetyPolicyOf(panel);
+    if (!policy) throw new ProfitError("Landing safety pay is off for this airline, so no pay has been cut for a hard landing and there are no deductions to write. (`/setup safety-pay mode:on` turns it on.)");
+    if (!panel.safetyDeductions) throw new ProfitError("Deductions aren't switched on for this airline. `/setup safety-pay deductions:on` switches them on, and then this can add them for flights already filled in.");
+    if (!this.d.fshub) throw new ProfitError("Working out what a hard landing took off needs FsHub's landing rate for each flight, but the bot has no FsHub token.");
+    const { airlineId, businessId, aircraft, leased, leasedHidden, leasedProblem, flights, sheet, code } = await this.gather(panel, business);
+    if (!sheet.hasPay) throw new ProfitError("The sheet has no Pilot Pay column, so there is no pay to record a deduction against.");
+    if (!sheet.hasDeduction) throw new ProfitError("The sheet has no Safety Deductions column. Add one (headed **Safety Deductions**) and run this again; I never add columns.");
+    const first = compareDeductions(sheet.flights, flights, code, new Map(), new Map(), policy);
+    const facts = await this.fshubFacts(airlineId, first.needFacts, MAX_DEDUCTION_LOOKUPS);
+    const distances = new Map<number, number>();
+    const landing = new Map<number, number | null>();
+    for (const [id, f] of facts) {
+      if (f.distanceNm !== null) distances.set(id, f.distanceNm);
+      landing.set(id, f.landingRate);
+    }
+    const { needFacts: _needed, ...result } = compareDeductions(sheet.flights, flights, code, distances, landing, policy);
+    this.log.info(`Looked for missing safety deductions of ${panel.airlineName}: ${result.fills.length} to write, ${result.waiting} waiting for FsHub, ${result.differs} with a pay that is not what the cut gives`);
+    return { business: businessId, aircraft, leased, leasedHidden, leasedProblem, readAt: this.now(), ...result };
   }
 
   /**
    * How far FsHub says each of these flights was flown, in nautical miles. A flight FsHub gave no distance for (or could not be asked
    * about) is simply absent from the answer. At most `MAX_DISTANCE_LOOKUPS` are asked, and asking stops if FsHub says it is busy.
    */
-  private async fshubFacts(airlineId: number, flightIds: number[]): Promise<Map<number, FlightFacts>> {
+  private async fshubFacts(airlineId: number, flightIds: number[], max = MAX_DISTANCE_LOOKUPS): Promise<Map<number, FlightFacts>> {
     const fshub = this.d.fshub;
-    return fshub ? fshubFlightFacts(fshub, airlineId, flightIds, MAX_DISTANCE_LOOKUPS, this.log) : new Map<number, FlightFacts>();
+    return fshub ? fshubFlightFacts(fshub, airlineId, flightIds, max, this.log) : new Map<number, FlightFacts>();
   }
 
   /**

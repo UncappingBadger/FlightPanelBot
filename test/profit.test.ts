@@ -917,7 +917,7 @@ describe('filling blank Profit Made cells in the sheet', () => {
 
   it('writes nothing, and asks nothing of Google, when there is nothing to write', async () => {
     const got = await wb.fillProfits(panel(), []);
-    assert.deepEqual(got, { written: [], paid: [], payLeft: 0, skipped: [] });
+    assert.deepEqual(got, { written: [], paid: [], payLeft: 0, deducted: [], deductionLeft: 0, skipped: [] });
     assert.equal(g.writes.length, 0);
   });
 
@@ -1011,7 +1011,7 @@ describe('/setup profit', () => {
   it('is a subcommand Discord accepts, with a check and a fill, and reads and writes nothing by itself', () => {
     const sub = (setup.data.toJSON().options ?? []).find((o) => o.name === 'profit') as unknown as { description: string; options: Array<{ name: string; description: string; choices?: Array<{ name: string; value: string }> }> };
     assert.ok(sub && sub.description.length <= 100);
-    assert.deepEqual(sub.options.find((o) => o.name === 'action')!.choices!.map((c) => c.value), ['check', 'fill', 'settings']);
+    assert.deepEqual(sub.options.find((o) => o.name === 'action')!.choices!.map((c) => c.value), ['check', 'fill', 'deductions', 'settings']);
     assert.ok(sub.options.some((o) => o.name === 'airline') && sub.options.some((o) => o.name === 'business'));
     assert.deepEqual(sub.options.find((o) => o.name === 'send-to')!.choices!.map((c) => c.value), ['here', 'dm', 'channel']);
     assert.deepEqual(sub.options.find((o) => o.name === 'who-can-write')!.choices!.map((c) => c.value), ['admins', 'role']);

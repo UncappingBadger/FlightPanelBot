@@ -193,7 +193,7 @@ export interface ParsedSchedule extends FetchedJobs {
   /** The sheet row (1 = the first row) each flight's key was read from. */
   rowOf: Map<string, number>;
   /** Zero-based column positions, or -1 if the tab has no such column. */
-  cols: { pilot: number; done: number; profit: number; pay: number; distance: number; flightNo: number };
+  cols: { pilot: number; done: number; profit: number; pay: number; deduction: number; distance: number; flightNo: number };
 }
 
 /** Column titles (as `canon` writes them) that hold the airline's own flight number of a flight. */
@@ -204,6 +204,12 @@ export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofi
 
 /** Column titles that hold what the pilot is paid for the flight (not `Pilot Paid`, which is a box ticked once they have been). */
 export const PAY_COLUMNS = ['pilotpay'];
+
+/**
+ * Column titles that hold what a hard landing took off the pilot's pay ("Safety Deductions"). The misspelling is accepted because it is how an airline's
+ * own sheet may well have been headed.
+ */
+export const DEDUCTION_COLUMNS = ['safetydeductions', 'safetydeduction', 'safteydeductions', 'safteydeduction'];
 
 /** Column titles of the box ticked once the pilot has been paid for the flight. */
 export const PAID_COLUMNS = ['pilotpaid'];
@@ -266,6 +272,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iDone = at((n) => n.startsWith('flightcompleted') || n === 'completed');
   const iProfit = at((n) => PROFIT_COLUMNS.includes(n));
   const iPay = at((n) => PAY_COLUMNS.includes(n));
+  const iDeduction = at((n) => DEDUCTION_COLUMNS.includes(n));
   const iDistance = at((n) => DISTANCE_COLUMNS.includes(n));
   const iSequence = at((n) => SEQUENCE_COLUMNS.includes(n));
   // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
@@ -385,7 +392,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     jobs,
     warnings: capWarnings(warnings),
     rowOf,
-    cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, distance: iDistance, flightNo: iFlightNo },
+    cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, deduction: iDeduction, distance: iDistance, flightNo: iFlightNo },
     ...(iDistance >= 0 ? { blankDistances: blankDistances.filter((k) => kept.has(k)) } : {}),
     ...(iFlightNo >= 0
       ? { blankFlightNumbers: jobs.filter((j) => blankNumbers.has(j.key)).map((j) => ({ key: j.key, legs: j.legs.map((l) => ({ dep: l.dep, arr: l.arr })), availableFrom: j.availableFrom, deadline: j.deadline })) }

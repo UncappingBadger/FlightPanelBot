@@ -20,10 +20,22 @@ const MEMBER_PAGES = 10;
 const MAX_RECIPIENTS = 25;
 /** A list of a role's members is kept this long, so a run of messages to the same managers reads the server once. */
 const MANAGERS_KEPT_MS = 10 * 60_000;
+/** A list that could not be read is only kept this long, so a hiccup (or the intent being switched on) is not remembered for ten minutes. */
+const UNREADABLE_KEPT_MS = 60_000;
+
+/**
+ * Who a message to an airline's managers goes to, and how that was found. `found` is how many members hold one of the roles, and `readable` is
+ * false when the server's member list could not be read (so `found` is 0 whatever the roles). With nobody found, `ids` is the server's owner.
+ */
+export interface ManagerCheck {
+  ids: string[];
+  found: number;
+  readable: boolean;
+}
 
 /** Redraws panels when jobs change, and tells people when a reservation of theirs is taken away. */
 export class Notifier {
-  private readonly managerCache = new Map<string, { at: number; ids: string[] }>();
+  private readonly managerCache = new Map<string, { at: number; check: ManagerCheck }>();
 
   constructor(
     private readonly client: Client,
@@ -93,12 +105,18 @@ export class Notifier {
    * cannot be read, or nobody in it has a role, or no role is set, the message goes to the server's owner instead, so a report is never lost.
    */
   async managerIds(guildId: string, roleIds: string[]): Promise<string[]> {
+    return (await this.managerCheck(guildId, roleIds)).ids;
+  }
+
+  /** `managerIds` with how the people were found, so a screen can say who a report reaches and whether the roles could be looked up. */
+  async managerCheck(guildId: string, roleIds: string[]): Promise<ManagerCheck> {
     const guild = this.client.guilds.cache.get(guildId);
-    if (!guild) return [];
+    if (!guild) return { ids: [], found: 0, readable: true };
     const key = `${guildId}:${[...roleIds].sort().join(',')}`;
     const kept = this.managerCache.get(key);
-    if (kept && Date.now() - kept.at < MANAGERS_KEPT_MS) return kept.ids;
+    if (kept && Date.now() - kept.at < (kept.check.readable ? MANAGERS_KEPT_MS : UNREADABLE_KEPT_MS)) return kept.check;
     const ids = new Set<string>();
+    let readable = true;
     if (roleIds.length > 0) {
       try {
         let after: string | undefined;
@@ -109,13 +127,15 @@ export class Notifier {
           after = members.lastKey();
         }
       } catch (e) {
+        readable = false;
         this.log.warn(`Could not list the members of server ${guildId} to find its managers (switch on "Server Members Intent" for the bot in the Discord Developer Portal)`, e);
       }
     }
-    if (ids.size === 0 && guild.ownerId) ids.add(guild.ownerId);
-    const out = [...ids].slice(0, MAX_RECIPIENTS);
-    this.managerCache.set(key, { at: Date.now(), ids: out });
-    return out;
+    const found = ids.size;
+    if (found === 0 && guild.ownerId) ids.add(guild.ownerId);
+    const check: ManagerCheck = { ids: [...ids].slice(0, MAX_RECIPIENTS), found, readable };
+    this.managerCache.set(key, { at: Date.now(), check });
+    return check;
   }
 
   /** Send a person a private message. True if it went out, false if they could not be reached (closed DMs, an unknown user). */

@@ -18,13 +18,14 @@ import {
   flightNumberOf,
   HARD_LANDINGS_CSV,
   managerRoles,
+  managersLookup,
   penaltyMessage,
   tellDoubts,
   utcText,
   type PenaltyReport,
 } from '../src/services/safetyReport.js';
 import { silentLogger } from '../src/util/log.js';
-import { HOUR, sj, T0, USER_A, USER_B, makeHarness, type Harness } from './helpers.js';
+import { GUILD as SERVER, HOUR, sj, T0, USER_A, USER_B, makeHarness, type Harness } from './helpers.js';
 
 /* Everything below is made up: the pilots, the airline and the flights. */
 
@@ -755,3 +756,135 @@ describe('finding an airline\'s managers in Discord', () => {
     assert.equal(await lost.nameOf('gone'), null);
   });
 });
+
+/* ------------------------------------------------------------------ from the roles the owner set to the people who are sent a report */
+
+describe('the roles the server owner set, and who is sent the safety reports', () => {
+  const OWNER = '555';
+  const REFRESHER = '1001'; // holds a /setup refresh-roles role
+  const PROFIT_ROLE = '820000000000000003';
+  const PROFITER = '1002'; // holds the /setup profit role only
+  const BYSTANDER = '1003'; // holds no manager role
+  let h: Harness;
+  let sent: Array<{ to: string; content: string }>;
+  let listFails: boolean;
+  let notifier: Notifier;
+  let svc: HardLandings;
+  const member = (id: string, roles: string[], bot = false) => ({ id, user: { bot }, roles: { cache: { has: (r: string) => roles.includes(r) } } });
+  const build = () => {
+    const members = new Collection([
+      member(REFRESHER, [MANAGER_1]),
+      member(PROFITER, [PROFIT_ROLE]),
+      member(BYSTANDER, []),
+      member('1004', [MANAGER_1], true), // a bot holding the role is left out
+      member(OWNER, []),
+    ].map((m) => [m.id, m] as [string, ReturnType<typeof member>]));
+    const guild = {
+      ownerId: OWNER,
+      members: {
+        list: async () => {
+          if (listFails) throw Object.assign(new Error('Missing Access'), { code: 50001 });
+          return members;
+        },
+      },
+    };
+    notifier = new Notifier({ guilds: { cache: new Map([[SERVER, guild]]) } } as never, {} as PanelService, silentLogger);
+    svc = new HardLandings(h.store, async (id, content) => (sent.push({ to: id, content }), true), {
+      now: () => h.clock.now,
+      managers: managersLookup(h.store, (guildId, roleIds) => notifier.managerIds(guildId, roleIds)),
+      nameOf: async () => 'alice',
+      csvFile: null,
+    });
+  };
+  const hard = (id: number): FlownFlight => ({
+    flightId: id,
+    pilotId: 1001,
+    pilotName: 'Alice Pilot',
+    dep: 'EGLL',
+    arr: 'EGKK',
+    departedAt: NOW - 2 * HOUR,
+    arrivedAt: NOW - 10 * 60_000,
+    aircraftIcao: 'A320',
+    aircraftName: 'Airbus A320',
+    scheduleStatus: 'ON-TIME',
+    landingRate: -452,
+  });
+  const panel = () => h.store.getPanel(h.panel.id)!;
+  const reports = () => sent.filter((s) => /Safety violation/.test(s.content)).map((s) => s.to);
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    h.clock.now = NOW;
+    sent = [];
+    listFails = false;
+    h.store.setPilotId(USER_A.discordId, 1001, NOW);
+    h.store.updatePanel(h.panel.id, { safetyPaySince: NOW - DAY, safetyLossTier2: 0, safetyLossTier3: 0 });
+    build();
+  });
+  afterEach(() => h.close());
+
+  it('sends a Tier 2 or Tier 3 report to the members of the /setup refresh-roles role', async () => {
+    h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
+    await svc.check(panel(), [hard(7_000_001)]);
+    assert.deepEqual(reports(), [REFRESHER], 'the role holder, and not the owner, a bystander or a bot');
+  });
+
+  it('sends it to every refresh role, and to the profit role as well', async () => {
+    h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
+    h.store.updatePanel(h.panel.id, { profitRoleId: PROFIT_ROLE });
+    await svc.check(panel(), [hard(7_000_002)]);
+    assert.deepEqual(reports().sort(), [REFRESHER, PROFITER].sort());
+  });
+
+  it('tells the left-unfilled flights to the same people', async () => {
+    h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
+    const sentTo: string[] = [];
+    const told = await tellDoubts(
+      { store: h.store, send: async (id) => (sentTo.push(id), true), managers: managersLookup(h.store, (g, r) => notifier.managerIds(g, r)), now: () => h.clock.now, log: silentLogger },
+      panel(),
+      [{ sourceKey: 'k', row: 5, route: 'EGLL → EGCC', day: Date.UTC(2026, 10, 21), callsign: 'TST216', pilot: 'Alex', flightId: 5000, reason: 'no-landing-rate', fpm: null }],
+    );
+    assert.equal(told, 1);
+    assert.deepEqual(sentTo, [REFRESHER]);
+  });
+
+  it('goes to the server owner when no role is set, and when nobody holds it', async () => {
+    await svc.check(panel(), [hard(7_000_003)]);
+    assert.deepEqual(reports(), [OWNER], 'no role set');
+    sent = [];
+    h.store.addRefreshRole(SERVER, '810000000000000099', NOW); // a role nobody has
+    build();
+    await svc.check(panel(), [hard(7_000_004)]);
+    assert.deepEqual(reports(), [OWNER], 'nobody holds the role');
+  });
+
+  it("goes to the server owner alone when the member list can't be read, and finds the role holders once it can", async () => {
+    h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
+    listFails = true;
+    build();
+    await svc.check(panel(), [hard(7_000_005)]);
+    assert.deepEqual(reports(), [OWNER]);
+    listFails = false;
+    build();
+    sent = [];
+    await svc.check(panel(), [hard(7_000_006)]);
+    assert.deepEqual(reports(), [REFRESHER]);
+  });
+
+  it('says whether the roles could be looked up, and keeps a list that could not be read for a minute only', async () => {
+    h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
+    listFails = true;
+    build();
+    assert.deepEqual(await notifier.managerCheck(SERVER, [MANAGER_1]), { ids: [OWNER], found: 0, readable: false });
+    listFails = false;
+    assert.equal((await notifier.managerCheck(SERVER, [MANAGER_1])).readable, false, 'the failed look is kept for a moment');
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 61_000;
+      assert.deepEqual(await notifier.managerCheck(SERVER, [MANAGER_1]), { ids: [REFRESHER], found: 1, readable: true });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
+
