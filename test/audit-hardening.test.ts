@@ -539,3 +539,36 @@ describe('reading the schedules that are all due in the same minute', () => {
     assert.match(h.store.getPanel(h.panel.id)!.lastRefreshError ?? '', /Google is down/);
   });
 });
+
+/* ------------------------------------------------------------------ what a slow redraw says */
+
+describe('a panel redraw that takes a while', () => {
+  it('says in the log how many messages it edited and posted, so it can be seen what made it slow', async () => {
+    const { PanelService } = await import('../src/discord/panel.js');
+    const { FakeClient } = await import('./discord-helpers.js');
+    const { log, lines } = recorder();
+    const h = await makeHarness();
+    try {
+      const client = new FakeClient();
+      const panels = new PanelService(h.store, h.jobs, log, () => h.clock.now, 0, 0);
+      panels.attach(client as never);
+      h.jobs.sync(h.panel.id, [sj('a', 'EGLL-EGKK')]);
+      const channel = client.channel(CHANNEL);
+      const send = channel.send.bind(channel);
+      channel.send = async (p: unknown) => {
+        await new Promise((r) => setTimeout(r, 3100)); // Discord is slow to answer
+        return send(p);
+      };
+      assert.equal(await panels.refresh(h.panel.id), 'posted');
+      assert.ok(lines.some((l) => /^info Slow: drawing panel \d+ \(posted: 0 edited, [1-9]\d* posted, of [1-9]\d* messages\) took \d\.\d s$/.test(l)), lines.join(' | '));
+      // A quick redraw says nothing.
+      channel.send = send;
+      lines.length = 0;
+      h.jobs.sync(h.panel.id, [sj('a', 'EGLL-EGKK', { notes: 'changed' })]);
+      assert.equal(await panels.refresh(h.panel.id), 'updated');
+      assert.deepEqual(lines, []);
+    } finally {
+      await h.close();
+    }
+  });
+});

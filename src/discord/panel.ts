@@ -29,6 +29,13 @@ interface MessageLookup {
 }
 type LookedUp = { editable: boolean; deletable: boolean; edit(options: any): Promise<unknown>; delete(): Promise<unknown> };
 
+/** What one redraw of a panel did: how many messages it has, how many it edited and how many it posted (what Discord was made to do). */
+interface DrawStats {
+  messages: number;
+  edited: number;
+  sent: number;
+}
+
 /** A redraw that takes longer than this is noted in the log. */
 const SLOW_REDRAW_MS = 3_000;
 
@@ -330,9 +337,10 @@ export class PanelService {
     // A redraw that was waiting its turn when the bot began to shut down: the database and Discord are about to go, so it draws nothing.
     if (this.stopped) return 'skipped';
     const started = realMs();
-    const result = await this.redrawPanel(panelId);
+    const stats: DrawStats = { messages: 0, edited: 0, sent: 0 };
+    const result = await this.redrawPanel(panelId, stats);
     // Discord answers edits slowly when there are many: worth a line in the log when it took a while, so it can be seen what a slow panel costs.
-    if (realMs() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}) took ${((realMs() - started) / 1000).toFixed(1)} s`);
+    if (realMs() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}: ${stats.edited} edited, ${stats.sent} posted, of ${stats.messages} messages) took ${((realMs() - started) / 1000).toFixed(1)} s`);
     if ((result === 'updated' || result === 'posted') && this.store.countFollowers(panelId) > 0) {
       this.refreshFollowers(panelId).catch((e) => {
         if (!this.stopped) this.log.warn(`Could not update the lists kept for panel ${panelId}`, e);
@@ -341,7 +349,7 @@ export class PanelService {
     return result;
   }
 
-  private async redrawPanel(panelId: number): Promise<PanelRefreshResult> {
+  private async redrawPanel(panelId: number, stats: DrawStats = { messages: 0, edited: 0, sent: 0 }): Promise<PanelRefreshResult> {
     const panel = this.store.getPanel(panelId);
     if (!panel) this.changeAt.delete(panelId);
     if (this.forced.delete(panelId) && panel) for (const id of [...panel.messageIds, ...panel.completedMessageIds]) this.shown.delete(id);
@@ -392,7 +400,7 @@ export class PanelService {
 
       // With a channel of their own for the completed flights, they are a second set of messages there; otherwise they follow the open flights.
       const split = panel.completedChannelId !== null;
-      const result = await this.place(channel, panel.messageIds, split ? open : [...open, ...done], (ids) => this.store.updatePanel(panel.id, { messageIds: ids }));
+      const result = await this.place(channel, panel.messageIds, split ? open : [...open, ...done], (ids) => this.store.updatePanel(panel.id, { messageIds: ids }), stats);
       if (split) await this.placeCompleted(panel, done);
       this.changeAt.set(panel.id, listing.changeAt);
       return result;
@@ -415,7 +423,8 @@ export class PanelService {
    * count matches; otherwise delete what is there and post them afresh, so the order stays right. `save` is told the IDs of
    * the messages the channel now holds (also when posting stops halfway, so the next redraw clears them away).
    */
-  private async place(channel: SendableChannels, ids: string[], payloads: Payload[], save: (ids: string[]) => void): Promise<'updated' | 'posted'> {
+  private async place(channel: SendableChannels, ids: string[], payloads: Payload[], save: (ids: string[]) => void, stats: DrawStats = { messages: 0, edited: 0, sent: 0 }): Promise<'updated' | 'posted'> {
+    stats.messages += payloads.length;
     // Discord is asked itself (see `lookUpMessages`). Without that discord.js answers from its cache, and the bot
     // is never told when a person deletes a message, so it would "find" panels that are long gone.
     let looked: Awaited<ReturnType<typeof lookUpMessages>> | null = null;
@@ -430,6 +439,7 @@ export class PanelService {
             if (this.shown.get(id) === content) continue; // already says exactly this
             if (DEBUG_BUILD) this.lastPayloadNote = `message ${i + 1}/${payloads.length} (edit): ${payloads[i]!.embeds.length} embed(s), ${(forEdit(payloads[i]!) as { files?: unknown[] }).files?.length ?? 0} file(s), attachments=${JSON.stringify((forEdit(payloads[i]!) as { attachments?: unknown[] }).attachments ?? 'untouched')}`;
             await existing[i]!.edit(forEdit(payloads[i]!));
+            stats.edited++;
             this.shown.set(id, content);
           }
           return 'updated';
@@ -452,6 +462,7 @@ export class PanelService {
       for (const payload of payloads) {
         if (DEBUG_BUILD) this.lastPayloadNote = `message ${fresh.length + 1}/${payloads.length} (send): ${payload.embeds.length} embed(s), ${forSend(payload).files.length} file(s)`;
         const sent = await channel.send(forSend(payload));
+        stats.sent++;
         fresh.push(sent.id);
         this.shown.set(sent.id, contentOf(payload));
       }

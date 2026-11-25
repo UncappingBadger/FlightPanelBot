@@ -40,9 +40,9 @@ export function registerInteractionRouter(client: Client, ctx: BotContext): void
         const handler = byPrefix.get(interaction.customId.split(':')[0] ?? '');
         if (handler) await handler.handle(ctx, interaction);
       }
-      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction OK (${realMs() - started} ms): ${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId.split(':')[0] : interaction.type}`);
+      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction OK (${Math.round(realMs() - started)} ms): ${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId.split(':')[0] : interaction.type}`);
     } catch (e) {
-      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction REFUSED/FAILED (${realMs() - started} ms): ${e instanceof Error ? `${e.name}: ${e.message}` : e}`);
+      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction REFUSED/FAILED (${Math.round(realMs() - started)} ms): ${e instanceof Error ? `${e.name}: ${e.message}` : e}`);
       await reportError(interaction, ctx.log, describeError(e, ctx.log));
     } finally {
       done();
