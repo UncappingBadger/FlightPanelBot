@@ -57,6 +57,9 @@ import { BackupSheetCheck, backupSheetCleaner } from './services/backupSheet.js'
 import { DEBUG_BUILD, dbg } from './util/debugBuild.js';
 import { LocalSheet, localSheetFetch } from './google/localSheet.js';
 import { createLogger, type Logger } from './util/log.js';
+import { TEST_BUILD, TIME_SCALE, appNow } from './util/clock.js';
+import { PerfMonitor, fileMb } from './testbuild/perfMonitor.js';
+import { TEST_SHEET_ID, TEST_SHEET_URL, TestSheetFeeder } from './testbuild/testSheet.js';
 
 /** A Discord server the bot is in. */
 export interface ServerInfo {
@@ -94,9 +97,16 @@ export interface BotHandle {
  */
 export async function startBot(config: Config, opts: StartOptions = {}): Promise<BotHandle> {
   const log = opts.log ?? createLogger(config.logLevel);
+  if (TEST_BUILD) {
+    // The test build asks nobody but Discord for anything: no Google, FsHub, Aeroconomy account, Twitch or daily note, whatever the settings say.
+    config = { ...config, fshubToken: undefined, googleServiceAccountFile: undefined, twitch: undefined, dailyNote: undefined };
+    log.warn(`TEST BUILD: the bot's clock runs ${TIME_SCALE} times faster (a day is ${(24 * 60 / TIME_SCALE).toFixed(1)} minutes, an hour ${(3600 / TIME_SCALE).toFixed(1)} seconds), every sheet is a made-up one in a local file (Google is never asked), and FsHub, Aeroconomy accounts, Twitch and the daily note are off. Link the made-up sheet with /setup sheet link:${TEST_SHEET_URL} (any sheet link gets made-up flights).`);
+  }
 
   // The diagnostic build keeps its sheets in local files here, and never writes to Google.
   const debugSheets = join(dirname(config.databasePath), 'debug-sheets');
+  // The test build's made-up schedules, and what keeps them changing while it runs (see src/testbuild).
+  const feeder = TEST_BUILD ? new TestSheetFeeder(debugSheets, appNow, { logger: log }) : null;
   const store = new Store(openDatabase(config.databasePath));
   if (DEBUG_BUILD) store.enableAudit(log); // every reservation row that appears, changes or goes is logged, with who did it
   const events = new JobEvents(log);
@@ -109,7 +119,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // together, at one fixed minute of each hour that is picked for this install the first time it runs, instead of each an hour after its own last run.
   const slot = HourlySlot.forInstall(store);
   log.info(`The hourly checks run together at ${String(slot.minute).padStart(2, '0')} minutes past each hour (UTC)`);
-  if (DEBUG_BUILD) dbg(log, `DEBUG BUILD: a linked sheet is read every ${DEBUG_SHEET_INTERVAL_MS / 60_000} minutes (within a minute after that: the scheduler ticks once a minute), not once an hour, so the Distance fill can be watched; the other hourly checks are unchanged`);
+  if (DEBUG_BUILD && !TEST_BUILD) dbg(log, `DEBUG BUILD: a linked sheet is read every ${DEBUG_SHEET_INTERVAL_MS / 60_000} minutes (within a minute after that: the scheduler ticks once a minute), not once an hour, so the Distance fill can be watched; the other hourly checks are unchanged`);
   const demoSource = new DemoJobSource();
   // A flight whose row has no flight number can take Aeroconomy's own number for it (read from Aeroconomy's public contracts, no account
   // needed), for a panel that has it switched on (`/setup flight-numbers`) and is linked to its airline's FsHub number. The numbers are
@@ -129,7 +139,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   let distances: DistanceFiller | null = null;
   // The same sheet's empty Flight Number cells get the flights' numbers written in, once the numbers are read (set up with the write-back, below).
   let flightNumbers: FlightNumberFiller | null = null;
-  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null, ...(DEBUG_BUILD ? { fetchFn: localSheetFetch(debugSheets, fetch, log) } : {}) }), log, Date.now, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, async (panel, fetched) => {
+  const refresher: SourceRefresher = new SourceRefresher(store, jobs, sourceSelector({ fallback: DEMO ? demoSource : null, ...(DEBUG_BUILD ? { fetchFn: localSheetFetch(debugSheets, fetch, log, feeder?.make) } : {}) }), log, appNow, (panel, list, fetched) => (distances ? distances.enrich(panel, aeroNumbers.enrich(panel, list), fetched) : aeroNumbers.enrich(panel, list)), slot, async (panel, fetched) => {
     await Promise.all([distances?.run(panel, fetched), flightNumbers?.run(panel, fetched)]);
   });
   const panels = new PanelService(store, jobs, log);
@@ -214,7 +224,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // A short note once a day to one person, when a host has named them (nothing is sent otherwise).
   let airlineSeen: { at: number; name: string | null } | null = null;
   const airlineOf = async (userId: string): Promise<string | null> => {
-    if (airlineSeen && Date.now() - airlineSeen.at < 6 * 3_600_000) return airlineSeen.name;
+    if (airlineSeen && appNow() - airlineSeen.at < 6 * 3_600_000) return airlineSeen.name;
     let name: string | null = null;
     for (const panel of store.listAllPanels()) {
       try {
@@ -226,7 +236,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
         /* not in this server */
       }
     }
-    airlineSeen = { at: Date.now(), name };
+    airlineSeen = { at: appNow(), name };
     return name;
   };
   const dailyNote = config.dailyNote
@@ -253,33 +263,49 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   if (payroll) log.info(payroll.gateway.connected ? 'Paying pilots is available: an admin sets it up with /payroll settings, and nothing is paid until they press Pay.' : 'Paying pilots is available, but there is no FsHub token, so nothing can be paid.');
   else log.info(`Paying pilots is switched off (${PAYROLL_OFF_FLAG}).`);
   let payrollDaily: PayrollDaily | null = null;
+  // The test build times every step the scheduler takes, and says how the bot is doing once a minute (see src/testbuild/perfMonitor.ts).
+  const perf = TEST_BUILD
+    ? new PerfMonitor(log, appNow, {
+        extra: () => `database ${fileMb(config.databasePath)} MB (+ ${fileMb(`${config.databasePath}-wal`)} MB journal), ${store.listAllPanels().length} panel(s), ${store.listAllPanels().reduce((n, p) => n + store.listJobs(p.id, 'open').length, 0)} open flight(s)`,
+      })
+    : null;
+  const timed = <T extends { run(): unknown }>(name: string, service: T): T => (perf ? perf.wrap(name, service) : service);
   const scheduler = new Scheduler(jobs, refresher, {
     logger: log,
-    ...(payroll ? { payroll: { run: async () => void (await payrollDaily?.run()) } } : {}),
-    reminders,
-    markets: market,
-    weather,
-    banking,
-    monitors,
+    ...(TEST_BUILD ? { tickMs: 2_000 } : {}),
+    ...(payroll ? { payroll: timed('daily pay list', { run: async () => void (await payrollDaily?.run()) }) } : {}),
+    reminders: timed('midnight list', reminders),
+    markets: timed('market boards', market),
+    weather: timed('weather boards', weather),
+    banking: timed('payment messages', banking),
+    monitors: timed('flight monitors', monitors),
     panels,
-    cleanup: { run: () => panels.cleanReminders() },
-    live,
-    etas,
-    numbers: aeroNumbers,
-    departures,
-    ...(writeback ? { backups: new BackupSheetCheck({ store, writeback, logger: log }) } : {}),
-    ...(dailyNote ? { daily: dailyNote } : {}),
-    ...(fshubSync ? { fshub: fshubSync } : {}),
-    ...(autoComplete ? { autoComplete } : {}),
+    cleanup: timed('announcement cleanup', { run: () => panels.cleanReminders() }),
+    live: timed('live tracking', live),
+    etas: timed('landing times', etas),
+    numbers: timed('Aeroconomy numbers', aeroNumbers),
+    departures: timed('departure warnings', departures),
+    ...(writeback ? { backups: timed('backup pilots', new BackupSheetCheck({ store, writeback, logger: log })) } : {}),
+    ...(dailyNote ? { daily: timed('daily note', dailyNote) } : {}),
+    ...(fshubSync ? { fshub: timed('FsHub sync', fshubSync) } : {}),
+    ...(autoComplete ? { autoComplete: timed('auto-complete', autoComplete) } : {}),
   });
+  if (perf) {
+    const realTick = scheduler.tick.bind(scheduler);
+    scheduler.tick = () => perf.time('whole pass', realTick);
+    const realRefreshDue = refresher.refreshDue.bind(refresher);
+    refresher.refreshDue = () => perf.time('sheet reads', realRefreshDue);
+    const realRedraw = panels.refresh.bind(panels);
+    panels.refresh = (id, o) => perf.time('panel redraw', () => realRedraw(id, o));
+  }
 
   // `/setup profit`: reads the airline's aircraft logbooks on Aeroconomy with the host's FsHub token, which Aeroconomy accepts too. It is only
   // ever used when an admin runs that command (nothing is read, and nothing is written, by itself), and only for reading.
   const profits = config.fshubToken
-    ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), onHeld: (panel, held) => tellDoubts({ store, send: async (discordId, content) => (await notifier?.dm(discordId, content)) === true, managers: managersOf, now: Date.now, log }, panel, held), logger: log })
+    ? new AirlineProfits({ store, account: new AeroconomyAccountClient(config.fshubToken, { logger: log, userAgent: `FlightPanelBot/${process.env.FPB_VERSION ?? 'dev'}` }), publicClient: aeroPublic, ...(fshub ? { fshub } : {}), onHeld: (panel, held) => tellDoubts({ store, send: async (discordId, content) => (await notifier?.dm(discordId, content)) === true, managers: managersOf, now: appNow, log }, panel, held), logger: log })
     : null;
 
-  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, managerCheck: async (panel) => (await notifier?.managerCheck(panel.guildId, managerRoles(store, panel))) ?? { ids: [], found: 0, readable: true }, log, now: Date.now, fetchFn: fetch };
+  const ctx: BotContext = { config, store, jobs, panels, refresher, aerodaq, market, metar, weather, banking, monitors, writeback, fshub, fshubSync, autoComplete, dailyNote, etas, numbers: aeroNumbers, slot, profits, payroll, managerCheck: async (panel) => (await notifier?.managerCheck(panel.guildId, managerRoles(store, panel))) ?? { ids: [], found: 0, readable: true }, log, now: appNow, fetchFn: fetch };
 
   // Slash commands, buttons and the DM conversation need no privileged intents.
   const client = new Client({
@@ -356,6 +382,30 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
       // Bring every panel up to date after a restart, then start background work.
       for (const p of store.listAllPanels()) panels.schedule(p.id);
       scheduler.start();
+      if (perf && feeder) {
+        perf.start();
+        // The made-up sheets keep changing, as real ones do: once an hour of the faster clock. A panel with no sheet is given the made-up one.
+        const every = Math.max(1_000, Math.round(3_600_000 / TIME_SCALE));
+        const timer = setInterval(() => {
+          try {
+            for (const p of store.listAllPanels()) {
+              if (!p.sheetId && !store.listJobs(p.id, 'open').length) {
+                store.updatePanel(p.id, { sheetId: TEST_SHEET_ID, sheetGid: null });
+                log.info(`[test] the ${p.airlineName} panel had no sheet: it now reads the made-up one (${TEST_SHEET_URL})`);
+              }
+              if (p.sheetId) feeder.adopt({ id: p.sheetId, gid: p.sheetGid });
+            }
+            feeder.feed();
+          } catch (e) {
+            log.warn('[test] the sheet feed failed', e);
+          }
+        }, every);
+        timer.unref?.();
+        stopTest = () => {
+          clearInterval(timer);
+          perf.stop();
+        };
+      }
       // Optional: the host connected a Twitch account and chose a channel, so the bot answers its chat about the streamer's flight.
       if (config.twitch) {
         twitch = new TwitchBridge({
@@ -378,7 +428,9 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     });
   });
 
+  let stopTest: () => void = () => undefined;
   const stop = async () => {
+    stopTest();
     twitch?.stop();
     scheduler.stop();
     // Nothing new starts from here: no new reads or redraws, and the slow Aeroconomy read stops at its next step.

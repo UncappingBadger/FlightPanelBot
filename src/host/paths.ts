@@ -1,14 +1,19 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { TEST_BUILD } from '../util/clock.js';
 import { DEBUG_BUILD } from '../util/debugBuild.js';
 
 export const APP_NAME = 'FlightPanelBot';
+/** The test build keeps everything in a folder of its own, so it never touches the real bot's settings, database or log (and can run beside it). */
+export const HOME_FOLDER = TEST_BUILD ? `${APP_NAME}-TEST` : APP_NAME;
+/** The port of the setup page: the test build uses the next one up, so both can be open at once. */
+export const DEFAULT_PORT = TEST_BUILD ? 47812 : 47811;
 
 /** Where the host app keeps everything: settings, the database, logs. One folder per Windows user. */
 export function appHome(env: Record<string, string | undefined> = process.env): string {
   if (env.FPB_HOME) return resolve(env.FPB_HOME);
-  if (env.APPDATA) return join(env.APPDATA, APP_NAME);
-  return join(homedir(), `.${APP_NAME.toLowerCase()}`);
+  if (env.APPDATA) return join(env.APPDATA, HOME_FOLDER);
+  return join(homedir(), `.${HOME_FOLDER.toLowerCase()}`);
 }
 
 export interface HostPaths {

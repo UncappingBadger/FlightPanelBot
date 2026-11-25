@@ -6,6 +6,7 @@ import { HourlySlot } from './hourlySlot.js';
 import { COMPLETE_AFTER_DEADLINE_MS, JobError, type JobService } from './jobs.js';
 import { nameKey } from './pilotNames.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
+import { appNow } from '../util/clock.js';
 
 /** How often a FsHub-linked panel's flights are checked for ones that have been flown: once an hour, in the slot all the hourly checks share. */
 export const AUTO_COMPLETE_MS = 60 * 60_000;
@@ -102,7 +103,7 @@ export class AutoCompleter {
   private readonly retryAt = new Map<number, number>();
 
   private get now(): number {
-    return (this.d.now ?? Date.now)();
+    return (this.d.now ?? appNow)();
   }
 
   private get log(): Logger {

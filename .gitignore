@@ -9,6 +9,7 @@ data/
 release/
 release-next*/
 release-debug*/
+release-test*/
 
 # a person built into a release build (see scripts/build-host.mjs); never committed
 build-local.json

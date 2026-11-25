@@ -11,6 +11,7 @@ import { fshubFlightFacts, type FlightFacts } from './fshubDistances.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
 import { fineFor, readLanding, safetyPolicyOf, type FineTier, type SafetyFine, type SafetyPolicy } from './safetyPay.js';
 import type { ProfitFill } from './writeback.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * Compares what Aeroconomy says each of an airline's flights made (the profit or loss in its aircraft's logbooks) with the *Profit Made*
@@ -528,7 +529,7 @@ export class AirlineProfits {
   private readonly log: Logger;
 
   constructor(private readonly d: AirlineProfitsDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 

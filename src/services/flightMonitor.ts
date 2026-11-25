@@ -1,6 +1,7 @@
 import type { FlightMonitor, Store } from '../db/store.js';
 import { isFlying, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * Tells a person, in a private message, when a flight they asked about (`/monitor SKY330`) is about ten minutes from landing, and when it has landed.
@@ -78,7 +79,7 @@ export class FlightMonitors {
   private current: Promise<void> = Promise.resolve();
 
   constructor(private readonly d: FlightMonitorsDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 

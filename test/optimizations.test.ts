@@ -187,6 +187,21 @@ describe('the panel looks for its messages all at once', () => {
     assert.equal(channel.live.reduce((n, m) => n + m.edits.length, 0), edits, 'nothing was edited');
   });
 
+  it('posts the panel again with one lookup for the old messages, not one after another', async () => {
+    await d.panels.refresh(h.panel.id);
+    const channel = d.client.channel(CHANNEL);
+    const before = channel.live.length;
+    channel.deleteMessage(channel.live[1]!.id); // one is gone, so the whole panel is posted again
+    const asked = channel.apiFetches;
+    const batches = channel.batchFetches;
+    h.jobs.sync(h.panel.id, Array.from({ length: 40 }, (_, i) => sj(`f${i}`, 'EGLL-EGKK', { notes: 'again' })));
+    assert.equal(await d.panels.refresh(h.panel.id), 'posted');
+    assert.equal(channel.live.length, before);
+    assert.equal(channel.batchFetches - batches, 1, 'one batch answered for all of the old messages');
+    // The one that was deleted is asked for by itself once (it is not in the batch); the others cost nothing more.
+    assert.equal(channel.apiFetches - asked, 2);
+  });
+
   it('still notices a message someone deleted, and puts the panel back in order', async () => {
     await d.panels.refresh(h.panel.id);
     const channel = d.client.channel(CHANNEL);

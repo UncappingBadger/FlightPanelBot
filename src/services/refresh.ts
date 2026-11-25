@@ -4,6 +4,7 @@ import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { HourlySlot } from './hourlySlot.js';
 import { JobError, type JobService, type SyncResult } from './jobs.js';
+import { TEST_BUILD, appNow } from '../util/clock.js';
 
 /** How often an automatic source (the demo) is re-read. */
 export const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -39,7 +40,7 @@ export class SourceRefresher {
     private readonly jobs: JobService,
     private readonly sourceFor: (panel: Panel) => JobSource | null,
     private readonly log: Logger = silentLogger,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = appNow,
     /** Adds what the source does not say to the flights it listed (the airline's flight numbers, from Aeroconomy). */
     private readonly enrich: ((panel: Panel, jobs: SourceJob[], fetched: FetchedJobs) => SourceJob[]) | null = null,
     /** The moment each hour at which the hourly checks happen together: a linked sheet is read once in each slot. */
@@ -103,7 +104,7 @@ export class SourceRefresher {
     for (const panel of this.store.listAllPanels()) {
       if (!this.sourceFor(panel)) continue;
       const hourly = panel.sheetId !== null;
-      const quick = DEBUG_BUILD && hourly;
+      const quick = DEBUG_BUILD && !TEST_BUILD && hourly; // the test build's faster clock already makes an hour twelve seconds
       const due = panel.lastRefreshAt === null || (quick ? now - panel.lastRefreshAt >= DEBUG_SHEET_INTERVAL_MS : hourly ? this.slot.due(panel.lastRefreshAt, now) : now - panel.lastRefreshAt >= REFRESH_INTERVAL_MS);
       const last = this.lastAttempt.get(panel.id);
       const cooling = last !== undefined && (quick ? now - last < DEBUG_SHEET_INTERVAL_MS : hourly ? last >= this.slot.start(now) : now - last < RETRY_AFTER_FAILURE_MS);

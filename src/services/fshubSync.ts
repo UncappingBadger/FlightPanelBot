@@ -3,6 +3,7 @@ import type { FlownFlight, JobView, Panel, RosterLink, Store } from '../db/store
 import { silentLogger, type Logger } from '../util/log.js';
 import { confirmationsFor, confirmationsSignature } from './flightMatch.js';
 import { HourlySlot } from './hourlySlot.js';
+import { appNow } from '../util/clock.js';
 
 /** How often a linked airline's roster is read: once an hour, in the slot all the hourly checks share (pilots rarely change, so that is plenty). */
 export const FSHUB_SYNC_MS = 60 * 60_000;
@@ -89,7 +90,7 @@ export class FsHubSync {
   }
 
   private get now(): number {
-    return (this.opts.now ?? Date.now)();
+    return (this.opts.now ?? appNow)();
   }
 
   private get log(): Logger {

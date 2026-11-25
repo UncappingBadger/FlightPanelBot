@@ -6,6 +6,7 @@ import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } 
 import { dayCode, flightIdChunks, MAX_ID_WORDS, MAX_SHOWN_ID } from './flightIds.js';
 import { namedForOneOf } from './pilotNames.js';
 import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
+import { appNow } from '../util/clock.js';
 
 export type JobErrorCode = 'NOT_FOUND' | 'EXPIRED' | 'BAD_INPUT';
 
@@ -151,7 +152,7 @@ export class JobService {
     private readonly events: JobEvents,
     opts: { now?: () => number; logger?: Logger } = {},
   ) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
   }
 

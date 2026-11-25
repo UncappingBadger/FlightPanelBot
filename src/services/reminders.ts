@@ -1,6 +1,7 @@
 import type { JobView, Panel, Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import type { JobService } from './jobs.js';
+import { appNow } from '../util/clock.js';
 
 export const DAY_MS = 86_400_000;
 /** The first moment of the UTC day that `ms` falls in. UTC (Zulu) because every flight time here is Zulu, whatever timezone the host's PC is set to. */
@@ -62,7 +63,7 @@ export class ReminderService {
     private readonly deliver: DeliverReminder,
     opts: { now?: () => number; logger?: Logger } = {},
   ) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
   }
 

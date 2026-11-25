@@ -11,6 +11,7 @@ import { discordErrorCode, isDmClosed, isMissingAccess, isUnknownMessage } from 
 import { availableFor } from '../services/availability.js';
 import { flightState, renderGridPanel, type GridFlight } from './gridUi.js';
 import { avatarIdsOf, defaultAvatar, listRows, noPings, panelRows, renderListParts, renderPanelParts, renderReminder, stampFiles, usesStamp, type Avatar } from './ui.js';
+import { appNow, realMs } from '../util/clock.js';
 
 /** What one message of a panel (or of a pilot's list) says and carries. */
 interface Payload {
@@ -145,7 +146,7 @@ export class PanelService {
     private readonly store: Store,
     private readonly jobs: JobService,
     private readonly log: Logger = silentLogger,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = appNow,
     private readonly debounceMs = 1500,
     /** The least time between two updates of one panel's lists in people's DMs, so a burst of changes is not a burst of DM edits. */
     private readonly followGapMs = 15_000,
@@ -328,10 +329,10 @@ export class PanelService {
   private async redraw(panelId: number): Promise<PanelRefreshResult> {
     // A redraw that was waiting its turn when the bot began to shut down: the database and Discord are about to go, so it draws nothing.
     if (this.stopped) return 'skipped';
-    const started = Date.now();
+    const started = realMs();
     const result = await this.redrawPanel(panelId);
     // Discord answers edits slowly when there are many: worth a line in the log when it took a while, so it can be seen what a slow panel costs.
-    if (Date.now() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}) took ${((Date.now() - started) / 1000).toFixed(1)} s`);
+    if (realMs() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}) took ${((realMs() - started) / 1000).toFixed(1)} s`);
     if ((result === 'updated' || result === 'posted') && this.store.countFollowers(panelId) > 0) {
       this.refreshFollowers(panelId).catch((e) => {
         if (!this.stopped) this.log.warn(`Could not update the lists kept for panel ${panelId}`, e);
@@ -415,13 +416,12 @@ export class PanelService {
    * the messages the channel now holds (also when posting stops halfway, so the next redraw clears them away).
    */
   private async place(channel: SendableChannels, ids: string[], payloads: Payload[], save: (ids: string[]) => void): Promise<'updated' | 'posted'> {
-    // `force: true` asks Discord itself. Without it discord.js answers from its cache, and the bot
+    // Discord is asked itself (see `lookUpMessages`). Without that discord.js answers from its cache, and the bot
     // is never told when a person deletes a message, so it would "find" panels that are long gone.
-    const lookup = (id: string) => ('messages' in channel ? channel.messages.fetch({ message: id, force: true }).catch(() => null) : Promise.resolve(null));
-
+    let looked: Awaited<ReturnType<typeof lookUpMessages>> | null = null;
     if ('messages' in channel && ids.length === payloads.length) {
       // One request for the channel's latest messages answers for the whole panel (see `lookUpMessages`), not a round trip to Discord for each message.
-      const existing = await lookUpMessages(channel.messages, ids);
+      const existing = (looked = await lookUpMessages(channel.messages, ids));
       if (existing.every((m) => m && m.editable)) {
         try {
           for (let i = 0; i < payloads.length; i++) {
@@ -440,10 +440,11 @@ export class PanelService {
       }
     }
 
-    // Otherwise start afresh so the messages stay in order.
-    for (const id of ids) {
-      const m = await lookup(id);
-      if (m && m.deletable) await m.delete().catch(() => undefined);
+    // Otherwise start afresh so the messages stay in order. The old ones are looked up with one request and taken away together, not one after another
+    // (a panel of fifteen messages that had to be posted again on the day's change took thirty requests, one at a time, before anything new appeared).
+    if ('messages' in channel && ids.length > 0) {
+      const old = looked ?? (await lookUpMessages(channel.messages, ids));
+      await Promise.all(old.map((m) => (m && m.deletable ? m.delete().catch(() => undefined) : undefined)));
     }
     save([]);
     const fresh: string[] = [];
@@ -641,7 +642,7 @@ export class PanelService {
     const waiting = this.followWaiting.get(panelId);
     if (waiting) return waiting;
     const run = (async () => {
-      const wait = this.followGapMs - (Date.now() - (this.lastFollowPassAt.get(panelId) ?? 0));
+      const wait = this.followGapMs - (appNow() - (this.lastFollowPassAt.get(panelId) ?? 0));
       // Always yield once, even with nothing to wait for, so this run is recorded as waiting before it is taken off the list below.
       await new Promise<void>((resolve) => {
         if (wait > 0 && this.followGapMs > 0) {
@@ -652,7 +653,7 @@ export class PanelService {
         }
       });
       this.followWaiting.delete(panelId); // from here on, a new request is a new update
-      this.lastFollowPassAt.set(panelId, Date.now());
+      this.lastFollowPassAt.set(panelId, appNow());
       await this.inFollowQueue(panelId, () => this.updateFollowers(panelId));
     })();
     this.followWaiting.set(panelId, run);

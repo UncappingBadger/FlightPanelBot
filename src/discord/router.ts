@@ -1,4 +1,5 @@
 import { Events, MessageFlags, type Client, type Interaction } from 'discord.js';
+import { realMs } from '../util/clock.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
 import { componentHandlers, commands } from './commands/index.js';
@@ -17,16 +18,16 @@ export function registerInteractionRouter(client: Client, ctx: BotContext): void
 
   // The Reserve conversation happens in DMs: the person replies with a flight ID.
   client.on(Events.MessageCreate, (message) => {
-    const started = Date.now();
+    const started = realMs();
     void whileTyping(message.channel, () => handleDmMessage(ctx, message))
       .catch((e) => ctx.log.error('DM handling failed', e))
-      .finally(() => noteIfSlow(ctx.log, 'a message in a DM', Date.now() - started));
+      .finally(() => noteIfSlow(ctx.log, 'a message in a DM', realMs() - started));
   });
 
   async function dispatch(interaction: Interaction): Promise<void> {
-    const started = Date.now();
+    const started = realMs();
     // Nothing is logged for a quick one; a slow one is, with what it was and how long it took (never who asked, or what they typed).
-    const done = () => noteIfSlow(ctx.log, interaction.isChatInputCommand() ? `/${interaction.commandName}${interaction.options.getSubcommand(false) ? ` ${interaction.options.getSubcommand(false)}` : ''}` : interaction.isAutocomplete() ? `autocomplete /${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? `the ${interaction.customId.split(':')[0]} ${interaction.isModalSubmit() ? 'form' : 'button'}` : `an interaction of type ${interaction.type}`, Date.now() - started);
+    const done = () => noteIfSlow(ctx.log, interaction.isChatInputCommand() ? `/${interaction.commandName}${interaction.options.getSubcommand(false) ? ` ${interaction.options.getSubcommand(false)}` : ''}` : interaction.isAutocomplete() ? `autocomplete /${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? `the ${interaction.customId.split(':')[0]} ${interaction.isModalSubmit() ? 'form' : 'button'}` : `an interaction of type ${interaction.type}`, realMs() - started);
     if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction IN: ${describeInteraction(interaction)}`);
     try {
       if (interaction.isChatInputCommand()) {
@@ -39,9 +40,9 @@ export function registerInteractionRouter(client: Client, ctx: BotContext): void
         const handler = byPrefix.get(interaction.customId.split(':')[0] ?? '');
         if (handler) await handler.handle(ctx, interaction);
       }
-      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction OK (${Date.now() - started} ms): ${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId.split(':')[0] : interaction.type}`);
+      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction OK (${realMs() - started} ms): ${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId.split(':')[0] : interaction.type}`);
     } catch (e) {
-      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction REFUSED/FAILED (${Date.now() - started} ms): ${e instanceof Error ? `${e.name}: ${e.message}` : e}`);
+      if (DEBUG_BUILD && !interaction.isAutocomplete()) dbg(ctx.log, `interaction REFUSED/FAILED (${realMs() - started} ms): ${e instanceof Error ? `${e.name}: ${e.message}` : e}`);
       await reportError(interaction, ctx.log, describeError(e, ctx.log));
     } finally {
       done();

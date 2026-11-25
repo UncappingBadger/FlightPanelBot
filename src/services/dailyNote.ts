@@ -1,5 +1,6 @@
 import type { Store } from '../db/store.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * A short, silly note to one person, once a day at a random time, written by the airline's scheduler ("Kevin") in the character the
@@ -161,7 +162,7 @@ export class DailyNote {
 
   constructor(private readonly o: DailyNoteOptions) {
     this.store = o.store;
-    this.now = o.now ?? Date.now;
+    this.now = o.now ?? appNow;
     this.random = o.random ?? Math.random;
     this.log = o.logger ?? silentLogger;
   }

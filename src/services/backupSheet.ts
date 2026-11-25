@@ -2,6 +2,7 @@ import type { Store } from '../db/store.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
 import type { JobListener } from './events.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * Takes a backup pilot's name off the airline's sheet when their spot ends. A backup's name is put in the flight's *Backup Pilot* cell when
@@ -63,7 +64,7 @@ export class BackupSheetCheck {
       now?: () => number;
     },
   ) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 

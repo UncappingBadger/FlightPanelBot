@@ -1,3 +1,5 @@
+import { TEST_BUILD, appNow } from './clock.js';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -13,7 +15,8 @@ export function createLogger(level: LogLevel = 'info', sink: (line: string) => v
   const min = ORDER[level];
   const emit = (lvl: LogLevel, msg: string, extra?: unknown) => {
     if (ORDER[lvl] < min) return;
-    let line = `${new Date().toISOString()} ${lvl.toUpperCase().padEnd(5)} ${msg}`;
+    // In the test build the bot's clock runs fast, so a line says what time that clock showed as well as the real time.
+    let line = `${new Date().toISOString()}${TEST_BUILD ? ` [clock ${new Date(appNow()).toISOString().slice(0, 16)}Z]` : ''} ${lvl.toUpperCase().padEnd(5)} ${msg}`;
     if (extra instanceof Error) line += ` :: ${extra.stack ?? extra.message}`;
     else if (extra !== undefined) line += ` :: ${typeof extra === 'string' ? extra : JSON.stringify(extra)}`;
     sink(line);

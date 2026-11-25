@@ -31,14 +31,15 @@ namespace FlightPanelBot
             {
                 string env = Environment.GetEnvironmentVariable("FPB_HOME");
                 if (!string.IsNullOrEmpty(env)) return Path.GetFullPath(env);
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FlightPanelBot");
+                // A test build keeps everything in a folder of its own, so it never touches the real bot's settings, database or log.
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), BuildInfo.Test ? "FlightPanelBot-TEST" : "FlightPanelBot");
             }
         }
         public static string Status { get { return Path.Combine(AppHome, "status.json"); } }
         public static string LogsDir { get { return Path.Combine(AppHome, "logs"); } }
         public static string BotLog { get { return Path.Combine(LogsDir, BuildInfo.Debug ? "bot-debug.log" : "bot.log"); } }
         /// <summary>The name shown in the tray tooltip; a diagnostic build says so, so nobody mistakes it for a release.</summary>
-        public static string Title { get { return BuildInfo.Debug ? "Flight Panel Bot DEBUG" : "Flight Panel Bot"; } }
+        public static string Title { get { return BuildInfo.Test ? "Flight Panel Bot TEST" : BuildInfo.Debug ? "Flight Panel Bot DEBUG" : "Flight Panel Bot"; } }
         public static string LauncherLog { get { return Path.Combine(LogsDir, "launcher.log"); } }
         public static string RuntimeRoot
         {

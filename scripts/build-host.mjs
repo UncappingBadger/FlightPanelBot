@@ -5,6 +5,9 @@
 //   npm run build:host -- --out <folder>    write the result somewhere other than release/ (the old exe may be running)
 //   npm run build:host -- --debug           a DIAGNOSTIC build for chasing a problem on someone else's machine: writes release-debug/FlightPanelBot-DEBUG.exe,
 //                                           which logs everything to its own bot-debug.log. Not part of the release cycle; never published.
+//   npm run build:host -- --test            a TEST build: a diagnostic build whose clock runs fast (default 288 times: a day in five minutes, an hour in twelve and a half
+//                                           seconds) so the daily and hourly checks can be watched, that reads made-up schedules from local files (Google is never
+//                                           asked) and keeps its own data folder. Writes release-test/FlightPanelBot-TEST.exe. --scale <n> changes the speed.
 //
 // The result is ONE exe. It carries the bot and a Node.js runtime inside it, unpacks them on first run, and
 // needs nothing installed on the host's computer. Everything is built with tools already in this repo plus
@@ -20,15 +23,20 @@ import { crc32, gzipSync, deflateSync } from 'node:zlib';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
-const debug = args.includes('--debug');
+const test = args.includes('--test');
+// A test build is a diagnostic build too: the same detailed log, and sheets kept in local files.
+const debug = args.includes('--debug') || test;
 const argValue = (name) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 };
 const nodeExe = resolve(argValue('--node') ?? process.execPath);
 // A running FlightPanelBot.exe is locked by Windows, so --out lets a new build go somewhere else meanwhile.
-const outDir = resolve(argValue('--out') ?? join(root, debug ? 'release-debug' : 'release'));
-const EXE_NAME = debug ? 'FlightPanelBot-DEBUG.exe' : 'FlightPanelBot.exe';
+const outDir = resolve(argValue('--out') ?? join(root, test ? 'release-test' : debug ? 'release-debug' : 'release'));
+const EXE_NAME = test ? 'FlightPanelBot-TEST.exe' : debug ? 'FlightPanelBot-DEBUG.exe' : 'FlightPanelBot.exe';
+// How many times faster than real time a test build's clock runs: 288 makes a day last five minutes.
+const scale = Number(argValue('--scale') ?? process.env.FPB_TIME_SCALE ?? 288);
+if (test && !(scale >= 2 && scale <= 100_000)) throw new Error('--scale must be a number from 2 to 100000 (288 makes a day last five minutes).');
 const work = join(outDir, 'work');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -77,7 +85,9 @@ await build({
   legalComments: 'external',
   // src/util/debugBuild.ts reads the first: true only for a --debug build, so a normal build carries none of the extra logging.
   // src/util/builtInNote.ts reads the second: the person the once-a-day note goes to unless settings.json says otherwise.
-  define: { __FPB_DEBUG__: String(debug), __FPB_NOTE_USER__: JSON.stringify(noteUser) },
+  // src/util/clock.ts reads __FPB_FAST__: how many times faster than real time the bot's clock runs (1 in every build but a test build; the test-only
+  // code in src/testbuild is in every bundle but never used unless it is more than 1).
+  define: { __FPB_DEBUG__: String(debug), __FPB_FAST__: String(test ? scale : 1), __FPB_NOTE_USER__: JSON.stringify(noteUser) },
   logLevel: 'warning',
 });
 const botMjs = readFileSync(join(work, 'bot.mjs'));
@@ -191,7 +201,7 @@ console.log(`  node.exe.gz ${mb(statSync(join(work, 'node.exe.gz')).size)}, bot.
 
 const nodeVersion = spawnSync(nodeExe, ['--version'], { encoding: 'utf8' }).stdout.trim();
 const buildId = createHash('sha1').update(botMjs).update(nodeVersion).update(String(nodeBytes.length)).digest('hex').slice(0, 12);
-const version = debug ? `${pkg.version}-debug` : pkg.version;
+const version = test ? `${pkg.version}-test` : debug ? `${pkg.version}-debug` : pkg.version;
 // Windows wants four numbers: 0.3.3 becomes 0.3.3.0, and a hotfix (0.3.3.1) is used as it is.
 const assemblyVersion = /^\d+\.\d+\.\d+\.\d+$/.test(pkg.version) ? pkg.version : `${pkg.version}.0`;
 
@@ -210,7 +220,7 @@ if (manualPdf) {
 
 writeFileSync(
   join(work, 'BuildInfo.cs'),
-  `namespace FlightPanelBot { internal static class BuildInfo { public const string Version = "${version}"; public const string BuildId = "${buildId}"; public const bool Debug = ${debug}; } }\n`,
+  `namespace FlightPanelBot { internal static class BuildInfo { public const string Version = "${version}"; public const string BuildId = "${buildId}"; public const bool Debug = ${debug}; public const bool Test = ${test}; } }\n`,
 );
 writeFileSync(
   join(work, 'AssemblyInfo.cs'),
@@ -300,6 +310,39 @@ schedule in debug-sheets holds the same pilot names.
 
 This build never checks for updates. Please do not enable "Start with Windows" while using it.
 `;
+const testReadme = (v, speed) => `Flight Panel Bot ${v}  -  TEST BUILD (not a release)
+
+A build made to WATCH the bot's timers fire and to see how it performs. Its clock runs ${speed} times faster than real time:
+a day lasts ${(24 * 60 / speed).toFixed(1)} minutes and an hour ${(3600 / speed).toFixed(1)} seconds. So the checks that happen once a day (the midnight list of flights
+without a pilot, the tidy-up of it, flights leaving the panel a day after they were flown, the daily check) happen every
+${(24 * 60 / speed).toFixed(1)} minutes, and the hourly ones (reading the schedule, the hourly slot) every ${(3600 / speed).toFixed(1)} seconds. Every line of the log shows the real time and,
+in [clock ...], the time the bot believes it is.
+
+NOTHING HERE TOUCHES YOUR REAL BOT.
+ * It keeps everything in its own folder, %APPDATA%\\FlightPanelBot-TEST (settings, database, log), and its setup page is on
+   port 47812. It can run beside the real bot, but give it a Discord bot of its own: two programs signed in as the same Discord
+   bot would both answer every button.
+ * Google is never asked for anything. Whatever sheet link you give /setup sheet, the flights are made up (invented airline,
+   pilots and flights) and kept in a file in %APPDATA%\\FlightPanelBot-TEST\\data\\debug-sheets. While it runs, the made-up
+   sheet keeps changing the way a real one does: new days of flights appear, pilots put their names against flights, flown
+   flights get ticked and a profit, a few are cancelled. Delete the file to start the made-up airline again.
+ * FsHub, Aeroconomy accounts, Twitch and the daily note are switched off, whatever the settings say.
+
+What to do:
+ 1. Double-click FlightPanelBot-TEST.exe. Its setup page opens (port 47812): give it the token of a TEST Discord bot, add it to a
+    test server, then in that server run   /setup panel-add   and pick a channel. The panel is given the made-up sheet by itself
+    (or run  /setup sheet link:https://docs.google.com/spreadsheets/d/FpbTestSheet00000000000000000001/edit ).
+ 2. Watch the log (the icon's menu has "Open the log", or in PowerShell):
+        Get-Content -Wait -Tail 50 "$env:APPDATA\\FlightPanelBot-TEST\\logs\\bot-debug.log"
+    Lines that start  [clock]  say a new day of the bot's clock has begun;  [fired]  say a step did something;  [test]  say what the
+    made-up sheet's feeder changed;  [perf]  (once a minute) say how the bot is doing: how late its one thread is for everything
+    else, memory, the size of the database, and how many times and how long each scheduled step ran;  Slow:  lines say something
+    a person would have waited for.
+ 3. Press buttons, reserve and complete flights, run /setup refresh, as you would. Then quit from the icon's menu.
+
+Please do not enable "Start with Windows" for this build, and do not give it your real bot's token.
+`;
+
 // Node.js's own licence file (it also covers V8, OpenSSL, ICU and the rest that node.exe contains). Windows
 // installs don't ship it next to node.exe, so a copy for the version we embed is kept in the repo.
 const nodeLicense = [join(dirname(nodeExe), 'LICENSE'), join(dirname(nodeExe), 'LICENSE.txt'), join(root, 'host', 'licenses', 'NODE_LICENSE.txt')].find(existsSync);
@@ -326,7 +369,9 @@ copyFileSync(join(root, 'LICENSE'), join(outDir, 'LICENSE.txt'));
 if (manualPdf && resolve(manualPdf) !== resolve(join(outDir, MANUAL_NAME))) copyFileSync(manualPdf, join(outDir, MANUAL_NAME));
 writeFileSync(
   join(outDir, 'README.txt'),
-  debug
+  test
+    ? testReadme(version, scale)
+    : debug
     ? debugReadme(version)
     : `Flight Panel Bot ${version}
 By UncappingBadger. Unofficial: not affiliated with FsHub, Aeroconomy, AeroDAQ, VATSIM or Discord.

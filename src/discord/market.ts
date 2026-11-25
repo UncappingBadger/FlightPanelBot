@@ -5,6 +5,7 @@ import { silentLogger, type Logger } from '../util/log.js';
 import { renderMarket } from './aerodaqUi.js';
 import { isMissingAccess, isUnknownMessage } from './errors.js';
 import { noPings } from './ui.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * - `updated`: edited the existing message in place
@@ -32,7 +33,7 @@ export class MarketService {
     private readonly store: Store,
     private readonly aerodaq: Pick<AeroDaqClient, 'market'>,
     private readonly log: Logger = silentLogger,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = appNow,
   ) {}
 
   attach(client: Client): void {

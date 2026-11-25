@@ -3,6 +3,7 @@ import type { JobView, Panel, Store } from '../db/store.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 import { HourlySlot } from './hourlySlot.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * The airline's own flight numbers from Aeroconomy, for flights whose sheet row has none.
@@ -133,7 +134,7 @@ export class AeroNumbers {
   private stopped = false;
 
   constructor(private readonly d: AeroNumbersDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
     this.slot = d.slot ?? new HourlySlot(0);
   }

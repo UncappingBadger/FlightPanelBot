@@ -6,6 +6,7 @@ import { isUnsetPay, parseMoney } from './contributions.js';
 import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow, realMs } from '../util/clock.js';
 
 export type WriteBackErrorCode =
   /** The panel has no Google Sheet linked. */
@@ -148,7 +149,7 @@ export class SheetWriteBack {
     readonly accountEmail: string,
     opts: { now?: () => number; logger?: Logger } = {},
   ) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
   }
 
@@ -594,16 +595,16 @@ export class SheetWriteBack {
 
   private serial<T>(panel: Pick<Panel, 'sheetId' | 'sheetGid'>, work: () => Promise<T>): Promise<T> {
     const key = `${panel.sheetId ?? ''}#${panel.sheetGid ?? ''}`;
-    const queuedAt = Date.now();
+    const queuedAt = realMs();
     let startedAt = queuedAt;
     const timed = async (): Promise<T> => {
-      startedAt = Date.now();
+      startedAt = realMs();
       try {
         return await work();
       } finally {
         // What a person waits for, said in the log when it was long: how much of it was waiting in line, and how much was the work itself.
         const waited = startedAt - queuedAt;
-        const took = Date.now() - startedAt;
+        const took = realMs() - startedAt;
         if (waited + took >= SLOW_WRITE_MS) this.log.info(`Slow: a write to the airline's sheet waited ${(waited / 1000).toFixed(1)} s in line and took ${(took / 1000).toFixed(1)} s`);
       }
     };

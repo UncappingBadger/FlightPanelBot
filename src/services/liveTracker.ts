@@ -3,6 +3,7 @@ import { isFlying, type AirlineFlight, type LiveFeed, type LivePilot } from '../
 import { silentLogger, type Logger } from '../util/log.js';
 import { trustedFshubId, type AutoCompleteResult, type AutoCompleteScope } from './autoComplete.js';
 import { callsignCode } from './flightEtas.js';
+import { appNow } from '../util/clock.js';
 
 /** Where a pilot is, as far as FsHub's live feed says. */
 export type LiveState = 'offline' | 'ground' | 'airborne';
@@ -72,7 +73,7 @@ export class LiveTracker {
   private lastPollAt: number | null = null;
 
   constructor(private readonly d: LiveTrackerDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 

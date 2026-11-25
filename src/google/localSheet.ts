@@ -20,12 +20,12 @@ export function localSheetFile(dir: string, ref: SheetRef): string {
   return join(dir, `${safe(ref.id)}_${ref.gid ?? 'first'}.csv`);
 }
 
-const csvField = (v: string): string => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-const toCsv = (rows: string[][]): string => `${rows.map((r) => r.map(csvField).join(',')).join('\r\n')}\r\n`;
+export const csvField = (v: string): string => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+export const toCsv = (rows: string[][]): string => `${rows.map((r) => r.map(csvField).join(',')).join('\r\n')}\r\n`;
 const colIndex = (letters: string): number => [...letters].reduce((n, c) => n * 26 + (c.charCodeAt(0) - 64), 0) - 1;
 
 /** Write a file in one piece, so a program reading it never sees half of it. */
-function saveAtomically(file: string, text: string): void {
+export function saveAtomically(file: string, text: string): void {
   const temp = `${file}.tmp`;
   writeFileSync(temp, text, 'utf8');
   renameSync(temp, file);
@@ -110,8 +110,11 @@ export class LocalSheet implements SheetsPort {
  * A stand-in for `fetch` that serves a sheet's CSV export from its local file, so the bot reads back what it wrote. The first time a sheet is
  * asked for, the file is made from the real export (a plain public download that needs no key), and after that Google is not asked again for it.
  * A request for anything else goes where it was going.
+ *
+ * `made`: where the bot is not to ask Google at all (the test build), the schedule a sheet with no file yet starts with, made up. Whatever sheet
+ * link is typed in, its flights are made-up ones.
  */
-export function localSheetFetch(dir: string, realFetch: typeof fetch, log: Logger = silentLogger): typeof fetch {
+export function localSheetFetch(dir: string, realFetch: typeof fetch, log: Logger = silentLogger, made?: (ref: SheetRef) => string): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const m = /\/spreadsheets\/d\/([^/]+)\/export\?format=csv(?:&gid=(\d+))?/.exec(String(input));
     if (!m) return realFetch(input, init);
@@ -119,10 +122,10 @@ export function localSheetFetch(dir: string, realFetch: typeof fetch, log: Logge
     const file = localSheetFile(dir, ref);
     if (!existsSync(file)) {
       try {
-        const csv = await downloadSheetCsv(ref, realFetch);
+        const csv = made ? made(ref) : await downloadSheetCsv(ref, realFetch);
         mkdirSync(dir, { recursive: true });
         saveAtomically(file, csv);
-        log.info(`Local sheet: made a local copy of the schedule from Google (${csv.split('\n').length} lines): ${file}. From now on the bot reads and writes this file, not Google. Delete it to take a fresh copy.`);
+        log.info(made ? `Local sheet: made up a schedule for this sheet link (Google is not asked): ${file}. The bot reads and writes this file.` : `Local sheet: made a local copy of the schedule from Google (${csv.split('\n').length} lines): ${file}. From now on the bot reads and writes this file, not Google. Delete it to take a fresh copy.`);
       } catch (e) {
         log.warn(`Local sheet: could not make a local copy of the schedule from Google: ${e instanceof Error ? e.message : String(e)}`);
         return new Response('', { status: 503 });

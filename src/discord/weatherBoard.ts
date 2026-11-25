@@ -10,6 +10,7 @@ import { isMissingAccess, isUnknownMessage, UserError } from './errors.js';
 import { metarEmbed } from './metarUi.js';
 import { noPings } from './ui.js';
 import { metarBlocks, renderWeather, searchModal, WEATHER_FOOTER, type GridAirport } from './weatherUi.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * - `updated`: edited the existing messages in place
@@ -53,7 +54,7 @@ export class WeatherBoardService {
     private readonly store: Store,
     private readonly metar: Pick<MetarClient, 'report' | 'reports'>,
     private readonly log: Logger = silentLogger,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = appNow,
   ) {}
 
   attach(client: Client): void {

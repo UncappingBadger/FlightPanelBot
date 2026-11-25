@@ -9,6 +9,7 @@ import { WriteBackError, type PaidTick, type PaidTickResult } from './writeback.
 import type { FsHubApi } from '../fshub/client.js';
 import { fshubDistances } from './fshubDistances.js';
 import { buildPayLines, isAccount, isPayable, nameKey, readPilotInfo, rowStillAgrees, type BuildInput, type IdentityBook, type LedgerView, type PayDraft, type PayLine } from './payroll.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * Paying the pilots of one airline: making the list of what is due (reading the airline's sheet, and the tab that has the pilots' accounts),
@@ -94,7 +95,7 @@ export class Payroll {
   readonly gateway: PaymentGateway;
 
   constructor(private readonly d: PayrollDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
     this.gateway = d.gateway;
   }

@@ -4,6 +4,7 @@ import { silentLogger, type Logger } from '../util/log.js';
 import { FIRE_KEVIN, REHIRE_KEVIN } from './dailyNote.js';
 import { IMPLAUSIBLE_FPM, lossForTier, readLanding, safetyNotice, safetyPolicyOf, type SafetyPolicy } from './safetyPay.js';
 import { appendPenaltyCsv, flightNumberOf, penaltyMessage, type ManagerLookup, type PenaltyReport } from './safetyReport.js';
+import { appNow } from '../util/clock.js';
 
 export { IMPLAUSIBLE_FPM };
 
@@ -206,7 +207,7 @@ export class HardLandings {
       csvFile?: string | null;
     } = {},
   ) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
     this.airlineName = opts.airlineName ?? ((p) => p.airlineName);
     this.managers = opts.managers ?? null;

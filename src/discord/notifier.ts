@@ -6,6 +6,7 @@ import { legList, truncate } from '../util/format.js';
 import type { PanelService } from './panel.js';
 import type { AutoCompleted } from '../services/autoComplete.js';
 import { autoCompletedMessage, backupTookOverMessage, noPings } from './ui.js';
+import { appNow } from '../util/clock.js';
 
 const REASON: Record<ReleasedNotice['reason'], string> = {
   removed: 'is no longer listed, so your reservation was released',
@@ -114,7 +115,7 @@ export class Notifier {
     if (!guild) return { ids: [], found: 0, readable: true };
     const key = `${guildId}:${[...roleIds].sort().join(',')}`;
     const kept = this.managerCache.get(key);
-    if (kept && Date.now() - kept.at < (kept.check.readable ? MANAGERS_KEPT_MS : UNREADABLE_KEPT_MS)) return kept.check;
+    if (kept && appNow() - kept.at < (kept.check.readable ? MANAGERS_KEPT_MS : UNREADABLE_KEPT_MS)) return kept.check;
     const ids = new Set<string>();
     let readable = true;
     if (roleIds.length > 0) {
@@ -134,7 +135,7 @@ export class Notifier {
     const found = ids.size;
     if (found === 0 && guild.ownerId) ids.add(guild.ownerId);
     const check: ManagerCheck = { ids: [...ids].slice(0, MAX_RECIPIENTS), found, readable };
-    this.managerCache.set(key, { at: Date.now(), check });
+    this.managerCache.set(key, { at: appNow(), check });
     return check;
   }
 

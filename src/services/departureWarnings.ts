@@ -6,6 +6,7 @@ import type { FlightTime, FlightTimes } from './flightTime.js';
 import type { JobService } from './jobs.js';
 import type { LiveStatus, LiveTracker } from './liveTracker.js';
 import { NOTICE_HINT } from './notices.js';
+import { appNow } from '../util/clock.js';
 
 /** How many minutes before the latest take-off a pilot is warned, when the server has not chosen. */
 export const DEPART_WARNING_DEFAULT_MINUTES = 30;
@@ -70,7 +71,7 @@ export class DepartureWarnings {
     private readonly send: SendDm,
     opts: { now?: () => number; logger?: Logger; live?: Pick<LiveTracker, 'statusOf'> } = {},
   ) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
     this.live = opts.live ?? null;
   }

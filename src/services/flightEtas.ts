@@ -2,6 +2,7 @@ import type { JobView, Panel, Store } from '../db/store.js';
 import { isFlying, type AirlineFlight, type LiveFeed } from '../fshub/liveFeed.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 import { silentLogger, type Logger } from '../util/log.js';
+import { appNow } from '../util/clock.js';
 
 /** When an airline's flight that is in the air is expected to land, as FsHub's live feed says. */
 export interface FlightEta {
@@ -133,7 +134,7 @@ export class FlightEtas {
   private readonly lastRead = new Map<string, { at: number; ok: boolean; goodAt: number | null }>();
 
   constructor(private readonly d: FlightEtasDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 

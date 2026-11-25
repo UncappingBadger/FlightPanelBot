@@ -1373,6 +1373,13 @@ header, own request budget; `src/services/fshubSync.ts` reads linked rosters), `
 update check. The FsHub client is optional: with no token `ctx.fshub` is null and nothing contacts FsHub. A future
 Aeroconomy job feed would be a new class in `src/jobs` with one `fetch` method.
 
+### The test build, and the soak run
+
+For watching the bot's timers fire and its speed, there are two tools, neither part of a release:
+
+- **`npm run build:host -- --test`** writes `release-test/FlightPanelBot-TEST.exe` (a diagnostic build: `--scale <n>` sets the speed, **288** by default, which makes a day last five minutes and an hour twelve and a half seconds). Its clock runs fast, so the midnight list of flights without a pilot, flights leaving the panel a day after they were flown, the hourly slot and the schedule reads all happen every few minutes or seconds; every log line shows the real time and `[clock …]`, the time the bot believes it is. It **never contacts Google, FsHub, Aeroconomy accounts or Twitch**: whatever sheet link `/setup sheet` is given, the flights are made up (an invented airline and pilots, kept in a local file), and they keep changing (new days appear, pilots sign up, flown flights are ticked, a few are cancelled; `src/testbuild/testSheet.ts`). It keeps its own data folder (`%APPDATA%\FlightPanelBot-TEST`) and its setup page is on port **47812**, so it never touches the real bot's settings or database; give it a Discord bot of its own, since two programs signed in as one bot would both answer every button. The log has `[clock]` (a new day begins), `[fired]` (a step did something), `[test]` (what the made-up sheet changed), `[perf]` (once a minute: how late the bot's one thread is for everything else, memory, the size of the database, how often and how long each scheduled step ran) and `Slow:` lines (`src/testbuild/perfMonitor.ts`).
+- **`npx tsx test/soak/soak.ts [minutes] [scale]`** runs the bot's real services (scheduler, sheet reads and writes, panel redraws, the midnight list, FsHub completion) on the same fast clock against a pretend Discord, Google and FsHub that answer after a believable delay, with invented pilots who reserve, give back and fly flights, and prints a summary: how long a pilot waits from pressing Reserve to being told, the calls made to each outside service, the thread delay, memory and every `Slow:` line. Nothing leaves the computer.
+
 ## Licence
 
 MIT. Third-party packages are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

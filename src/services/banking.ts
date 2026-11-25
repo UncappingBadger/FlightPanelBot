@@ -5,6 +5,7 @@ import { fshubTokenProblem, normalizeFsHubToken } from '../fshub/client.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { accountLostText, manyPaymentsText, NO_ACCOUNTS_LEFT_TEXT, paymentMessage, TOKEN_LOST_TEXT, TOKEN_REJECTED_TEXT } from './bankingText.js';
 import type { SecretBox } from './secretBox.js';
+import { appNow } from '../util/clock.js';
 
 /**
  * Tells a pilot, in a private message, when money goes into or out of the Aeroconomy bank accounts they chose (`/banking`).
@@ -80,7 +81,7 @@ export class BankingService {
   private current: Promise<void> = Promise.resolve();
 
   constructor(private readonly d: BankingDeps) {
-    this.now = d.now ?? Date.now;
+    this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
   }
 
