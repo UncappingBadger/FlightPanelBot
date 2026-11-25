@@ -266,7 +266,7 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // The test build times every step the scheduler takes, and says how the bot is doing once a minute (see src/testbuild/perfMonitor.ts).
   const perf = TEST_BUILD
     ? new PerfMonitor(log, appNow, {
-        extra: () => `database ${fileMb(config.databasePath)} MB (+ ${fileMb(`${config.databasePath}-wal`)} MB journal), ${store.listAllPanels().length} panel(s), ${store.listAllPanels().reduce((n, p) => n + store.listJobs(p.id, 'open').length, 0)} open flight(s)`,
+        extra: () => `database ${fileMb(config.databasePath)} MB (+ ${fileMb(`${config.databasePath}-wal`)} MB journal), ${store.listAllPanels().length} panel(s), ${store.listAllPanels().reduce((n, p) => n + store.listJobs(p.id, 'open').length, 0)} open flight(s) | panels so far: ${panels.totals.redraws} redraws = ${panels.totals.edited} edits + ${panels.totals.sent} posts in ${(panels.totals.ms / 1000).toFixed(0)} s${panels.totals.edited + panels.totals.sent > 0 ? ` (${(panels.totals.ms / (panels.totals.edited + panels.totals.sent) / 1000).toFixed(2)} s a message)` : ''}`,
       })
     : null;
   const timed = <T extends { run(): unknown }>(name: string, service: T): T => (perf ? perf.wrap(name, service) : service);

@@ -333,12 +333,19 @@ export class PanelService {
   }
 
   /** Redraw a panel, then (without waiting for it) bring the lists people keep in their DMs up to date to match. */
+  /** What every redraw since the bot started has asked of Discord: how many there were, how many messages they edited and posted, and how long they took in all (for the test build's report). */
+  readonly totals = { redraws: 0, edited: 0, sent: 0, ms: 0 };
+
   private async redraw(panelId: number): Promise<PanelRefreshResult> {
     // A redraw that was waiting its turn when the bot began to shut down: the database and Discord are about to go, so it draws nothing.
     if (this.stopped) return 'skipped';
     const started = realMs();
     const stats: DrawStats = { messages: 0, edited: 0, sent: 0 };
     const result = await this.redrawPanel(panelId, stats);
+    this.totals.redraws++;
+    this.totals.edited += stats.edited;
+    this.totals.sent += stats.sent;
+    this.totals.ms += realMs() - started;
     // Discord answers edits slowly when there are many: worth a line in the log when it took a while, so it can be seen what a slow panel costs.
     if (realMs() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}: ${stats.edited} edited, ${stats.sent} posted, of ${stats.messages} messages) took ${((realMs() - started) / 1000).toFixed(1)} s`);
     if ((result === 'updated' || result === 'posted') && this.store.countFollowers(panelId) > 0) {

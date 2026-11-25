@@ -165,6 +165,10 @@ describe('the panel looks for its messages all at once', () => {
     assert.equal(channel.apiFetches - asked, 1, 'one request answered for every message of the panel');
     assert.equal(channel.batchFetches - batches, 1);
     assert.ok(channel.live.some((m) => m.edits.length > 0), 'and what changed was still edited');
+    // The running totals the test build reports: what the redraws so far asked of Discord.
+    const t = d.panels.totals;
+    assert.ok(t.redraws >= 2 && t.sent >= messages && t.edited >= 1 && t.ms > 0, JSON.stringify(t));
+    assert.equal(t.edited, channel.live.reduce((n, m) => n + m.edits.length, 0), 'every edit was counted');
   });
 
   it("asks for a message by itself only when it is not among the channel's latest (people have been talking below the panel)", async () => {
