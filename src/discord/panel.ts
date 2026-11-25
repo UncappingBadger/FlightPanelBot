@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { MessageFlags, PermissionFlagsBits, type ActionRowBuilder, type Client, type DMChannel, type EmbedBuilder, type MessageActionRowComponentBuilder, type SendableChannels, type User } from 'discord.js';
 import type { Panel, PanelFollower, Store } from '../db/store.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
@@ -21,8 +22,46 @@ interface Payload {
 /** Debug build: which panels have had the bot's permissions in their channel written to the log already. */
 const permsLogged = new Set<number>();
 
-/** What a message was last made to say, so an edit that would change nothing is not sent (a long panel is many messages). */
-const contentOf = (p: Payload): string => JSON.stringify([p.embeds.map((e) => e.toJSON()), p.components.map((c) => c.toJSON())]);
+/** The part of a channel's messages the bot uses to look at its own: Discord's own answer (not a copy held from before), one message or a recent batch. */
+interface MessageLookup {
+  fetch(options: any): Promise<any>;
+}
+type LookedUp = { editable: boolean; deletable: boolean; edit(options: any): Promise<unknown>; delete(): Promise<unknown> };
+
+/** A redraw that takes longer than this is noted in the log. */
+const SLOW_REDRAW_MS = 3_000;
+
+/** How many of a channel's latest messages are asked for in one request when looking for the bot's own. */
+const RECENT_MESSAGES = 100;
+
+/**
+ * The messages with these IDs as Discord has them now, in the order asked, with null for one that is gone. A person can delete a message and the
+ * bot is never told, so each is asked of Discord, not remembered. That used to be one request for each message of a panel; the panel is usually
+ * the last thing in its channel, so one request for the channel's latest messages answers for all of them, and only a message that is not
+ * among those is asked for by itself.
+ */
+export async function lookUpMessages(messages: MessageLookup, ids: string[], strict = false): Promise<Array<LookedUp | null>> {
+  const found = new Map<string, LookedUp>();
+  if (ids.length > 1) {
+    try {
+      const recent = (await messages.fetch({ limit: RECENT_MESSAGES })) as ReadonlyMap<string, LookedUp>;
+      for (const [id, m] of recent) if (ids.includes(id)) found.set(id, m);
+    } catch {
+      /* asked for one at a time below */
+    }
+  }
+  return Promise.all(
+    ids.map(async (id) => {
+      const hit = found.get(id);
+      if (hit) return hit;
+      // `strict`: only a message that is gone counts as gone; any other failure (Discord not answering) is passed on, not taken for a deleted message.
+      return (messages.fetch({ message: id, force: true }) as Promise<LookedUp>).catch((e: unknown) => (strict && !isUnknownMessage(e) ? Promise.reject(e) : null));
+    }),
+  );
+}
+
+/** What a message was last made to say (a digest of it, so remembering a long panel costs a few bytes a message), so an edit that would change nothing is not sent. */
+const contentOf = (p: Payload): string => createHash('sha256').update(JSON.stringify([p.embeds.map((e) => e.toJSON()), p.components.map((c) => c.toJSON())])).digest('base64');
 
 /** What to post for a panel message: its cards and buttons, and the OPEN stamp's picture when a card wears it. */
 const forSend = (p: Payload) => ({ ...p, files: stampFiles(p.embeds) });
@@ -40,6 +79,8 @@ const ENTITLED_RECHECK_MS = 30 * 60_000;
 
 /** A person's picture is asked for again after this long (they change it now and then); until then the one we have is used. */
 const AVATAR_FRESH_MS = 6 * 3_600_000;
+/** The most pilots' pictures kept at once. */
+const MAX_AVATARS = 2_000;
 
 /** How asking for a list went: it was posted (in this DM channel), or why not. */
 export type FollowResult = { ok: true; channelId: string } | { ok: false; reason: 'dm-closed' | 'full' | 'gone' };
@@ -153,7 +194,9 @@ export class PanelService {
     if (this.stopped || this.timers.has(panelId)) return;
     const timer = setTimeout(() => {
       this.timers.delete(panelId);
-      this.refresh(panelId).catch((e) => this.log.warn(`Could not refresh panel ${panelId}`, e));
+      this.refresh(panelId).catch((e) => {
+        if (!this.stopped) this.log.warn(`Could not refresh panel ${panelId}`, e);
+      });
     }, this.debounceMs);
     timer.unref?.();
     this.timers.set(panelId, timer);
@@ -217,6 +260,13 @@ export class PanelService {
    * The pictures of these people, by Discord ID, for the cards. A person is asked about once and remembered for a few hours; one
    * Discord will not tell us about (or a hiccup) gets the picture Discord gives everyone who has not chosen one, and is asked again soon.
    */
+  /** Keep a picture, forgetting the longest-kept ones once there are a great many (an airline with years of pilots must not grow this for ever). */
+  private rememberAvatar(id: string, entry: { at: number; avatar: Avatar }): void {
+    this.avatarCache.delete(id);
+    this.avatarCache.set(id, entry);
+    while (this.avatarCache.size > MAX_AVATARS) this.avatarCache.delete(this.avatarCache.keys().next().value as string);
+  }
+
   async avatarsFor(ids: Iterable<string>): Promise<Map<string, Avatar>> {
     const out = new Map<string, Avatar>();
     const now = this.now();
@@ -240,11 +290,11 @@ export class PanelService {
             large: user.displayAvatarURL({ extension: 'png', size: 128, forceStatic: true }),
             small: user.displayAvatarURL({ extension: 'png', size: 32, forceStatic: true }),
           };
-          this.avatarCache.set(id, { at: now, avatar });
+          this.rememberAvatar(id, { at: now, avatar });
           out.set(id, avatar);
         } catch (e) {
           const avatar = known?.avatar ?? defaultAvatar(id);
-          this.avatarCache.set(id, { at: now - AVATAR_FRESH_MS + 10 * 60_000, avatar }); // ask again in ten minutes
+          this.rememberAvatar(id, { at: now - AVATAR_FRESH_MS + 10 * 60_000, avatar }); // ask again in ten minutes
           out.set(id, avatar);
           this.log.debug(`Could not get the picture of ${id}`, e);
         }
@@ -276,9 +326,16 @@ export class PanelService {
 
   /** Redraw a panel, then (without waiting for it) bring the lists people keep in their DMs up to date to match. */
   private async redraw(panelId: number): Promise<PanelRefreshResult> {
+    // A redraw that was waiting its turn when the bot began to shut down: the database and Discord are about to go, so it draws nothing.
+    if (this.stopped) return 'skipped';
+    const started = Date.now();
     const result = await this.redrawPanel(panelId);
+    // Discord answers edits slowly when there are many: worth a line in the log when it took a while, so it can be seen what a slow panel costs.
+    if (Date.now() - started >= SLOW_REDRAW_MS) this.log.info(`Slow: drawing panel ${panelId} (${result}) took ${((Date.now() - started) / 1000).toFixed(1)} s`);
     if ((result === 'updated' || result === 'posted') && this.store.countFollowers(panelId) > 0) {
-      this.refreshFollowers(panelId).catch((e) => this.log.warn(`Could not update the lists kept for panel ${panelId}`, e));
+      this.refreshFollowers(panelId).catch((e) => {
+        if (!this.stopped) this.log.warn(`Could not update the lists kept for panel ${panelId}`, e);
+      });
     }
     return result;
   }
@@ -339,6 +396,8 @@ export class PanelService {
       this.changeAt.set(panel.id, listing.changeAt);
       return result;
     } catch (e) {
+      // Cut short by the bot shutting down (Discord is disconnected, or the database closed under it): not a failure worth a warning.
+      if (this.stopped) return 'skipped';
       if (isMissingAccess(e)) {
         if (DEBUG_BUILD) permsLogged.delete(panel.id); // log the permissions again at the next redraw, next to this failure
         dbg(this.log, `panel ${panel.id} redraw hit Missing Permissions; payload had ${this.lastPayloadNote}`);
@@ -361,8 +420,8 @@ export class PanelService {
     const lookup = (id: string) => ('messages' in channel ? channel.messages.fetch({ message: id, force: true }).catch(() => null) : Promise.resolve(null));
 
     if ('messages' in channel && ids.length === payloads.length) {
-      // Asked together: the answers do not depend on one another, and one after another it was a round trip to Discord for each message of the panel.
-      const existing = await Promise.all(ids.map((id) => lookup(id)));
+      // One request for the channel's latest messages answers for the whole panel (see `lookUpMessages`), not a round trip to Discord for each message.
+      const existing = await lookUpMessages(channel.messages, ids);
       if (existing.every((m) => m && m.editable)) {
         try {
           for (let i = 0; i < payloads.length; i++) {
@@ -608,6 +667,7 @@ export class PanelService {
   }
 
   private async updateFollowers(panelId: number): Promise<void> {
+    if (this.stopped) return;
     const panel = this.store.getPanel(panelId);
     if (!panel || !this.client) return;
     const followers = this.store.listFollowers(panelId);
@@ -615,6 +675,7 @@ export class PanelService {
     const listing = this.listing(panel);
     let common: Payload[] | null = null;
     for (const f of followers) {
+      if (this.stopped) return; // shutting down: the rest are drawn again when the bot starts
       // Everyone shares one list, except people who hid the flights that are no longer available to them: each has their own.
       const payloads = this.store.getHideUnavailable(f.discordId) ? this.listPayloads(panel, listing, f.discordId) : (common ??= this.listPayloads(panel, listing));
       await this.syncFollower(panel, f, payloads);
@@ -655,10 +716,8 @@ export class PanelService {
    */
   private async placeList(dm: DMChannel, ids: string[], payloads: Payload[], save: (ids: string[]) => void): Promise<void> {
     const keep = Math.min(ids.length, payloads.length);
-    const existing = [];
-    for (let i = 0; i < keep; i++) {
-      existing.push(await dm.messages.fetch({ message: ids[i]!, force: true }).catch((e: unknown) => (isUnknownMessage(e) ? null : Promise.reject(e))));
-    }
+    // One request for the DM's latest messages answers for the whole list (see `lookUpMessages`), not one after another for each message.
+    const existing = await lookUpMessages(dm.messages, ids.slice(0, keep), true);
     if (!existing.every((m) => m && m.editable)) return this.repostList(dm, ids, payloads, save);
 
     for (let i = 0; i < keep; i++) {
@@ -723,6 +782,13 @@ export class PanelService {
    * Whether someone is still in the server and can still see the panel's channel. Asked when a list is first sent and then every
    * half hour, so a person who left (or lost access) stops being sent a copy of the panel. A hiccup in asking counts as "yes".
    */
+  /** Note when someone was last found to be entitled, forgetting the ones no longer worth remembering (their half hour is long over). */
+  private rememberEntitled(key: string): void {
+    const now = this.now();
+    this.entitledAt.set(key, now);
+    if (this.entitledAt.size > MAX_FOLLOWERS * 4) for (const [k, at] of this.entitledAt) if (now - at >= ENTITLED_RECHECK_MS) this.entitledAt.delete(k);
+  }
+
   private async stillEntitled(panel: Panel, discordId: string): Promise<boolean> {
     if (!this.client) return true;
     const key = `${panel.id}:${discordId}`;
@@ -742,7 +808,7 @@ export class PanelService {
       this.log.debug(`Could not check whether ${discordId} can still see panel ${panel.id}`, e);
       return true;
     }
-    this.entitledAt.set(key, this.now());
+    this.rememberEntitled(key);
     return true;
   }
 
@@ -782,7 +848,7 @@ export class PanelService {
         throw e;
       }
       this.store.saveFollower({ panelId, discordId: user.id, channelId: dm.id, messageIds: ids, createdAt: this.now() });
-      this.entitledAt.set(`${panelId}:${user.id}`, this.now());
+      this.rememberEntitled(`${panelId}:${user.id}`);
       return { ok: true, channelId: dm.id };
     });
   }

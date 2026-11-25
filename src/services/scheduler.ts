@@ -73,6 +73,8 @@ export class Scheduler {
   private readonly panels: SchedulerOptions['panels'];
   private laneRunning = false;
   private lane: Promise<void> = Promise.resolve();
+  /** Set by `stop()`: a pass or lane already under way starts no further step, so nothing touches the database or Discord once they are closed. */
+  private stopped = false;
 
   constructor(
     private readonly jobs: JobService,
@@ -101,11 +103,13 @@ export class Scheduler {
 
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => void this.tick(), this.tickMs);
     void this.tick();
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -117,27 +121,37 @@ export class Scheduler {
    * overlapping lane is skipped just as an overlapping pass is.
    */
   private startLane(): Promise<void> {
-    if (this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.monitors && !this.numbers && !this.departures && !this.daily && !this.payroll && !this.backups)) return this.lane;
+    if (this.stopped || this.laneRunning || (!this.fshub && !this.autoComplete && !this.live && !this.etas && !this.monitors && !this.numbers && !this.departures && !this.daily && !this.payroll && !this.backups)) return this.lane;
     this.laneRunning = true;
     this.lane = (async () => {
+      // One step of the lane. Once the bot is stopping, the steps that have not started are not started (the database and Discord are about to
+      // be closed), and a step that was cut short by that is not reported as a failure.
+      const step = async (work: { run(): Promise<unknown> } | undefined, what: string): Promise<void> => {
+        if (!work || this.stopped) return;
+        try {
+          await work.run();
+        } catch (e) {
+          if (!this.stopped) this.log.error(what, e);
+        }
+      };
       try {
-        await this.fshub?.run().catch((e) => this.log.error('FsHub roster and flight sync failed', e));
-        await this.autoComplete?.run().catch((e) => this.log.error('FsHub auto-complete failed', e));
+        await step(this.fshub, 'FsHub roster and flight sync failed');
+        await step(this.autoComplete, 'FsHub auto-complete failed');
         // Who is flying, and a look for the flights of pilots who have just landed (after the reads, so they are current).
-        await this.live?.run().catch((e) => this.log.error('Live tracking failed', e));
+        await step(this.live, 'Live tracking failed');
         // When the flights in the air are expected to land (one request for each airline).
-        await this.etas?.run().catch((e) => this.log.error('Reading expected landing times failed', e));
+        await step(this.etas, 'Reading expected landing times failed');
         // Flights people asked to be told about, from the same live feed (one request for each airline).
-        await this.monitors?.run().catch((e) => this.log.error('Watching flights failed', e));
+        await step(this.monitors, 'Watching flights failed');
         // Aeroconomy's flight numbers, when due. This only starts the (slow) read in the background.
-        await this.numbers?.run().catch((e) => this.log.error('Reading Aeroconomy flight numbers failed', e));
+        await step(this.numbers, 'Reading Aeroconomy flight numbers failed');
         // After the FsHub reads, so a leg FsHub has just shown flown is not warned about; and here, not in the main pass, because the
         // first look at an airport can mean a large download.
-        await this.departures?.run().catch((e) => this.log.error('Departure warnings failed', e));
+        await step(this.departures, 'Departure warnings failed');
         // Backup pilots put down before they were written in the sheet, or while it could not be reached.
-        await this.backups?.run().catch((e) => this.log.error('Checking the backup pilots against the sheet failed', e));
-        await this.daily?.run().catch((e) => this.log.error('The daily note failed', e));
-        await this.payroll?.run().catch((e) => this.log.error('The daily pay list failed', e));
+        await step(this.backups, 'Checking the backup pilots against the sheet failed');
+        await step(this.daily, 'The daily note failed');
+        await step(this.payroll, 'The daily pay list failed');
       } finally {
         this.laneRunning = false;
       }
@@ -152,11 +166,16 @@ export class Scheduler {
 
   /** One pass of background work. Overlapping passes are skipped rather than queued. */
   async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
+    // Once the bot is stopping, the steps not yet started are not started, and one cut short by that is not reported as a failure.
+    const quiet = (what: string) => (e: unknown) => {
+      if (!this.stopped) this.log.error(what, e);
+    };
     try {
       // Pull fresh jobs first, then close anything past its deadline.
-      await this.refresher.refreshDue().catch((e) => this.log.error('Source refresh failed', e));
+      await this.refresher.refreshDue().catch(quiet('Source refresh failed'));
+      if (this.stopped) return;
       this.jobs.expireDue();
       this.jobs.cleanup();
       // A flight may have come within the panel's period, or a completed one aged out, with nothing else changing.
@@ -166,19 +185,22 @@ export class Scheduler {
         this.log.error('Panel time check failed', e);
       }
       // Clear the "pilots needed" list of a day that is nearly over away (23:59 UTC), first, so it is gone before the next one is posted...
-      await this.cleanup?.run().catch((e) => this.log.error('Announcement cleanup failed', e));
+      await this.cleanup?.run().catch(quiet('Announcement cleanup failed'));
+      if (this.stopped) return;
       // ...then, at midnight UTC, list the day's flights that still have nobody (a failure in one cannot block the other).
-      await this.reminders?.run().catch((e) => this.log.error('Pilot reminders failed', e));
+      await this.reminders?.run().catch(quiet('Pilot reminders failed'));
+      if (this.stopped) return;
       // And keep any AeroDAQ market boards fresh.
-      await this.markets?.run().catch((e) => this.log.error('Market boards failed', e));
+      await this.markets?.run().catch(quiet('Market boards failed'));
+      if (this.stopped) return;
       // The weather boards, beside this pass for the same reason as FsHub's work: they ask VATSIM once for each airport.
-      if (this.weather) this.weatherRun = this.weather.run().catch((e) => this.log.error('Weather boards failed', e));
+      if (this.weather) this.weatherRun = this.weather.run().catch(quiet('Weather boards failed'));
       // Pilots' bank accounts, the same way: each is a request to Aeroconomy, which is asked slowly.
-      if (this.banking) this.bankingRun = this.banking.run().catch((e) => this.log.error('Payment messages failed', e));
+      if (this.banking) this.bankingRun = this.banking.run().catch(quiet('Payment messages failed'));
       // FsHub's work goes on beside this pass, not inside it.
       void this.startLane();
     } catch (e) {
-      this.log.error('Scheduler tick failed', e);
+      if (!this.stopped) this.log.error('Scheduler tick failed', e);
     } finally {
       this.running = false;
     }

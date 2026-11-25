@@ -59,6 +59,8 @@ export type GoogleMode = 'ok' | 'view-only' | 'not-shared' | 'down';
  */
 export class FakeGoogle {
   values: string[][] = scheduleGrid();
+  /** The tab's name now (a test can rename it, as a manager might). */
+  title = TAB_TITLE;
   mode: GoogleMode = 'ok';
   tokenStatus = 200;
   tokenRequests = 0;
@@ -131,7 +133,7 @@ export class FakeGoogle {
     if (method === 'GET' && rest.includes('ranges=')) {
       const range = decodeURIComponent(/ranges=([^&]+)/.exec(rest)![1]!);
       const m = /^'((?:[^']|'')*)'!([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
-      if (!m || m[1]!.replace(/''/g, "'") !== TAB_TITLE) return this.json(400, { error: { message: 'Unable to parse range' } });
+      if (!m || m[1]!.replace(/''/g, "'") !== this.title) return this.json(400, { error: { message: 'Unable to parse range' } });
       const [col, first, last] = [m[2]!, Number(m[3]), Number(m[5])];
       const rowData = Array.from({ length: last - first + 1 }, (_, i) => {
         const f = this.formats.get(`${col}${first + i}`);
@@ -150,11 +152,11 @@ export class FakeGoogle {
       return this.json(200, { spreadsheetId: SHEET_ID, replies: requests.map(() => ({})) });
     }
     if (method === 'GET' && /^[^/]+\?/.test(rest)) {
-      return this.json(200, { sheets: [{ properties: { sheetId: TAB_GID, title: TAB_TITLE } }, { properties: { sheetId: 1, title: 'Pilot Info' } }] });
+      return this.json(200, { sheets: [{ properties: { sheetId: TAB_GID, title: this.title } }, { properties: { sheetId: 1, title: 'Pilot Info' } }] });
     }
     if (method === 'GET' && rest.includes('/values/')) {
       const range = decodeURIComponent(rest.split('/values/')[1]!.split('?')[0]!);
-      if (range !== `'${TAB_TITLE}'`) return this.json(400, { error: { message: 'Unable to parse range' } });
+      if (range !== `'${this.title}'`) return this.json(400, { error: { message: 'Unable to parse range' } });
       this.beforeNextRead?.();
       this.beforeNextRead = null;
       // The real API leaves off empty trailing cells and rows. A FORMULA read shows a cell's formula where it has one (its shown value may be empty).
@@ -182,7 +184,7 @@ export class FakeGoogle {
       this.writes.push(body);
       for (const item of body.data as Array<{ range: string; values: unknown[][] }>) {
         const m = /^'((?:[^']|'')*)'!([A-Z]+)(\d+)$/.exec(item.range);
-        if (!m || m[1]!.replace(/''/g, "'") !== TAB_TITLE) return this.json(400, { error: { message: 'Unable to parse range' } });
+        if (!m || m[1]!.replace(/''/g, "'") !== this.title) return this.json(400, { error: { message: 'Unable to parse range' } });
         const row = Number(m[3]) - 1;
         const col = colIndex(m[2] as string);
         while (this.values.length <= row) this.values.push([]);

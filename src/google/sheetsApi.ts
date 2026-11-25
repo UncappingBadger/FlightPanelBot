@@ -1,4 +1,5 @@
 import { colLetter, type SheetRef } from '../jobs/sheet.js';
+import { readTextCapped } from '../util/http.js';
 import { GoogleAuthError, type TokenProvider } from './serviceAccount.js';
 
 export type SheetsErrorCode =
@@ -42,7 +43,14 @@ export interface SheetsPort {
   columnNumberFormats(ref: SheetRef, title: string, col: number, firstRow: number, lastRow: number): Promise<{ sheetId: number; types: Map<number, string> }>;
   setNumberFormat(ref: SheetRef, sheetId: number, col: number, rows: number[], format: { type: string; pattern: string }): Promise<void>;
   update(ref: SheetRef, title: string, cells: Cell[]): Promise<void>;
+  /** Forget anything kept about this tab (its name), so the next read asks again. Called when what was read did not match what was expected. */
+  forgetTab?(ref: SheetRef): void;
 }
+
+/** The most of a reply from Google that is read: a tab bigger than this is refused rather than held in memory and parsed on the bot's only thread. */
+const MAX_REPLY_BYTES = 25_000_000;
+/** A tab's name is kept this long: it is asked for before every read, and it hardly ever changes. A read that finds it wrong asks again at once. */
+const TITLE_KEPT_MS = 5 * 60_000;
 
 /**
  * The few Google Sheets calls the bot makes: find a tab's name, read it, and write single cells.
@@ -50,10 +58,20 @@ export interface SheetsPort {
  * from a person's free text.
  */
 export class SheetsApi implements SheetsPort {
+  /** The name of each tab asked about lately, by sheet and tab: a read is then one request to Google, not two. */
+  private readonly titles = new Map<string, { title: string; at: number }>();
+
   constructor(
     private readonly token: TokenProvider,
     private readonly fetchFn: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
   ) {}
+
+  private titleKey = (ref: SheetRef): string => `${ref.id}#${ref.gid ?? ''}`;
+
+  forgetTab(ref: SheetRef): void {
+    this.titles.delete(this.titleKey(ref));
+  }
 
   private async call(method: 'GET' | 'POST', url: string, body?: unknown): Promise<any> {
     let accessToken: string;
@@ -74,7 +92,16 @@ export class SheetsApi implements SheetsPort {
     } catch {
       throw new SheetsError('UNAVAILABLE', "I couldn't reach Google Sheets just now.");
     }
-    if (res.ok) return res.json().catch(() => ({}));
+    if (res.ok) {
+      const text = await readTextCapped(res, MAX_REPLY_BYTES).catch(() => null);
+      if (text === null) throw new SheetsError('UNAVAILABLE', 'That sheet is too large for me to read.');
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch {
+        return {};
+      }
+    }
+    await res.body?.cancel().catch(() => undefined);
     if (res.status === 401) throw new SheetsError('AUTH', 'Google no longer accepts my sign-in.');
     if (res.status === 403) throw new SheetsError('NO_ACCESS', "The sheet isn't shared with me as an editor.");
     if (res.status === 404 || res.status === 400) throw new SheetsError('NOT_FOUND', "Google couldn't find that sheet or tab.");
@@ -96,9 +123,22 @@ export class SheetsApi implements SheetsPort {
    * computed and the plain content of any other. Rows and trailing cells that are empty may be short or missing.
    */
   async readTab(ref: SheetRef, render: 'FORMATTED_VALUE' | 'FORMULA' = 'FORMATTED_VALUE'): Promise<{ title: string; values: string[][] }> {
-    const title = await this.tabTitle(ref);
-    const range = encodeURIComponent(quoteTab(title));
-    const data = await this.call('GET', `${BASE}/${ref.id}/values/${range}?majorDimension=ROWS&valueRenderOption=${render}`);
+    const key = this.titleKey(ref);
+    const kept = this.titles.get(key);
+    const fresh = kept !== undefined && this.now() - kept.at < TITLE_KEPT_MS;
+    let title = fresh ? kept.title : await this.tabTitle(ref);
+    const read = async () => this.call('GET', `${BASE}/${ref.id}/values/${encodeURIComponent(quoteTab(title))}?majorDimension=ROWS&valueRenderOption=${render}`);
+    let data: any;
+    try {
+      data = await read();
+    } catch (e) {
+      // A tab's name kept from before may be out of date (it was renamed): ask for it again, once, before giving up.
+      if (!(fresh && e instanceof SheetsError && e.code === 'NOT_FOUND')) throw e;
+      this.titles.delete(key);
+      title = await this.tabTitle(ref);
+      data = await read();
+    }
+    this.titles.set(key, { title, at: this.now() });
     const rows: unknown[] = Array.isArray(data?.values) ? data.values : [];
     return { title, values: rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [])) };
   }

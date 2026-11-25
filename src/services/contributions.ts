@@ -49,6 +49,9 @@ export interface SheetFlights {
   hasDeduction?: boolean;
 }
 
+/** The longest cell (after trimming) that can be an amount: `-$1,234,567,890,123.50` is 22 characters, so this leaves room for spaces between digit groups. */
+export const MAX_MONEY_CELL = 64;
+
 /**
  * A money cell as a spreadsheet shows it: `$54,489.00`, `-$114,799.00`, `($1,200)`, `1200`, `£3.50`. Null when it is empty or
  * isn't an amount (`TBD`, `#N/A`, a dash).
@@ -56,6 +59,9 @@ export interface SheetFlights {
 export function parseMoney(text: string | null | undefined): number | null {
   let t = (text ?? '').trim();
   if (!t) return null;
+  // No amount is this long, and the pattern below slows down with the cube of the length on a cell made of long runs of spaces (a 3,200-character
+  // cell stalled the whole bot for 43 seconds), so a long cell is not an amount, and never reaches it.
+  if (t.length > MAX_MONEY_CELL) return null;
   const bracketed = /^\(.*\)$/.test(t);
   if (bracketed) t = t.slice(1, -1).trim();
   // A sign belongs at the front, before or after the currency sign (`-$5`, `$-5`); a dash anywhere else is not a sign (`2026-11-20` is a date, `0-0`

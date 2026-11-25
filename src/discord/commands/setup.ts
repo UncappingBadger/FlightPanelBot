@@ -1378,9 +1378,15 @@ export const setupCommand: Command = {
           ctx.jobs.expireDue();
           note = ' (This panel takes flights from `/setup import`, so there is nothing to fetch.)';
         }
-        // Always a full redraw: every message is sent again, so a panel posted by an older version picks up whatever is new
-        // (new buttons, a new look) from this, with no need to remove and re-add it.
-        const result = await ctx.panels.refresh(panel.id, { force: true });
+        // A full redraw sends every message again, so a panel posted by an older version picks up whatever is new (new buttons, a new look)
+        // with no need to remove and re-add it. Discord allows only a few edits a second, so that takes ten seconds and more on a long panel:
+        // it is done once for each version of the bot (the first refresh after an upgrade), and after that a refresh edits what has changed
+        // (and puts back any message that has been deleted), which takes a moment.
+        const version = process.env.FPB_VERSION ?? 'dev';
+        const forcedKey = `panel-forced-by:${panel.id}`;
+        const force = ctx.store.getKv(forcedKey) !== version;
+        const result = await ctx.panels.refresh(panel.id, { force });
+        if (force && (result === 'updated' || result === 'posted')) ctx.store.setKv(forcedKey, version);
         const problem = panelProblem(result);
         await interaction.editReply({ content: problem ? `${problem}${note}` : `Redrew the **${panel.airlineName}** panel (${result}).${note}` });
         return;

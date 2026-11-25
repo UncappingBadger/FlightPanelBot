@@ -384,8 +384,10 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     // Nothing new starts from here: no new reads or redraws, and the slow Aeroconomy read stops at its next step.
     aeroNumbers.stop();
     panels.stop();
-    // The FsHub lane and any redraw may be mid-request; give them a moment to finish rather than closing the database under them.
-    await Promise.race([Promise.all([scheduler.idle(), aeroNumbers.idle(), panels.drain(3_000)]), new Promise<void>((r) => setTimeout(r, 3_000).unref?.())]);
+    // The FsHub lane, any redraw and any write to a sheet may be mid-request; give them a moment to finish rather than closing the database under
+    // them (a sheet write cut off half way is a reservation the sheet never heard of). The host waits about eight seconds for the bot, so this stays under that.
+    const GRACE_MS = 5_000;
+    await Promise.race([Promise.all([scheduler.idle(), aeroNumbers.idle(), panels.drain(GRACE_MS), writeback?.idle()]), new Promise<void>((r) => setTimeout(r, GRACE_MS).unref?.())]);
     await client.destroy();
     store.close();
   };

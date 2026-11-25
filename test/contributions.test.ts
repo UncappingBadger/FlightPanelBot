@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { CONTRIBUTIONS_REQUEST } from '../src/discord/contributions.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { parseSheetCsv } from '../src/jobs/sheet.js';
-import { CONTRIBUTION_DAYS, contributionPeriod, contributionsOf, dayName, formatMoney, isUnsetPay, parseMoney, readSheetFlights } from '../src/services/contributions.js';
+import { CONTRIBUTION_DAYS, MAX_MONEY_CELL, contributionPeriod, contributionsOf, dayName, formatMoney, isUnsetPay, parseMoney, readSheetFlights } from '../src/services/contributions.js';
 import { GUILD, HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpers.js';
 import { FakeUser, fakeDm, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
 
@@ -74,6 +74,22 @@ describe('reading a money cell', () => {
     assert.equal(parseMoney('5 $'), 5);
     assert.equal(parseMoney('.5'), 0.5);
     assert.equal(parseMoney('5.'), 5);
+  });
+
+  it('is never held up by a cell made of long runs of spaces (it used to stall the whole bot for minutes)', () => {
+    const started = Date.now();
+    for (const n of [200, 1600, 3200, 20_000]) {
+      for (const text of [`$${' '.repeat(n)}1${' '.repeat(n)}x`, `1${' '.repeat(n)}x`, `${' '.repeat(n)}1${' '.repeat(n)}$${' '.repeat(n)}x`, `${'1 '.repeat(n)}x`]) {
+        assert.equal(parseMoney(text), null);
+        assert.equal(isUnsetPay(text), false, 'a cell somebody filled with junk is theirs, not an empty one');
+      }
+    }
+    assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+    // The longest amount anyone could write is still read, spaces between the digit groups and all.
+    assert.equal(parseMoney('-$1,234,567,890,123.50'), -1234567890123.5);
+    assert.equal(parseMoney('$ 1 234 567 890'), 1234567890);
+    assert.equal(parseMoney(`$${'1'.repeat(MAX_MONEY_CELL - 1)}`), Number('1'.repeat(MAX_MONEY_CELL - 1)));
+    assert.equal(parseMoney(`$${'1'.repeat(MAX_MONEY_CELL)}`), null, 'one over the longest an amount can be');
   });
 
   it('does not take a note with a zero in it for "no pay", or a dated cell for an amount', () => {

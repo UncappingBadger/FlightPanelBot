@@ -130,11 +130,17 @@ interface Located {
  * `fillFlightNumbers`, as a schedule is read). It never changes any other cell that has anything in it.
  * The one more is the Pilot Paid box of a flight whose pilot has just been paid (`markPilotsPaid`, from `/payroll`), which it only ever ticks.
  */
+/** A write to the sheet (its wait in line and its own time together) longer than this is noted in the log. */
+const SLOW_WRITE_MS = 2_000;
+
 export class SheetWriteBack {
   private readonly now: () => number;
   private readonly log: Logger;
-  /** Writes happen one at a time, so two pilots acting at once can't trample each other. */
-  private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * Writes to one sheet's tab happen one at a time, so two pilots acting at once can't trample each other. Each tab has its own line: a pilot
+   * of one airline is never kept waiting behind another airline's write, or behind a long fill of somebody else's sheet.
+   */
+  private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly api: SheetsPort,
@@ -163,7 +169,7 @@ export class SheetWriteBack {
 
   /** Put a pilot's name against a flight. Refuses if the sheet already names someone else. */
   claim(panel: Panel, sourceKey: string, name: string): Promise<void> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (at.ticked || isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed or cancelled.');
       if (at.pilot === '') await this.write(at, [{ a1: at.pilotCell, value: name }]);
@@ -173,7 +179,7 @@ export class SheetWriteBack {
 
   /** Take a pilot's name off a flight, but only if it is still the name we wrote. Returns whether it was cleared. */
   unclaim(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (!same(at.pilot, name) || at.ticked) return false;
       await this.write(at, [{ a1: at.pilotCell, value: '' }]);
@@ -183,7 +189,7 @@ export class SheetWriteBack {
 
   /** Change the name we wrote against a flight, but only if it is still the one we wrote. Returns whether it changed. */
   rename(panel: Panel, sourceKey: string, oldName: string, newName: string): Promise<boolean> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (!same(at.pilot, oldName) || at.ticked) return false;
       await this.write(at, [{ a1: at.pilotCell, value: newName }]);
@@ -196,7 +202,7 @@ export class SheetWriteBack {
    * if the flight is finished or cancelled, or if the cell already names someone else; a cell already holding this name is left as it is.
    */
   claimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (at.backupCell === null) return false;
       if (at.ticked || isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed or cancelled.');
@@ -208,7 +214,7 @@ export class SheetWriteBack {
 
   /** Take a backup pilot's name off a flight, but only if it is still the name we wrote. Returns whether it was cleared. */
   unclaimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (at.backupCell === null || !same(at.backup, name) || at.ticked) return false;
       await this.write(at, [{ a1: at.backupCell, value: '' }]);
@@ -218,7 +224,7 @@ export class SheetWriteBack {
 
   /** Change the backup pilot's name we wrote against a flight, but only if it is still the one we wrote. Returns whether it changed. */
   renameBackup(panel: Panel, sourceKey: string, oldName: string, newName: string): Promise<boolean> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (at.backupCell === null || !same(at.backup, oldName) || at.ticked) return false;
       await this.write(at, [{ a1: at.backupCell, value: newName }]);
@@ -232,7 +238,7 @@ export class SheetWriteBack {
    * there is nothing to write.
    */
   complete(panel: Panel, sourceKey: string, name: string): Promise<void> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet shows that flight as cancelled.');
       const cells: Cell[] = [];
@@ -250,7 +256,7 @@ export class SheetWriteBack {
    * shown as completed. Returns whether the backup's name was taken off the Backup Pilot cell (only where it still held `backupName`, the name this bot wrote).
    */
   completeAsBackup(panel: Panel, sourceKey: string, change: { from: string | null; to: string; backupName: string | null }): Promise<{ backupCleared: boolean }> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const at = await this.locate(panel, sourceKey);
       if (isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet shows that flight as cancelled.');
       if (at.ticked) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed.');
@@ -271,7 +277,7 @@ export class SheetWriteBack {
    * Anything else is left alone and said so in the result. Nothing that is already in a cell is ever replaced.
    */
   fillProfits(panel: Panel, fills: ProfitFill[]): Promise<ProfitFillResult> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const ref = this.refOf(panel);
       const result: ProfitFillResult = { written: [], paid: [], payLeft: 0, deducted: [], deductionLeft: 0, skipped: [] };
       try {
@@ -352,7 +358,7 @@ export class SheetWriteBack {
    * Anything else is left alone and said so in the result. It touches no other cell, and replaces nothing.
    */
   fillDeductions(panel: Panel, writes: DeductionWrite[]): Promise<DeductionWriteResult> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const result: DeductionWriteResult = { written: [], skipped: [] };
       if (writes.length === 0) return result;
       const ref = this.refOf(panel);
@@ -421,7 +427,7 @@ export class SheetWriteBack {
    * touches no other cell. Nothing is asked of Google when there is nothing to tick.
    */
   markPilotsPaid(panel: Panel, ticks: PaidTick[]): Promise<PaidTickResult> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const result: PaidTickResult = { ticked: [], already: [], skipped: [] };
       if (ticks.length === 0) return result;
       const ref = this.refOf(panel);
@@ -495,7 +501,7 @@ export class SheetWriteBack {
    * is asked of Google when there is nothing to write. Returns how many cells were written.
    */
   fillDistances(panel: Panel, plan: Array<{ sourceKey: string; nm: number }>): Promise<{ written: number }> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       if (plan.length === 0) return { written: 0 };
       const ref = this.refOf(panel);
       try {
@@ -547,7 +553,7 @@ export class SheetWriteBack {
    * already in a cell is ever replaced. Nothing is asked of Google when there is nothing to write. Returns how many cells were written.
    */
   fillFlightNumbers(panel: Panel, numbersFor: (rows: NumberlessRow[]) => Array<string | null>): Promise<{ written: number }> {
-    return this.serial(async () => {
+    return this.serial(panel, async () => {
       const ref = this.refOf(panel);
       try {
         const tab = await this.api.readTab(ref);
@@ -586,10 +592,37 @@ export class SheetWriteBack {
 
   /* ------------------------------------------------------------------ internals */
 
-  private serial<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(work, work);
-    this.queue = run.catch(() => undefined);
+  private serial<T>(panel: Pick<Panel, 'sheetId' | 'sheetGid'>, work: () => Promise<T>): Promise<T> {
+    const key = `${panel.sheetId ?? ''}#${panel.sheetGid ?? ''}`;
+    const queuedAt = Date.now();
+    let startedAt = queuedAt;
+    const timed = async (): Promise<T> => {
+      startedAt = Date.now();
+      try {
+        return await work();
+      } finally {
+        // What a person waits for, said in the log when it was long: how much of it was waiting in line, and how much was the work itself.
+        const waited = startedAt - queuedAt;
+        const took = Date.now() - startedAt;
+        if (waited + took >= SLOW_WRITE_MS) this.log.info(`Slow: a write to the airline's sheet waited ${(waited / 1000).toFixed(1)} s in line and took ${(took / 1000).toFixed(1)} s`);
+      }
+    };
+    const run = (this.queues.get(key) ?? Promise.resolve()).then(timed, timed);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.queues.set(key, tail);
+    // A tab with nothing waiting leaves no entry behind.
+    void tail.then(() => {
+      if (this.queues.get(key) === tail) this.queues.delete(key);
+    });
     return run;
+  }
+
+  /** Resolves once every write that is under way or waiting has finished (for a tidy shutdown, so a write is not cut off half done, and for tests). */
+  async idle(): Promise<void> {
+    while (this.queues.size > 0) await Promise.all([...this.queues.values()]);
   }
 
   private refOf(panel: Panel): SheetRef {
@@ -612,10 +645,14 @@ export class SheetWriteBack {
       const tab = await this.api.readTab(ref);
       const parsed = parseScheduleValues(tab.values, this.now());
       if (!parsed || parsed.cols.pilot < 0 || parsed.cols.done < 0) {
+        this.api.forgetTab?.(ref); // the sheet is not what was expected: do not trust the tab's name kept from before
         throw new WriteBackError('NO_COLUMNS', "I couldn't find the Pilot and Flight Completed columns in that sheet.");
       }
       const row = parsed.rowOf.get(sourceKey);
-      if (row === undefined) throw new WriteBackError('FLIGHT_NOT_FOUND', "I can't find that flight in the sheet any more. Its row may have been changed or removed.");
+      if (row === undefined) {
+        this.api.forgetTab?.(ref);
+        throw new WriteBackError('FLIGHT_NOT_FOUND', "I can't find that flight in the sheet any more. Its row may have been changed or removed.");
+      }
       const cells = tab.values[row - 1] ?? [];
       const iBackup = findHeader(tab.values)?.names.findIndex((n) => n === 'backuppilot') ?? -1;
       return {

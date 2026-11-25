@@ -138,8 +138,18 @@ export class FakeChannel {
   private next = 1;
   /** How many times the bot actually asked the API for a message (not served from cache). */
   apiFetches = 0;
+  /** How many of those were a request for a batch of the channel's latest messages, not for one message. */
+  batchFetches = 0;
   readonly messages = {
-    fetch: async (arg: string | { message: string; force?: boolean }) => {
+    fetch: async (arg: string | { message: string; force?: boolean } | { limit: number }): Promise<any> => {
+      // A batch of the channel's latest messages, as Discord's own answer (newest first): one request, whatever it holds.
+      if (typeof arg === 'object' && 'limit' in arg) {
+        this.apiFetches++;
+        this.batchFetches++;
+        const latest = [...this.server.values()].slice(-arg.limit).reverse();
+        for (const m of latest) this.cache.set(m.id, m);
+        return new Map(latest.map((m) => [m.id, m]));
+      }
       const id = typeof arg === 'string' ? arg : arg.message;
       const force = typeof arg === 'object' && arg.force === true;
       if (!force) {

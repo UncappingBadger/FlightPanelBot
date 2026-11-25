@@ -152,29 +152,39 @@ describe('the panel looks for its messages all at once', () => {
     await h.close();
   });
 
-  it('asks Discord about every message of the panel together, so a redraw takes about one round trip rather than one for each', async () => {
+  it("asks Discord about the whole panel with one request for the channel's latest messages, not one for each message", async () => {
     assert.equal(await d.panels.refresh(h.panel.id), 'posted');
-    const messages = d.client.channel(CHANNEL).live.length;
+    const channel = d.client.channel(CHANNEL);
+    const messages = channel.live.length;
     assert.ok(messages >= 3, `${messages} messages`);
 
-    const channel = d.client.channel(CHANNEL);
-    const original = channel.messages.fetch;
-    let inFlight = 0;
-    let most = 0;
-    channel.messages.fetch = async (arg) => {
-      inFlight++;
-      most = Math.max(most, inFlight);
-      await settle(5); // Discord takes a moment to answer
-      try {
-        return await original(arg);
-      } finally {
-        inFlight--;
-      }
-    };
+    const asked = channel.apiFetches;
+    const batches = channel.batchFetches;
     h.jobs.sync(h.panel.id, Array.from({ length: 40 }, (_, i) => sj(`f${i}`, 'EGLL-EGKK', { notes: 'changed' })));
     assert.equal(await d.panels.refresh(h.panel.id), 'updated');
-    assert.equal(most, messages, 'all of them were being asked about at the same time');
-    channel.messages.fetch = original;
+    assert.equal(channel.apiFetches - asked, 1, 'one request answered for every message of the panel');
+    assert.equal(channel.batchFetches - batches, 1);
+    assert.ok(channel.live.some((m) => m.edits.length > 0), 'and what changed was still edited');
+  });
+
+  it("asks for a message by itself only when it is not among the channel's latest (people have been talking below the panel)", async () => {
+    assert.equal(await d.panels.refresh(h.panel.id), 'posted');
+    const channel = d.client.channel(CHANNEL);
+    const panelMessages = channel.live.length;
+    for (let i = 0; i < 120; i++) await channel.send({ embeds: [], components: [] }); // chat after the panel pushes the first of its messages out of the latest hundred
+    const asked = channel.apiFetches;
+    h.jobs.sync(h.panel.id, Array.from({ length: 40 }, (_, i) => sj(`f${i}`, 'EGLL-EGKK', { notes: 'moved on' })));
+    assert.equal(await d.panels.refresh(h.panel.id), 'updated');
+    // The batch holds the newest 100 (all chat), so every panel message is asked for by itself, which is no worse than it ever was.
+    assert.equal(channel.apiFetches - asked, 1 + panelMessages);
+  });
+
+  it('makes no request at all to edit when nothing on the panel changed', async () => {
+    assert.equal(await d.panels.refresh(h.panel.id), 'posted');
+    const channel = d.client.channel(CHANNEL);
+    const edits = channel.live.reduce((n, m) => n + m.edits.length, 0);
+    assert.equal(await d.panels.refresh(h.panel.id), 'updated');
+    assert.equal(channel.live.reduce((n, m) => n + m.edits.length, 0), edits, 'nothing was edited');
   });
 
   it('still notices a message someone deleted, and puts the panel back in order', async () => {

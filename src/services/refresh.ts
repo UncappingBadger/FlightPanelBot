@@ -10,6 +10,8 @@ export const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** A linked Google Sheet changes all day (sign-ups, ticked boxes), so it is re-read more often. */
 export const SHEET_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+/** How many airlines' schedules are read at the same time when several are due together. */
+const REFRESH_CONCURRENCY = 3;
 /**
  * The diagnostic build only: a linked Google Sheet is read this often instead of once in each hourly slot, so a test (the Distance fill, for
  * one) can be watched without waiting an hour. Every other build, and every test, reads it by the slot as before. The scheduler ticks once a
@@ -97,6 +99,7 @@ export class SourceRefresher {
   async refreshDue(): Promise<number> {
     const now = this.now();
     let done = 0;
+    const dueNow: Panel[] = [];
     for (const panel of this.store.listAllPanels()) {
       if (!this.sourceFor(panel)) continue;
       const hourly = panel.sheetId !== null;
@@ -105,13 +108,23 @@ export class SourceRefresher {
       const last = this.lastAttempt.get(panel.id);
       const cooling = last !== undefined && (quick ? now - last < DEBUG_SHEET_INTERVAL_MS : hourly ? last >= this.slot.start(now) : now - last < RETRY_AFTER_FAILURE_MS);
       if (!due || cooling) continue;
-      try {
-        await this.refresh(panel);
-        done++;
-      } catch (e) {
-        this.log.warn(`Refresh failed for ${panel.airlineName}; keeping the existing flights`, e);
-      }
+      dueNow.push(panel);
     }
+    // All the airlines' schedules are due in the same minute (the hourly slot). Each is a download from Google that can take several seconds, and
+    // one that hangs holds up its timeout (twenty seconds); a few at a time, so one slow sheet does not make every other airline's wait for it. Only the
+    // download overlaps: applying a schedule is one quick step that cannot be interrupted, so two never interleave.
+    const queue = [...dueNow];
+    const worker = async () => {
+      for (let panel = queue.shift(); panel !== undefined; panel = queue.shift()) {
+        try {
+          await this.refresh(panel);
+          done++;
+        } catch (e) {
+          this.log.warn(`Refresh failed for ${panel.airlineName}; keeping the existing flights`, e);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(REFRESH_CONCURRENCY, queue.length) }, worker));
     return done;
   }
 }
