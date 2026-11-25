@@ -785,7 +785,7 @@ const MAX_COMPLETE_AT_ONCE = 10;
 /** Why a pilot can't complete flights on this panel at all, or null if they can. */
 function completionBlocked(ctx: BotContext, panel: Panel): string | null {
   if (panel.sheetId && !ctx.writeback?.enabledFor(panel)) {
-    return `**${panel.airlineName}** keeps its flights in a Google Sheet, and I can't write to it, so I can't mark flights completed from here. Tick *Flight Completed* in the sheet, or ask an admin to set up write-back (\`/setup writeback\`).`;
+    return `**${panel.airlineName}** keeps its flights in a Google Sheet, and I can't write to it, so I can't mark flights completed from here. Tick *Flight Completed* in the sheet, or ask whoever runs the bot to set up write-back (the **Sheet write-back** tab of the bot's settings page).`;
   }
   return null;
 }

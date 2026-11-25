@@ -5,6 +5,7 @@ import { AERODAQ_API, AeroDaqClient, AeroDaqError, normalizeIcao, parseFuel, par
 import { MARKET_REFRESH_MS } from '../src/discord/market.js';
 import { AERODAQ_FOOTER, changeText, renderFuel, renderMarket, sortFuel } from '../src/discord/aerodaqUi.js';
 import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { FUEL_COOLDOWN_MS } from '../src/discord/commands/fuel.js';
 import { Scheduler } from '../src/services/scheduler.js';
 import { UserError } from '../src/discord/errors.js';
@@ -585,7 +586,7 @@ describe('/fuel', () => {
 describe('/setup market', () => {
   let h: Harness;
   let d: DiscordHarness;
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const OTHER = '800000000000000001';
   const guildFake = (hasPerms = true) => ({
     channels: { fetch: async (id: string) => ({ id, permissionsFor: () => ({ has: () => hasPerms }) }) },

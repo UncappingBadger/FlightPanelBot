@@ -12,7 +12,7 @@ the sheet follows:
 | stands by as a flight's backup (**Backup pilot**) | their name into the **Backup Pilot** cell of that flight's row, if the sheet has that column and the flight has one leg |
 | stands down, or the pilot gives the flight back, or an admin frees it | clears the Backup Pilot cell, but only if it still holds the name the bot wrote |
 | flies a flight as its backup, in the pilot's place (FsHub shows it) | their name into the **Pilot** cell in place of the pilot's (only if it still holds the name the bot wrote for the pilot, or is empty), ticks **Flight Completed**, and clears their name from **Backup Pilot** (if it is still the name the bot wrote), in one write |
-| an admin has `/setup flight-numbers` on | the flight's number into an **empty** *Flight Number* cell, for every flight in the sheet, past ones included (never over anything already there) |
+| the **Flight numbers** tab of the settings page is on | the flight's number into an **empty** *Flight Number* cell, for every flight in the sheet, past ones included (never over anything already there) |
 
 Once an hour the bot also goes back over the backups already down for flights and writes in any that never reached the sheet.
 
@@ -59,9 +59,9 @@ take it away at any time by removing that address.
 
 ## 4. Check it
 
-In Discord, run `/setup sheet link:<the sheet>` (or `/setup writeback` if it's already linked). You should see
+On the bot's settings page (tray icon, **Open settings**), open the **Google Sheet** tab, paste the sheet's address and press **Link the sheet** (or open the **Sheet write-back** tab and press **Apply** with the box empty, if it's already linked). You should see
 **✅ Write-back is on.** If it says it can't open the sheet, the share in step 3 is missing or the address is
-wrong. `/setup writeback mode:off` switches writing off for a panel while keeping the reading.
+wrong. In the **Sheet write-back** tab, choosing **Off** and pressing **Apply** switches writing off for a panel while keeping the reading.
 
 **Try it on a copy first.** Make a copy of the sheet (File → Make a copy), share the copy with the service
 account, link the copy to a test panel, and reserve and complete a flight. Check the Pilot cell and the box in

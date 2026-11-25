@@ -4,7 +4,8 @@ import type { JobView } from '../src/db/store.js';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../src/db/db.js';
 import { Store } from '../src/db/store.js';
-import { componentHandlers, commands } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { DETAILS_SHOWN_MS } from '../src/discord/gridHandlers.js';
 import {
   buttonLabel,
@@ -29,7 +30,7 @@ import { FakeUser, fakeComponent, fakeInteraction, makeDiscordHarness, messageTe
 const MIN = 60_000;
 const DAY = 24 * HOUR;
 const CHANNEL = '700000000000000001';
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const panelHandler = componentHandlers.find((h) => h.prefix === 'panel')!;
 
 /* ------------------------------------------------------------------ what a button says */

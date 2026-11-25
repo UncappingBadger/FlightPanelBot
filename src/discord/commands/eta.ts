@@ -37,7 +37,7 @@ export const etaCommand: Command = {
     if (panels.length === 0) throw new UserError('This server has no flight panel yet.');
     const followed = panels.filter((p) => p.liveTracking);
     if (!ctx.etas || followed.length === 0) {
-      throw new UserError("I'm not following flights live here. An admin can switch that on with `/setup live-tracking`.");
+      throw new UserError("I'm not following flights live here. Whoever runs the bot can switch that on in the **Live tracking** tab of the bot's settings page (tray icon, **Open settings**).");
     }
 
     const wanted = interaction.options.getString('flight')?.trim() ?? '';

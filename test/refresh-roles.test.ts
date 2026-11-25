@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { CHANNEL, GUILD, makeHarness, sj, type Harness } from './helpers.js';
 import { fakeInteraction, makeDiscordHarness, messageText, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const REFRESHERS = '600000000000000001';
 const OTHER_ROLE = '600000000000000002';
 const OTHER_GUILD = '900000000000000099';

@@ -15,6 +15,7 @@ import {
 import type { Panel, ProfitSendTo } from '../db/store.js';
 import { dayName, formatMoney } from '../services/contributions.js';
 import type { DeductionAnalysis, DeductionFill, HeldFlight, PayPlan, PayProblem, ProfitAnalysis, ProfitFillPlan } from '../services/airlineProfits.js';
+import { tierName } from '../services/safetyPay.js';
 import { WriteBackError } from '../services/writeback.js';
 import { plainText, ts } from '../util/format.js';
 import type { BotContext, ComponentHandler } from './context.js';
@@ -78,7 +79,7 @@ function safetyHow(p: PayPlan): string {
       : s.byMinimum
         ? `the $2,000 minimum${s.minimumLoss > 0 ? `, less ${s.minimumLoss}%` : ' kept'}`
         : `${s.share}% of the profit`;
-  return `Tier ${s.tier} safety: landed at -${s.fpm} fpm, ${cut}; ${formatMoney(s.normal)} without the cut`;
+  return `${tierName(s.tier)} safety: landed at -${s.fpm} fpm, ${cut}; ${formatMoney(s.normal)} without the cut`;
 }
 
 /** The pilot's pay for a row, in words and how it was worked out, or why there is none. Empty when its cell isn't going to be filled anyway. */
@@ -278,7 +279,7 @@ export function deductionReport(airline: string, a: DeductionAnalysis): string {
 
 /** One flight to be given its deduction, as a line. */
 function deductionLine(f: DeductionFill): string {
-  return `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · Tier ${f.tier} (-${f.fpm} fpm) · paid ${formatMoney(f.pay)}, ${formatMoney(f.normal)} without the cut · deduction ${formatMoney(f.deduction)}`)}`;
+  return `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${tierName(f.tier)} (-${f.fpm} fpm) · paid ${formatMoney(f.pay)}, ${formatMoney(f.normal)} without the cut · deduction ${formatMoney(f.deduction)}`)}`;
 }
 
 /**
@@ -319,9 +320,9 @@ export function profitSettingsText(panel: Panel): string {
         : 'only to **the admin who asks**, in the reply to the command (the default)';
   const who = panel.profitRoleId ? `the admin who asked, and any member of <@&${panel.profitRoleId}>` : 'only the admin who asked (the default)';
   return [
-    `✍️ **${plainText(panel.airlineName)}**: the preview that \`/setup profit action:fill\` makes, of the cells it would write, is shown ${where}.`,
+    `✍️ **${plainText(panel.airlineName)}**: the preview that the **Fill** action of the **Profit and pay** tab makes, of the cells it would write, is shown ${where}.`,
     `• Who can press **Write** (or **Cancel**) on it: ${who}.`,
-    '• Change it with `/setup profit send-to:` (here, a DM or a channel, and `channel:` for the channel) and `/setup profit who-can-write:` (admins only, or a role, and `role:` for the role). Nothing is written to the sheet by changing them.',
+    '• Change it in the **Profit and pay** tab of the bot\'s settings page: **Send the preview to** (here, a DM or a channel, with **Channel for the preview**) and **Who may press Write** (admins only, or a role, with **Role that may press Write**). Nothing is written to the sheet by changing them.',
   ].join('\n');
 }
 
@@ -481,7 +482,7 @@ export const profitHandler: ComponentHandler = {
     const now = ctx.now();
     if (!wanted || wanted.expiresAt < now || (way !== 'go' && way !== 'no')) {
       if (token) pending.delete(token);
-      await interaction.update({ content: 'That preview has expired or was already used, and nothing was written. Run `/setup profit action:fill` again to see the cells afresh.', components: [], allowedMentions: noPings });
+      await interaction.update({ content: 'That preview has expired or was already used, and nothing was written. Run the **Fill** action of the **Profit and pay** tab on the settings page again to see the cells afresh.', components: [], allowedMentions: noPings });
       return;
     }
     // The role is read now and not when the preview was made, so changing it takes effect on previews that are already up.

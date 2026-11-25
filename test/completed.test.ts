@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import type { FlownFlight } from '../src/db/store.js';
 import { COLORS, completedCard, embedSize, renderPanel, renderPanelParts } from '../src/discord/ui.js';
 import { parseSheetCsv } from '../src/jobs/sheet.js';
@@ -305,7 +305,7 @@ describe('completed flights on the panel', () => {
 /* ------------------------------------------------------------------ the whole path: sheet -> panel */
 
 describe('ticking the box in a linked sheet', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const SHEET_ID = 'Q1w2E3r4T5y6U7i8O9p0AaSsDdFfGgHhJjKkLlZz';
   const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit?gid=1`;
   const EXPORT = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=1`;

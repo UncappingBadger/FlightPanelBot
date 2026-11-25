@@ -2,167 +2,244 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MIGRATIONS } from '../src/db/db.js';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { safetyStatus } from '../src/discord/safetyUi.js';
 import { payAmount } from '../src/services/payroll.js';
 import { pilotPay } from '../src/services/pilotPay.js';
-import { fineFor, fineShare, IMPLAUSIBLE_FPM, lossForTier, readLanding, safetyNotice, safetyPolicyOf } from '../src/services/safetyPay.js';
+import { checkLimits, fineFor, IMPLAUSIBLE_FPM, limitsFor, lossForTier, normalizeAircraft, readLanding, safetyNotice, safetyPolicyOf, shareForTier, type SafetyLimits, type SafetyPolicy } from '../src/services/safetyPay.js';
 import { HOUR, T0, USER_A, makeHarness, type Harness } from './helpers.js';
 import { fakeComponent, fakeInteraction, FakeFsHub, FakeUser, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
 
 const DAY = 24 * HOUR;
 const NOW = T0 + 6 * HOUR;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const handler = componentHandlers.find((c) => c.prefix === 'safety')!;
+/** The limits every airline had before they could be set: a warning from 375 feet per minute, Tier 1 (then called Tier 2) from 400 and Tier 2 (then Tier 3) from 600. */
+const OLD_LIMITS: SafetyLimits = { warn: 375, tier1: 400, tier2: 600 };
+/** A policy as an airline that had safety pay on before limits could be set has it. */
+const policyOf = (over: Partial<SafetyPolicy> = {}): SafetyPolicy => ({ since: 1000, lossTier1: 0, lossTier2: 0, shareTier1: 8, shareTier2: 5, defaults: OLD_LIMITS, byAircraft: new Map(), ...over });
+/** The settings of a panel that has safety pay on. */
+const settings = (over: Record<string, unknown> = {}) => ({ safetyPaySince: 5, safetyLossTier1: 0, safetyLossTier2: 0, safetyShareTier1: 8, safetyShareTier2: 5, safetyWarnFpm: 400, safetyTier1Fpm: 500, safetyTier2Fpm: 600, ...over }) as Parameters<typeof safetyPolicyOf>[0];
 
 /* ------------------------------------------------------------------ the tiers */
 
-describe('how hard a landing is, in the airline\'s tiers', () => {
-  it('has Tier 1 from 375 feet per minute, Tier 2 from 400 and Tier 3 from 600, each limit counted in the harder tier', () => {
-    const tier = (rate: number) => (readLanding(rate) as { tier: number | null }).tier;
+describe('how hard a landing is, in the airline\'s bands', () => {
+  it('has a warning from 375 feet per minute, Tier 1 from 400 and Tier 2 from 600 by the limits airlines had before they could be set, each limit counted in the harder band', () => {
+    const tier = (rate: number) => (readLanding(rate, OLD_LIMITS) as { tier: string | null }).tier;
     assert.equal(tier(-374), null);
-    assert.equal(tier(-375), 1);
-    assert.equal(tier(-399), 1);
-    assert.equal(tier(-400), 2);
-    assert.equal(tier(-599), 2);
-    assert.equal(tier(-600), 3);
-    assert.equal(tier(-2500), 3, 'the top of what is believed is still a landing');
+    assert.equal(tier(-375), 'warning');
+    assert.equal(tier(-399), 'warning');
+    assert.equal(tier(-400), 'tier1');
+    assert.equal(tier(-599), 'tier1');
+    assert.equal(tier(-600), 'tier2');
+    assert.equal(tier(-2500), 'tier2', 'the top of what is believed is still a landing');
+  });
+
+  it('follows whatever limits it is given: a new airline starts at 400, 500 and 600', () => {
+    const start: SafetyLimits = { warn: 400, tier1: 500, tier2: 600 };
+    const tier = (rate: number, l: SafetyLimits) => (readLanding(rate, l) as { tier: string | null }).tier;
+    assert.deepEqual([-399, -400, -499, -500, -599, -600].map((r) => tier(r, start)), [null, 'warning', 'warning', 'tier1', 'tier1', 'tier2']);
+    const heavy: SafetyLimits = { warn: 600, tier1: 750, tier2: 900 };
+    assert.deepEqual([-599, -600, -749, -750, -899, -900].map((r) => tier(r, heavy)), [null, 'warning', 'warning', 'tier1', 'tier1', 'tier2'], 'a heavy aircraft can be given softer limits');
+    const strict: SafetyLimits = { warn: 200, tier1: 250, tier2: 300 };
+    assert.equal(tier(-260, strict), 'tier1', 'and a light one harder');
   });
 
   it('reads the rate as feet per minute without its sign, and rounds a rate with a fraction to the nearest', () => {
-    assert.deepEqual(readLanding(-450), { kind: 'ok', fpm: 450, tier: 2 });
-    assert.deepEqual(readLanding(-399.6), { kind: 'ok', fpm: 400, tier: 2 });
-    assert.deepEqual(readLanding(-374.4), { kind: 'ok', fpm: 374, tier: null });
+    assert.deepEqual(readLanding(-450, OLD_LIMITS), { kind: 'ok', fpm: 450, tier: 'tier1' });
+    assert.deepEqual(readLanding(-399.6, OLD_LIMITS), { kind: 'ok', fpm: 400, tier: 'tier1' });
+    assert.deepEqual(readLanding(-374.4, OLD_LIMITS), { kind: 'ok', fpm: 374, tier: null });
   });
 
   it('is no reading when FsHub gave none or gave something that is not a descent, and not believed beyond 2,500', () => {
-    for (const rate of [null, undefined, Number.NaN, Infinity, 0, 300, 1200]) assert.deepEqual(readLanding(rate), { kind: 'none' }, String(rate));
-    assert.deepEqual(readLanding(-(IMPLAUSIBLE_FPM + 1)), { kind: 'unreliable', fpm: IMPLAUSIBLE_FPM + 1 });
-    assert.deepEqual(readLanding(-10_000), { kind: 'unreliable', fpm: 10_000 });
+    for (const rate of [null, undefined, Number.NaN, Infinity, 0, 300, 1200]) assert.deepEqual(readLanding(rate, OLD_LIMITS), { kind: 'none' }, String(rate));
+    assert.deepEqual(readLanding(-(IMPLAUSIBLE_FPM + 1), OLD_LIMITS), { kind: 'unreliable', fpm: IMPLAUSIBLE_FPM + 1 });
+    assert.deepEqual(readLanding(-10_000, OLD_LIMITS), { kind: 'unreliable', fpm: 10_000 });
   });
 
-  it('pays 8% after a Tier 2 landing and 5% after a Tier 3', () => {
-    assert.deepEqual([fineShare(2), fineShare(3)], [8, 5]);
+  it('takes the shares from the airline: 8% after Tier 1 and 5% after Tier 2 to start with, and whatever it sets', () => {
+    assert.deepEqual([shareForTier(policyOf(), 'tier1'), shareForTier(policyOf(), 'tier2')], [8, 5]);
+    assert.deepEqual([shareForTier(policyOf({ shareTier1: 10, shareTier2: 2 }), 'tier1'), shareForTier(policyOf({ shareTier1: 10, shareTier2: 2 }), 'tier2')], [10, 2]);
   });
 
-  it('fines only a Tier 2 or Tier 3 landing that came after safety pay was turned on, carrying the airline\'s percentage', () => {
-    const policy = { since: 1000, lossTier2: 25, lossTier3: 25 };
-    assert.deepEqual(fineFor(readLanding(-450), 2000, policy), { tier: 2, fpm: 450, minimumLoss: 25 });
-    assert.deepEqual(fineFor(readLanding(-650), 1000, { since: 1000, lossTier2: 0, lossTier3: 0 }), { tier: 3, fpm: 650, minimumLoss: 0 }, 'at the moment it was turned on counts');
-    assert.equal(fineFor(readLanding(-450), 999, policy), null, 'before it was turned on');
-    assert.equal(fineFor(readLanding(-390), 2000, policy), null, 'Tier 1 is a warning only');
-    assert.equal(fineFor(readLanding(-100), 2000, policy), null);
-    assert.equal(fineFor(readLanding(null), 2000, policy), null);
-    assert.equal(fineFor(readLanding(-9000), 2000, policy), null);
-    assert.equal(fineFor(readLanding(-450), 2000, null), null, 'and none when it is off');
+  it('fines only a Tier 1 or Tier 2 landing that came after safety pay was turned on, carrying the airline\'s percentages and the limit it crossed', () => {
+    const policy = policyOf({ lossTier1: 25, lossTier2: 25 });
+    assert.deepEqual(fineFor(readLanding(-450, OLD_LIMITS), 2000, policy), { tier: 'tier1', fpm: 450, minimumLoss: 25, share: 8, limit: 400, aircraft: null });
+    assert.deepEqual(fineFor(readLanding(-650, OLD_LIMITS), 1000, policyOf()), { tier: 'tier2', fpm: 650, minimumLoss: 0, share: 5, limit: 600, aircraft: null }, 'at the moment it was turned on counts');
+    assert.equal(fineFor(readLanding(-450, OLD_LIMITS), 999, policy), null, 'before it was turned on');
+    assert.equal(fineFor(readLanding(-390, OLD_LIMITS), 2000, policy), null, 'a warning is a warning only');
+    assert.equal(fineFor(readLanding(-100, OLD_LIMITS), 2000, policy), null);
+    assert.equal(fineFor(readLanding(null, OLD_LIMITS), 2000, policy), null);
+    assert.equal(fineFor(readLanding(-9000, OLD_LIMITS), 2000, policy), null);
+    assert.equal(fineFor(readLanding(-450, OLD_LIMITS), 2000, null), null, 'and none when it is off');
   });
 
   it('takes the policy from a panel, null while it is off', () => {
-    assert.equal(safetyPolicyOf({ safetyPaySince: null, safetyLossTier2: 0, safetyLossTier3: 0 }), null);
-    assert.deepEqual(safetyPolicyOf({ safetyPaySince: 5, safetyLossTier2: 10, safetyLossTier3: 40 }), { since: 5, lossTier2: 10, lossTier3: 40 });
+    assert.equal(safetyPolicyOf(settings({ safetyPaySince: null })), null);
+    assert.deepEqual(safetyPolicyOf(settings({ safetyLossTier1: 10, safetyLossTier2: 40 })), { since: 5, lossTier1: 10, lossTier2: 40, shareTier1: 8, shareTier2: 5, defaults: { warn: 400, tier1: 500, tier2: 600 }, byAircraft: new Map() });
   });
 
-  it('gives each tier its own percentage when the airline set them apart, and nothing for a Tier 1 warning', () => {
-    const split = { since: 1000, lossTier2: 10, lossTier3: 40 };
-    assert.deepEqual([lossForTier(split, 1), lossForTier(split, 2), lossForTier(split, 3)], [0, 10, 40]);
-    assert.deepEqual(fineFor(readLanding(-450), 2000, split), { tier: 2, fpm: 450, minimumLoss: 10 });
-    assert.deepEqual(fineFor(readLanding(-650), 2000, split), { tier: 3, fpm: 650, minimumLoss: 40 });
+  it('gives each tier its own percentage when the airline set them apart, and nothing for a warning', () => {
+    const split = policyOf({ lossTier1: 10, lossTier2: 40 });
+    assert.deepEqual([lossForTier(split, 'warning'), lossForTier(split, 'tier1'), lossForTier(split, 'tier2')], [0, 10, 40]);
+    assert.equal(fineFor(readLanding(-450, OLD_LIMITS), 2000, split)!.minimumLoss, 10);
+    assert.equal(fineFor(readLanding(-650, OLD_LIMITS), 2000, split)!.minimumLoss, 40);
+  });
+});
+
+describe('landing limits by aircraft', () => {
+  const policy = policyOf({ defaults: { warn: 400, tier1: 500, tier2: 600 }, byAircraft: new Map([['A320', { warn: 350, tier1: 450, tier2: 550 }], ['B748', { warn: 700, tier1: 850, tier2: 1000 }]]) });
+
+  it('judges a landing by the limits of the aircraft that flew it, and by the airline\'s default when it has none of its own', () => {
+    assert.deepEqual(limitsFor(policy, 'A320'), { warn: 350, tier1: 450, tier2: 550 });
+    assert.deepEqual(limitsFor(policy, 'b748'), { warn: 700, tier1: 850, tier2: 1000 }, 'whatever the case FsHub writes it in');
+    assert.deepEqual(limitsFor(policy, ' a320 '), { warn: 350, tier1: 450, tier2: 550 });
+    assert.deepEqual(limitsFor(policy, 'B738'), { warn: 400, tier1: 500, tier2: 600 });
+    for (const none of [null, undefined, '', ' ', '!', 'TOOLONGCODE']) assert.deepEqual(limitsFor(policy, none), { warn: 400, tier1: 500, tier2: 600 }, String(none));
+  });
+
+  it('makes the same landing a different band in different aircraft', () => {
+    const rate = -480;
+    const band = (type: string) => (readLanding(rate, limitsFor(policy, type)) as { tier: string | null }).tier;
+    assert.equal(band('A320'), 'tier1', 'past the A320\'s Tier 1 limit of 450');
+    assert.equal(band('B738'), 'warning', 'only a warning for an aircraft on the default 400/500/600');
+    assert.equal(band('B748'), null, 'nothing for a 747-8, whose warning starts at 700');
+  });
+
+  it('puts the aircraft and the limit it crossed on the fine', () => {
+    const fine = fineFor(readLanding(-480, limitsFor(policy, 'A320')), 5000, policy, 'a320');
+    assert.deepEqual(fine, { tier: 'tier1', fpm: 480, minimumLoss: 0, share: 8, limit: 450, aircraft: 'A320' });
+    const hard = fineFor(readLanding(-560, limitsFor(policy, 'A320')), 5000, policy, 'A320');
+    assert.deepEqual([hard!.tier, hard!.limit, hard!.share], ['tier2', 550, 5]);
+  });
+
+  it('keeps an aircraft code as its upper-case ICAO code, and nothing that is not one', () => {
+    assert.equal(normalizeAircraft(' a20n '), 'A20N');
+    assert.equal(normalizeAircraft('C172'), 'C172');
+    for (const bad of [null, undefined, '', 'A', 'A 320', 'Boeing 737-800', 'A320;DROP']) assert.equal(normalizeAircraft(bad), null, String(bad));
+  });
+
+  it('only accepts limits that are whole numbers of feet per minute, each at least as hard as the one before, and believable', () => {
+    assert.equal(checkLimits({ warn: 400, tier1: 500, tier2: 600 }), null);
+    assert.equal(checkLimits({ warn: 500, tier1: 500, tier2: 500 }), null, 'equal limits leave the band between them empty');
+    assert.match(checkLimits({ warn: 0, tier1: 500, tier2: 600 })!, /warning limit has to be a whole number/);
+    assert.match(checkLimits({ warn: 400.5, tier1: 500, tier2: 600 })!, /whole number/);
+    assert.match(checkLimits({ warn: 400, tier1: 500, tier2: IMPLAUSIBLE_FPM + 1 })!, /Tier 2 limit has to be a whole number of feet per minute from 1 to 2,500/);
+    assert.match(checkLimits({ warn: 600, tier1: 500, tier2: 700 })!, /warning limit \(600\) can't be harder than the Tier 1 limit \(500\)/);
+    assert.match(checkLimits({ warn: 400, tier1: 700, tier2: 600 })!, /Tier 1 limit \(700\) can't be harder than the Tier 2 limit \(600\)/);
   });
 });
 
 /* ------------------------------------------------------------------ the pay */
 
 describe('the pay after a hard landing', () => {
-  const pay = (profit: number, nm: number | null, tier: 2 | 3, minimumLoss: number) => pilotPay(profit, nm, { tier, minimumLoss });
+  const pay = (profit: number, nm: number | null, tier: 1 | 2, minimumLoss: number, share = tier === 1 ? 8 : 5) => pilotPay(profit, nm, { tier: tier === 1 ? 'tier1' : 'tier2', minimumLoss, share });
 
-  it('is 8% of the profit for Tier 2 and 5% for Tier 3, rounded up to the next whole dollar, with the usual pay noted', () => {
-    assert.deepEqual(pay(54204, null, 2, 0), { amount: 4337, basis: 'safety', safety: { tier: 2, share: 8, normal: 8131, minimumLoss: 0, byMinimum: false } }, '8% of $54,204 is $4,336.32');
-    assert.deepEqual(pay(54204, null, 3, 0), { amount: 2711, basis: 'safety', safety: { tier: 3, share: 5, normal: 8131, minimumLoss: 0, byMinimum: false } }, '5% is $2,710.20');
-    assert.equal(pay(50000, null, 2, 0)!.amount, 4000, 'a share that comes out even stays as it is');
+  it('is 8% of the profit for Tier 1 and 5% for Tier 2, rounded up to the next whole dollar, with the usual pay noted', () => {
+    assert.deepEqual(pay(54204, null, 1, 0), { amount: 4337, basis: 'safety', safety: { tier: 'tier1', share: 8, normal: 8131, minimumLoss: 0, byMinimum: false } }, '8% of $54,204 is $4,336.32');
+    assert.deepEqual(pay(54204, null, 2, 0), { amount: 2711, basis: 'safety', safety: { tier: 'tier2', share: 5, normal: 8131, minimumLoss: 0, byMinimum: false } }, '5% is $2,710.20');
+    assert.equal(pay(50000, null, 1, 0)!.amount, 4000, 'a share that comes out even stays as it is');
   });
 
   it('never goes below the minimum after the percentage the airline takes off it: $2,000 less that per cent', () => {
-    assert.equal(pay(10000, null, 2, 0)!.amount, 2000, '8% of $10,000 is $800, but the whole minimum is kept');
-    assert.equal(pay(10000, null, 2, 25)!.amount, 1500, 'a quarter of the $2,000 is lost');
-    assert.equal(pay(10000, null, 2, 50)!.amount, 1000);
-    assert.equal(pay(10000, null, 3, 50)!.amount, 1000, 'the same percentage for Tier 3: $500 is the share, $1,000 is the floor');
-    assert.equal(pay(10000, null, 2, 10)!.amount, 1800);
-    assert.equal(pay(10000, null, 2, 33)!.amount, 1340, '$2,000 less 33% is $1,340');
-    assert.equal(pay(10000, null, 2, 100)!.amount, 800, 'with all of it lost there is no minimum: just the share');
-    assert.equal(pay(10000, null, 3, 100)!.amount, 500);
+    assert.equal(pay(10000, null, 1, 0)!.amount, 2000, '8% of $10,000 is $800, but the whole minimum is kept');
+    assert.equal(pay(10000, null, 1, 25)!.amount, 1500, 'a quarter of the $2,000 is lost');
+    assert.equal(pay(10000, null, 1, 50)!.amount, 1000);
+    assert.equal(pay(10000, null, 2, 50)!.amount, 1000, 'the same percentage for Tier 2: $500 is the share, $1,000 is the floor');
+    assert.equal(pay(10000, null, 1, 10)!.amount, 1800);
+    assert.equal(pay(10000, null, 1, 33)!.amount, 1340, '$2,000 less 33% is $1,340');
+    assert.equal(pay(10000, null, 1, 100)!.amount, 800, 'with all of it lost there is no minimum: just the share');
+    assert.equal(pay(10000, null, 2, 100)!.amount, 500);
   });
 
   it('says when it was the minimum that decided the pay, and when it was the share', () => {
-    assert.equal(pay(10000, null, 2, 25)!.safety!.byMinimum, true);
-    assert.equal(pay(10000, null, 2, 100)!.safety!.byMinimum, false);
-    assert.equal(pay(30000, null, 2, 0)!.safety!.byMinimum, false, '8% of $30,000 is $2,400, above the minimum');
-    assert.equal(pay(30000, null, 3, 0)!.safety!.byMinimum, true, '5% of $30,000 is $1,500, below it');
-    assert.equal(pay(30000, null, 3, 0)!.amount, 2000);
-    assert.equal(pay(30000, null, 3, 25)!.amount, 1500, 'the share and the floor are the same: the share decides');
-    assert.equal(pay(30000, null, 3, 25)!.safety!.byMinimum, false);
+    assert.equal(pay(10000, null, 1, 25)!.safety!.byMinimum, true);
+    assert.equal(pay(10000, null, 1, 100)!.safety!.byMinimum, false);
+    assert.equal(pay(30000, null, 1, 0)!.safety!.byMinimum, false, '8% of $30,000 is $2,400, above the minimum');
+    assert.equal(pay(30000, null, 2, 0)!.safety!.byMinimum, true, '5% of $30,000 is $1,500, below it');
+    assert.equal(pay(30000, null, 2, 0)!.amount, 2000);
+    assert.equal(pay(30000, null, 2, 25)!.amount, 1500, 'the share and the floor are the same: the share decides');
+    assert.equal(pay(30000, null, 2, 25)!.safety!.byMinimum, false);
   });
 
   it('is nothing for a flight that made no profit where the whole minimum is lost, and the minimum less the loss otherwise', () => {
-    assert.equal(pay(0, null, 2, 100)!.amount, 0);
-    assert.equal(pay(0, null, 3, 0)!.amount, 2000);
-    assert.equal(pay(0, null, 3, 20)!.amount, 1600);
+    assert.equal(pay(0, null, 1, 100)!.amount, 0);
+    assert.equal(pay(0, null, 2, 0)!.amount, 2000);
+    assert.equal(pay(0, null, 2, 20)!.amount, 1600);
   });
 
   it('takes the percentage off the usual distance pay of a flight that lost money, whichever the tier, rounded up', () => {
-    assert.deepEqual(pay(-8000, 1502, 2, 25), { amount: 3000, basis: 'safety', safety: { tier: 2, share: 8, normal: 4000, minimumLoss: 25, byMinimum: false } }, '$4,000 less 25%');
-    assert.equal(pay(-8000, 1502, 3, 25)!.amount, 3000);
-    assert.equal(pay(-8000, 1502, 2, 0)!.amount, 4000, 'with nothing lost it is the usual pay');
-    assert.equal(pay(-8000, 1502, 2, 10)!.amount, 3600);
-    assert.equal(pay(-8000, 1502, 2, 100)!.amount, 0, 'all of it lost: nothing');
-    assert.equal(pay(-8000, 2500, 3, 33)!.amount, 3350, '2,500 nm pays $5,000 normally: 5000 x 67% = 3350');
-    assert.equal(pay(-8000, 1001, 2, 33)!.amount, 2010, '$3,000 x 67%');
-    assert.equal(pay(-8000, 500, 2, 7)!.amount, 1860, '$2,000 x 93%');
-    assert.equal(pay(-8000, 1502, 2, 33)!.amount, 2680, '$4,000 x 67%');
+    assert.deepEqual(pay(-8000, 1502, 1, 25), { amount: 3000, basis: 'safety', safety: { tier: 'tier1', share: 8, normal: 4000, minimumLoss: 25, byMinimum: false } }, '$4,000 less 25%');
+    assert.equal(pay(-8000, 1502, 2, 25)!.amount, 3000);
+    assert.equal(pay(-8000, 1502, 1, 0)!.amount, 4000, 'with nothing lost it is the usual pay');
+    assert.equal(pay(-8000, 1502, 1, 10)!.amount, 3600);
+    assert.equal(pay(-8000, 1502, 1, 100)!.amount, 0, 'all of it lost: nothing');
+    assert.equal(pay(-8000, 2500, 2, 33)!.amount, 3350, '2,500 nm pays $5,000 normally: 5000 x 67% = 3350');
+    assert.equal(pay(-8000, 1001, 1, 33)!.amount, 2010, '$3,000 x 67%');
+    assert.equal(pay(-8000, 500, 1, 7)!.amount, 1860, '$2,000 x 93%');
+    assert.equal(pay(-8000, 1502, 1, 33)!.amount, 2680, '$4,000 x 67%');
   });
 
   it('still needs the distance of a flight that lost money, and is the usual pay when there is no fine', () => {
-    assert.equal(pay(-8000, null, 2, 0), null);
+    assert.equal(pay(-8000, null, 1, 0), null);
     assert.deepEqual(pilotPay(54489, null, null), { amount: 8174, basis: 'share' });
     assert.deepEqual(pilotPay(54489, null), { amount: 8174, basis: 'share' });
-    assert.equal(pay(Number.NaN, null, 2, 0), null);
+    assert.equal(pay(Number.NaN, null, 1, 0), null);
+  });
+
+  it('pays the share the airline set, and treats one out of range as the nearest end', () => {
+    assert.equal(pay(54204, null, 1, 0, 10)!.amount, 5421, '10% of $54,204 is $5,420.40');
+    assert.equal(pay(54204, null, 2, 0, 2)!.amount, 2000, '2% is $1,084.08: the minimum of $2,000 decides');
+    assert.equal(pay(200000, null, 2, 0, 2)!.amount, 4000, 'and 2% of $200,000 is more than the minimum');
+    assert.equal(pay(10000, null, 1, 0, 150)!.amount, 10000, 'a share is at most all of the profit');
+    assert.equal(pay(10000, null, 1, 0, -3)!.amount, 2000, 'and at least nothing: the minimum is then what is left');
   });
 
   it('treats a percentage out of range as the nearest end', () => {
-    assert.equal(pay(10000, null, 2, -5)!.amount, 2000);
-    assert.equal(pay(10000, null, 2, 150)!.amount, 800);
+    assert.equal(pay(10000, null, 1, -5)!.amount, 2000);
+    assert.equal(pay(10000, null, 1, 150)!.amount, 800);
   });
 });
 
 /* ------------------------------------------------------------------ the message */
 
 describe('the safety notice', () => {
-  const subject = { fpm: 452, route: 'EGLL → EGKK', airline: 'Test Air', minimumLoss: 0 };
+  const limits: SafetyLimits = { warn: 400, tier1: 500, tier2: 600 };
+  const subject = { fpm: 452, route: 'EGLL → EGKK', airline: 'Test Air', minimumLoss: 0, share: 8, limits, aircraft: 'A320' };
 
-  it('says the warning in the CEO\'s words for Tier 1, with no fine', () => {
-    const text = safetyNotice({ ...subject, tier: 1 });
-    assert.match(text, /^⚠️ \*\*Tier 1 Safety Warning\*\*\nEGLL → EGKK · landing rate \*\*-452 fpm\*\* · Test Air\n\n/);
-    assert.match(text, /ACCEPTABLE LEVEL of additional stress placed on the aircraft due to a HARD LANDING\. There are no safety fines for landing between -375 and -399, however landing rates above -400fpm will incur safety fines to offset aircraft damage costs and poor customer service ratings\./);
+  it('says the warning in the CEO\'s words, with the aircraft\'s own limits and no fine', () => {
+    const text = safetyNotice({ ...subject, tier: 'warning' });
+    assert.match(text, /^⚠️ \*\*Safety Warning\*\*\nEGLL → EGKK · landing rate \*\*-452 fpm\*\* · A320 · Test Air\n\n/);
+    assert.match(text, /ACCEPTABLE LEVEL of additional stress placed on the aircraft due to a HARD LANDING\. There are no safety fines for landing between -400 and -499fpm, however landing rates of -500fpm and harder will incur safety fines to offset aircraft damage costs and poor customer service ratings\./);
+    assert.match(text, /The limits for the A320: warning from -400 fpm, Tier 1 from -500, Tier 2 from -600\./);
     assert.doesNotMatch(text, /minimum/);
   });
 
-  it('says the 8% for Tier 2 and the 5% for Tier 3, in the CEO\'s words', () => {
-    const t2 = safetyNotice({ ...subject, tier: 2 });
-    assert.match(t2, /^🚨 \*\*Tier 2 Safety Violation\*\*/);
-    assert.match(t2, /EXCESSIVE STRESS placed on the aircraft due to a HARD LANDING between -400 and -599fpm\. Due to this safety violation, you will receive only 8% of this flight's profits as a safety fine/);
-    const t3 = safetyNotice({ ...subject, tier: 3 });
-    assert.match(t3, /^🛑 \*\*Tier 3 Critical Safety Violation\*\*/);
-    assert.match(t3, /DANGEROUS AND EXTREME STRESS being placed on the aircraft due to an EXTREMELY HARD LANDING above -600fpm\. Due to this safety violation, you will receive only 5% of this flight's profits as a safety fine imposed to offset the increased damage and the cost of decreased customer satisfaction caused by this landing\./);
+  it('says the airline\'s share for Tier 1 and for Tier 2, in the CEO\'s words, with the aircraft\'s limits in them', () => {
+    const t1 = safetyNotice({ ...subject, tier: 'tier1', limits: { warn: 350, tier1: 450, tier2: 550 }, share: 8 });
+    assert.match(t1, /^🚨 \*\*Tier 1 Safety Violation\*\*/);
+    assert.match(t1, /EXCESSIVE STRESS placed on the aircraft due to a HARD LANDING between -450 and -549fpm\. Due to this safety violation, you will receive only 8% of this flight's profits as a safety fine/);
+    const t2 = safetyNotice({ ...subject, tier: 'tier2', share: 3 });
+    assert.match(t2, /^🛑 \*\*Tier 2 Critical Safety Violation\*\*/);
+    assert.match(t2, /DANGEROUS AND EXTREME STRESS being placed on the aircraft due to an EXTREMELY HARD LANDING of -600fpm and harder\. Due to this safety violation, you will receive only 3% of this flight's profits as a safety fine imposed to offset/);
+  });
+
+  it('says "the airline\'s limits" when the aircraft is not known', () => {
+    const text = safetyNotice({ ...subject, tier: 'tier1', aircraft: null });
+    assert.match(text, /\*The airline's limits: warning from -400 fpm, Tier 1 from -500, Tier 2 from -600\.\*/);
+    assert.doesNotMatch(text, /landing rate \*\*-452 fpm\*\* · A320/);
   });
 
   it('says what the airline takes off the $2,000 minimum pay: nothing, a per cent, or all of it', () => {
-    assert.match(safetyNotice({ ...subject, tier: 2, minimumLoss: 0 }), /The airline's \$2,000 minimum pay still applies to this flight\./);
-    assert.match(safetyNotice({ ...subject, tier: 2, minimumLoss: 25 }), /The airline's safety rule takes 25% off the \$2,000 minimum pay, and off the distance pay of a flight that lost money\./);
-    assert.match(safetyNotice({ ...subject, tier: 3, minimumLoss: 100 }), /takes all of the \$2,000 minimum pay: this flight pays only the share above, and a flight that lost money pays nothing\./);
-    assert.doesNotMatch(safetyNotice({ ...subject, tier: 1, minimumLoss: 25 }), /minimum/, 'a warning has no fine to talk about');
+    assert.match(safetyNotice({ ...subject, tier: 'tier1', minimumLoss: 0 }), /The airline's \$2,000 minimum pay still applies to this flight\./);
+    assert.match(safetyNotice({ ...subject, tier: 'tier1', minimumLoss: 25 }), /The airline's safety rule takes 25% off the \$2,000 minimum pay, and off the distance pay of a flight that lost money\./);
+    assert.match(safetyNotice({ ...subject, tier: 'tier2', minimumLoss: 100 }), /takes all of the \$2,000 minimum pay: this flight pays only the share above, and a flight that lost money pays nothing\./);
+    assert.doesNotMatch(safetyNotice({ ...subject, tier: 'warning', minimumLoss: 25 }), /minimum/, 'a warning has no fine to talk about');
   });
 
   it('has no typo, and fits in a message with a long airline name', () => {
-    for (const tier of [1, 2, 3] as const) {
+    for (const tier of ['warning', 'tier1', 'tier2'] as const) {
       const text = safetyNotice({ ...subject, tier, airline: 'A'.repeat(60) });
       assert.doesNotMatch(text, /landign/);
       assert.ok(text.length < 1900, `${text.length}`);
@@ -202,8 +279,8 @@ describe('/setup safety-pay', () => {
     const j = setup.data.toJSON();
     const sub = (j.options as any[]).find((o) => o.name === 'safety-pay');
     assert.ok(sub, 'it exists');
-    assert.deepEqual(sub.options.map((o: any) => o.name), ['mode', 'minimum-loss', 'tier2-loss', 'tier3-loss', 'deductions', 'airline']);
-    for (const name of ['minimum-loss', 'tier2-loss', 'tier3-loss']) {
+    assert.deepEqual(sub.options.map((o: any) => o.name), ['mode', 'minimum-loss', 'tier1-loss', 'tier2-loss', 'tier1-share', 'tier2-share', 'deductions', 'airline']);
+    for (const name of ['minimum-loss', 'tier1-loss', 'tier2-loss', 'tier1-share', 'tier2-share']) {
       const loss = sub.options.find((o: any) => o.name === name);
       assert.deepEqual([loss.min_value, loss.max_value], [0, 100], name);
     }
@@ -247,7 +324,7 @@ describe('/setup safety-pay', () => {
     assert.match(text(calls), /`\/setup safety-pay mode:on minimum-loss:15`/);
     assert.match(text(calls), /You can use the same percentage for both tiers, or a different one for each\./);
     assert.match(text(calls), /Press a percentage to use it for \*\*both tiers\*\*, or \*\*Different for each tier\*\*/);
-    assert.match(text(calls), /`\/setup safety-pay mode:on tier2-loss:10 tier3-loss:40`/);
+    assert.match(text(calls), /`\/setup safety-pay mode:on tier1-loss:10 tier2-loss:40`/);
     assert.ok(text(calls).length < 1900, `${text(calls).length}`);
     assert.deepEqual(buttons(calls).map((b) => b.custom_id), [`safety:0:${pid()}`, `safety:25:${pid()}`, `safety:50:${pid()}`, `safety:100:${pid()}`, `safety:split:${pid()}`, `safety:cancel:${pid()}`]);
     assert.deepEqual(buttons(calls).map((b) => b.label), ['Lose nothing (0%)', 'Lose 25%', 'Lose 50%', 'Lose all (100%)', 'Different for each tier', 'Cancel']);
@@ -256,27 +333,28 @@ describe('/setup safety-pay', () => {
 
   it('turns on from now with the percentage given in the command, and says exactly what it does', async () => {
     const t = text(await run({ mode: 'on', 'minimum-loss': 25 }));
-    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 25, 25]);
+    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 25, 25]);
     assert.match(t, /Landing safety pay is \*\*on\*\* for \*\*Test Air\*\*, for flights that landed after <t:\d+:f>/);
-    assert.match(t, /Tier 1\*\*, landing at -375 to -399 fpm: the pilot is sent a warning, and there is no fine/);
-    assert.match(t, /Tier 2\*\*, -400 to -599 fpm: the pilot is paid \*\*8%\*\*/);
-    assert.match(t, /Tier 3\*\*, -600 fpm and harder: the pilot is paid \*\*5%\*\*/);
+    assert.match(t, /Warning\*\*, a landing from -375 fpm: the pilot is sent a warning, and there is no fine/);
+    assert.match(t, /Tier 1\*\*, from -400 fpm: the pilot is paid \*\*8%\*\* of the flight's profit instead of 15%/);
+    assert.match(t, /Tier 2\*\*, from -600 fpm: the pilot is paid \*\*5%\*\* of the profit/);
+    assert.match(t, /\*\*Limits\*\* \(a landing at least this hard, in feet per minute\), for an aircraft with none of its own: warning -375, Tier 1 -400, Tier 2 -600\. No aircraft has limits of its own yet/);
     assert.match(t, /a pilot loses \*\*25%\*\* of the \$2,000 minimum pay, so a hard landing never takes the pay below \$1,500, and a flight that lost money is paid by its distance less 25%/);
   });
 
   it('says what no loss and a total loss mean', async () => {
     assert.match(text(await run({ mode: 'on', 'minimum-loss': 0 })), /a pilot loses \*\*nothing\*\* of the \$2,000 minimum pay/);
-    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 0, 0]);
+    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 0, 0]);
     assert.match(text(await run({ 'minimum-loss': 100 })), /a pilot loses \*\*all\*\* of the \$2,000 minimum pay\. There is no minimum: the pay is exactly the tier's share, and a flight that lost money pays nothing/);
-    assert.deepEqual([panel().safetyLossTier2, panel().safetyLossTier3], [100, 100]);
+    assert.deepEqual([panel().safetyLossTier1, panel().safetyLossTier2], [100, 100]);
   });
 
   it('says that, if in doubt, it leaves the flight alone and tells the managers, and where the reports go', async () => {
     const t = text(await run({ mode: 'on', 'minimum-loss': 0 }));
     assert.match(t, /If in doubt, I leave it alone\./);
     assert.match(t, /is \*\*not filled in\*\* by `\/setup profit` \(neither its profit nor its pay\), and the server owner \(no manager role is set: `\/setup refresh-roles` sets one\) is told/);
-    assert.match(t, /When a pilot lands at Tier 2 or Tier 3, the server owner[^]*is sent a report by DM \(pilot, FsHub ID, flight, route, landing time and rate\), and a row is added to \*\*hard-landings\.csv\*\* in my data folder/);
-    assert.match(t, /The light-hearted remark follows it for a landing of -600 fpm or harder, unless the pilot switched the remarks off/);
+    assert.match(t, /When a pilot lands at Tier 1 or Tier 2, the server owner[^]*is sent a report by DM \(pilot, FsHub ID, flight, route, landing time and rate\), and a row is added to \*\*hard-landings\.csv\*\* in my data folder/);
+    assert.match(t, /The light-hearted remark follows it for a landing of -600 fpm or harder \(that line is the same for every aircraft\), unless the pilot switched the remarks off/);
   });
 
   it('names the manager roles that get the reports: the refresh roles and the profit write role', async () => {
@@ -298,6 +376,37 @@ describe('/setup safety-pay', () => {
     assert.equal(panel().safetyPaySince, null);
   });
 
+  it('sets the share of the profit a pilot is paid after each tier, saved at once, also while safety pay is off', async () => {
+    assert.deepEqual([panel().safetyShareTier1, panel().safetyShareTier2], [8, 5]);
+    const t = text(await run({ 'tier1-share': 10, 'tier2-share': 2 }));
+    assert.deepEqual([panel().safetyShareTier1, panel().safetyShareTier2], [10, 2]);
+    assert.match(t, /^Done: a pilot is now paid 10% of the profit after a Tier 1 landing and 2% after a Tier 2 one \(once safety pay is on\)\./);
+    assert.equal(panel().safetyPaySince, null, 'it did not turn safety pay on');
+    await run({ mode: 'on', 'minimum-loss': 0 });
+    const on = text(await run({ 'tier2-share': 4 }));
+    assert.deepEqual([panel().safetyShareTier1, panel().safetyShareTier2], [10, 4], 'one at a time, the other left as it is');
+    assert.match(on, /^Done: a pilot is now paid 10% of the profit after a Tier 1 landing and 4% after a Tier 2 one\./);
+    assert.match(on, /\*\*Tier 1\*\*, from -400 fpm: the pilot is paid \*\*10%\*\* of the flight's profit instead of 15%/);
+    assert.match(on, /\*\*Tier 2\*\*, from -600 fpm: the pilot is paid \*\*4%\*\* of the profit/);
+    assert.match(text(await run({ 'tier2-share': 4 })), /^Those shares were already set\./);
+  });
+
+  it('refuses a share that is not a whole number from 0 to 100', async () => {
+    await assert.rejects(run({ 'tier1-share': 101 }), /whole numbers of per cent, from 0 to 100/);
+    await assert.rejects(run({ 'tier2-share': -1 }), /whole numbers of per cent, from 0 to 100/);
+    assert.deepEqual([panel().safetyShareTier1, panel().safetyShareTier2], [8, 5]);
+  });
+
+  it('names the aircraft with limits of their own in the status, and where to set them', async () => {
+    await run({ mode: 'on', 'minimum-loss': 0 });
+    h.store.setSafetyLimits(pid(), 'A320', { warn: 350, tier1: 450, tier2: 550 }, NOW);
+    h.store.setSafetyLimits(pid(), 'B738', { warn: 400, tier1: 500, tier2: 600 }, NOW);
+    const t = text(await run());
+    assert.match(t, /2 aircraft types have limits of its own \(A320, B738\); every other aircraft uses these\. The \*\*Landing safety\*\* tab of the bot's settings page \(the tray icon's \*\*Open settings\*\*\) shows them all\./);
+    h.store.clearSafetyLimits(pid(), 'B738');
+    assert.match(text(await run()), /1 aircraft type has limits of its own \(A320\)/);
+  });
+
   it('refuses a percentage that is not a whole number from 0 to 100', async () => {
     await assert.rejects(run({ mode: 'on', 'minimum-loss': 101 }), /whole numbers of per cent, from 0 to 100/);
     await assert.rejects(run({ mode: 'on', 'minimum-loss': -1 }), /whole numbers of per cent, from 0 to 100/);
@@ -309,7 +418,7 @@ describe('/setup safety-pay', () => {
     await run({ mode: 'on', 'minimum-loss': 0 });
     h.clock.advance(DAY);
     const t = text(await run({ 'minimum-loss': 40 }));
-    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 40, 40]);
+    assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 40, 40]);
     assert.match(t, /^Done\. /);
     assert.match(text(await run({ mode: 'on', 'minimum-loss': 60 })), /^Done\. It was already on; the percentages are changed\. /);
     assert.match(text(await run({ mode: 'on', 'minimum-loss': 60 })), /^It is already on\. /);
@@ -319,10 +428,10 @@ describe('/setup safety-pay', () => {
   it('saves a percentage given while it is off, and says it is still off', async () => {
     const t = text(await run({ 'minimum-loss': 15 }));
     assert.equal(panel().safetyPaySince, null);
-    assert.deepEqual([panel().safetyLossTier2, panel().safetyLossTier3], [15, 15]);
+    assert.deepEqual([panel().safetyLossTier1, panel().safetyLossTier2], [15, 15]);
     assert.match(t, /^Saved\. Safety pay is still off, and will use this when you turn it on\./);
     await run({ mode: 'on', 'minimum-loss': 15 });
-    assert.deepEqual([panel().safetyLossTier2, panel().safetyLossTier3], [15, 15]);
+    assert.deepEqual([panel().safetyLossTier1, panel().safetyLossTier2], [15, 15]);
   });
 
   it('turns off, and says pay returns to what it was for flights that land from then on', async () => {
@@ -337,71 +446,71 @@ describe('/setup safety-pay', () => {
     const other = h.store.createPanel({ guildId: panel().guildId, name: 'Other Air', abbr: 'OTH', prefix: 'OTH', channelId: '700000000000000044', now: T0 });
     h.store.updatePanel(other.id, { fshubAirlineId: 4243, fshubConfirm: true });
     await run({ mode: 'on', 'minimum-loss': 30, airline: 'Other Air' });
-    assert.deepEqual([h.store.getPanel(other.id)!.safetyPaySince, h.store.getPanel(other.id)!.safetyLossTier2, h.store.getPanel(other.id)!.safetyLossTier3], [NOW, 30, 30]);
+    assert.deepEqual([h.store.getPanel(other.id)!.safetyPaySince, h.store.getPanel(other.id)!.safetyLossTier1, h.store.getPanel(other.id)!.safetyLossTier2], [NOW, 30, 30]);
     assert.equal(panel().safetyPaySince, null);
   });
 
-  const both = () => [panel().safetyLossTier2, panel().safetyLossTier3];
+  const both = () => [panel().safetyLossTier1, panel().safetyLossTier2];
 
-  it('sets a percentage for each tier with tier2-loss and tier3-loss, and says each one in words', async () => {
-    const t = text(await run({ mode: 'on', 'tier2-loss': 10, 'tier3-loss': 40 }));
+  it('sets a percentage for each tier with tier1-loss and tier2-loss, and says each one in words', async () => {
+    const t = text(await run({ mode: 'on', 'tier1-loss': 10, 'tier2-loss': 40 }));
     assert.deepEqual([panel().safetyPaySince, ...both()], [NOW, 10, 40]);
-    assert.match(t, /\*\*The minimum, set for each tier:\*\* a pilot loses \*\*10%\*\* of the \$2,000 minimum pay after a Tier 2 landing, so a hard landing never takes the pay below \$1,800, and a flight that lost money is paid by its distance less 10%; a pilot loses \*\*40%\*\* of the \$2,000 minimum pay after a Tier 3 landing, so a hard landing never takes the pay below \$1,200, and a flight that lost money is paid by its distance less 40%\./);
-    assert.match(t, /Change the percentages with `\/setup safety-pay minimum-loss:\.\.\.` \(both tiers\) or `tier2-loss:\.\.\.` and `tier3-loss:\.\.\.`/);
+    assert.match(t, /\*\*The minimum, set for each tier:\*\* a pilot loses \*\*10%\*\* of the \$2,000 minimum pay after a Tier 1 landing, so a hard landing never takes the pay below \$1,800, and a flight that lost money is paid by its distance less 10%; a pilot loses \*\*40%\*\* of the \$2,000 minimum pay after a Tier 2 landing, so a hard landing never takes the pay below \$1,200, and a flight that lost money is paid by its distance less 40%\./);
+    assert.match(t, /Change what a pilot loses of the minimum with `\/setup safety-pay minimum-loss:\.\.\.` \(both tiers\) or `tier1-loss:\.\.\.` and `tier2-loss:\.\.\.`, and the share of the profit with `tier1-share:\.\.\.` and `tier2-share:\.\.\.`/);
   });
 
   it('says the minimum is the same for both tiers when the two percentages are equal, however they were given', async () => {
-    assert.match(text(await run({ mode: 'on', 'tier2-loss': 25, 'tier3-loss': 25 })), /\*\*The minimum, the same for both tiers:\*\* a pilot loses \*\*25%\*\*/);
+    assert.match(text(await run({ mode: 'on', 'tier1-loss': 25, 'tier2-loss': 25 })), /\*\*The minimum, the same for both tiers:\*\* a pilot loses \*\*25%\*\*/);
     assert.deepEqual(both(), [25, 25]);
   });
 
   it('says nothing lost for one tier and all of it for the other', async () => {
-    const t = text(await run({ mode: 'on', 'tier2-loss': 0, 'tier3-loss': 100 }));
-    assert.match(t, /a pilot loses \*\*nothing\*\* of the \$2,000 minimum pay after a Tier 2 landing/);
-    assert.match(t, /a pilot loses \*\*all\*\* of the \$2,000 minimum pay after a Tier 3 landing\. There is no minimum/);
+    const t = text(await run({ mode: 'on', 'tier1-loss': 0, 'tier2-loss': 100 }));
+    assert.match(t, /a pilot loses \*\*nothing\*\* of the \$2,000 minimum pay after a Tier 1 landing/);
+    assert.match(t, /a pilot loses \*\*all\*\* of the \$2,000 minimum pay after a Tier 2 landing\. There is no minimum/);
   });
 
   it('refuses one percentage for both tiers given together with one for a tier, or a tier percentage out of range', async () => {
-    await assert.rejects(run({ mode: 'on', 'minimum-loss': 10, 'tier2-loss': 20 }), /`minimum-loss` \(one percentage for both tiers\) or `tier2-loss` and `tier3-loss` \(one for each\), not both/);
-    await assert.rejects(run({ 'minimum-loss': 10, 'tier3-loss': 20 }), /not both/);
-    await assert.rejects(run({ mode: 'on', 'tier2-loss': 101, 'tier3-loss': 5 }), /whole numbers of per cent, from 0 to 100/);
-    await assert.rejects(run({ mode: 'on', 'tier2-loss': 5, 'tier3-loss': -1 }), /whole numbers of per cent, from 0 to 100/);
+    await assert.rejects(run({ mode: 'on', 'minimum-loss': 10, 'tier1-loss': 20 }), /`minimum-loss` \(one percentage for both tiers\) or `tier1-loss` and `tier2-loss` \(one for each\), not both/);
+    await assert.rejects(run({ 'minimum-loss': 10, 'tier2-loss': 20 }), /not both/);
+    await assert.rejects(run({ mode: 'on', 'tier1-loss': 101, 'tier2-loss': 5 }), /whole numbers of per cent, from 0 to 100/);
+    await assert.rejects(run({ mode: 'on', 'tier1-loss': 5, 'tier2-loss': -1 }), /whole numbers of per cent, from 0 to 100/);
     assert.equal(panel().safetyPaySince, null);
   });
 
   it('needs both tiers to turn it on with a percentage for each, and changes nothing until it has them', async () => {
-    const t = text(await run({ mode: 'on', 'tier2-loss': 10 }));
-    assert.match(t, /I need both: give `tier2-loss` and `tier3-loss`, or `minimum-loss` for both tiers at once/);
+    const t = text(await run({ mode: 'on', 'tier1-loss': 10 }));
+    assert.match(t, /I need both: give `tier1-loss` and `tier2-loss`, or `minimum-loss` for both tiers at once/);
     assert.equal(panel().safetyPaySince, null);
-    assert.match(text(await run({ mode: 'on', 'tier3-loss': 10 })), /I need both/);
+    assert.match(text(await run({ mode: 'on', 'tier2-loss': 10 })), /I need both/);
     assert.equal(panel().safetyPaySince, null);
   });
 
   it('changes one tier on its own while it is on, leaving the other and the day it started', async () => {
-    await run({ mode: 'on', 'tier2-loss': 10, 'tier3-loss': 40 });
+    await run({ mode: 'on', 'tier1-loss': 10, 'tier2-loss': 40 });
     h.clock.advance(DAY);
-    assert.match(text(await run({ 'tier3-loss': 60 })), /^Done\. /);
+    assert.match(text(await run({ 'tier2-loss': 60 })), /^Done\. /);
     assert.deepEqual([panel().safetyPaySince, ...both()], [NOW, 10, 60]);
-    assert.match(text(await run({ 'tier2-loss': 5 })), /^Done\. /);
+    assert.match(text(await run({ 'tier1-loss': 5 })), /^Done\. /);
     assert.deepEqual(both(), [5, 60]);
-    assert.match(text(await run({ 'tier2-loss': 5 })), /^That is how it already is\. /);
-    assert.match(text(await run({ mode: 'on', 'tier3-loss': 20 })), /^Done\. It was already on; the percentages are changed\. /);
+    assert.match(text(await run({ 'tier1-loss': 5 })), /^That is how it already is\. /);
+    assert.match(text(await run({ mode: 'on', 'tier2-loss': 20 })), /^Done\. It was already on; the percentages are changed\. /);
     assert.deepEqual(both(), [5, 20]);
-    assert.match(text(await run({ mode: 'on', 'tier3-loss': 20 })), /^It is already on\. /);
+    assert.match(text(await run({ mode: 'on', 'tier2-loss': 20 })), /^It is already on\. /);
   });
 
   it('puts both tiers back to one percentage with minimum-loss, whatever they were', async () => {
-    await run({ mode: 'on', 'tier2-loss': 10, 'tier3-loss': 40 });
+    await run({ mode: 'on', 'tier1-loss': 10, 'tier2-loss': 40 });
     assert.match(text(await run({ 'minimum-loss': 30 })), /\*\*The minimum, the same for both tiers:\*\*/);
     assert.deepEqual(both(), [30, 30]);
   });
 
   it('saves a percentage for each tier given while it is off, and a tier on its own, and uses them when it is turned on', async () => {
-    assert.match(text(await run({ 'tier3-loss': 40 })), /^Saved\. Safety pay is still off, and will use this when you turn it on\./);
+    assert.match(text(await run({ 'tier2-loss': 40 })), /^Saved\. Safety pay is still off, and will use this when you turn it on\./);
     assert.deepEqual([panel().safetyPaySince, ...both()], [null, 0, 40]);
-    await run({ 'tier2-loss': 10 });
+    await run({ 'tier1-loss': 10 });
     assert.deepEqual(both(), [10, 40]);
-    await run({ mode: 'on', 'tier2-loss': 10, 'tier3-loss': 40 });
+    await run({ mode: 'on', 'tier1-loss': 10, 'tier2-loss': 40 });
     assert.deepEqual([panel().safetyPaySince, ...both()], [NOW, 10, 40]);
   });
 
@@ -450,7 +559,7 @@ describe('/setup safety-pay', () => {
       assert.equal(panel().safetyPaySince, null, 'the question has not been answered yet');
       const given = text(await run({ mode: 'on', 'minimum-loss': 25, deductions: 'on' }));
       assert.match(given, /^Deductions were already being written in the sheet\. Done\. Landing safety pay is \*\*on\*\*/);
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2], [NOW, 25]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1], [NOW, 25]);
     });
 
     it('is asked of admins only, like the rest of /setup', async () => {
@@ -540,7 +649,7 @@ describe('/setup safety-pay', () => {
 
     it('turn it on with the percentage pressed, and say what it does', async () => {
       const calls = await press('25');
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 25, 25]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 25, 25]);
       assert.match(String(calls.updates[0].content), /^Done\. Landing safety pay is \*\*on\*\*/);
       assert.match(String(calls.updates[0].content), /loses \*\*25%\*\*/);
       assert.deepEqual(calls.updates[0].components, [], 'the buttons are gone');
@@ -548,17 +657,17 @@ describe('/setup safety-pay', () => {
 
     it('turn it on with nothing lost, and with all of it lost', async () => {
       await press('0');
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 0, 0]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 0, 0]);
       h.store.updatePanel(pid(), { safetyPaySince: null });
       await press('100');
-      assert.deepEqual([panel().safetyLossTier2, panel().safetyLossTier3], [100, 100]);
+      assert.deepEqual([panel().safetyLossTier1, panel().safetyLossTier2], [100, 100]);
     });
 
     it('change only the percentage when it is already on', async () => {
       await run({ mode: 'on', 'minimum-loss': 0 });
       h.clock.advance(DAY);
       await press('50');
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 50, 50]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 50, 50]);
     });
 
     it('do nothing on Cancel', async () => {
@@ -596,28 +705,28 @@ describe('/setup safety-pay', () => {
     const idsOf = (calls: { updates: any[] }) => (calls.updates[0].components as any[]).flatMap((r) => r.toJSON().components).map((b: any) => b.custom_id);
     const labelsOf = (calls: { updates: any[] }) => (calls.updates[0].components as any[]).flatMap((r) => r.toJSON().components).map((b: any) => b.label);
 
-    it('ask about Tier 2 first, with nothing changed yet', async () => {
+    it('ask about Tier 1 first, with nothing changed yet', async () => {
       const calls = await press('split');
       const t = String(calls.updates[0].content);
-      assert.match(t, /: Tier 2\*\* \(landing at -400 to -599 fpm\)\./);
-      assert.match(t, /What percentage of the \*\*\$2,000 minimum pay\*\* should a pilot lose after a Tier 2 landing\?/);
-      assert.match(t, /Next I will ask about Tier 3\./);
+      assert.match(t, /: Tier 1\*\* \(a landing from -400 fpm, by the airline's default limits\)\./);
+      assert.match(t, /What percentage of the \*\*\$2,000 minimum pay\*\* should a pilot lose after a Tier 1 landing\?/);
+      assert.match(t, /Next I will ask about Tier 2\./);
       assert.deepEqual(idsOf(calls), [`safety:a0:${pid()}`, `safety:a25:${pid()}`, `safety:a50:${pid()}`, `safety:a100:${pid()}`, `safety:cancel:${pid()}`]);
       assert.deepEqual(labelsOf(calls), ['Lose nothing (0%)', 'Lose 25%', 'Lose 50%', 'Lose all (100%)', 'Cancel']);
       assert.equal(panel().safetyPaySince, null);
     });
 
-    it('then ask about Tier 3, carrying the answer for Tier 2, still with nothing changed', async () => {
+    it('then ask about Tier 2, carrying the answer for Tier 1, still with nothing changed', async () => {
       const calls = await press('a10');
       const t = String(calls.updates[0].content);
-      assert.match(t, /: Tier 3\*\* \(landing at -600 fpm and harder\)\. Tier 2 will lose \*\*10%\*\*\./);
+      assert.match(t, /: Tier 2\*\* \(a landing from -600 fpm, by the airline's default limits\)\. Tier 1 will lose \*\*10%\*\*\./);
       assert.deepEqual(idsOf(calls), [`safety:b0-10:${pid()}`, `safety:b25-10:${pid()}`, `safety:b50-10:${pid()}`, `safety:b100-10:${pid()}`, `safety:cancel:${pid()}`]);
       assert.equal(panel().safetyPaySince, null);
     });
 
-    it('turn it on with the percentage for each tier when Tier 3 is answered, and say it is set for each tier', async () => {
+    it('turn it on with the percentage for each tier when Tier 2 is answered, and say it is set for each tier', async () => {
       const calls = await press('b50-10');
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 10, 50]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 10, 50]);
       assert.match(String(calls.updates[0].content), /^Done\. Landing safety pay is \*\*on\*\*/);
       assert.match(String(calls.updates[0].content), /\*\*The minimum, set for each tier:\*\*/);
       assert.deepEqual(calls.updates[0].components, []);
@@ -627,7 +736,7 @@ describe('/setup safety-pay', () => {
       await run({ mode: 'on', 'minimum-loss': 0 });
       h.clock.advance(DAY);
       await press('b100-25');
-      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier2, panel().safetyLossTier3], [NOW, 25, 100]);
+      assert.deepEqual([panel().safetyPaySince, panel().safetyLossTier1, panel().safetyLossTier2], [NOW, 25, 100]);
     });
 
     it('can be cancelled at either step', async () => {
@@ -685,14 +794,14 @@ describe('the safety pay settings in the database', () => {
   it('is off, with nothing lost in either tier, for a new panel, and each percentage is kept between 0 and 100', async () => {
     const h = await makeHarness();
     try {
-      assert.deepEqual([h.panel.safetyPaySince, h.panel.safetyLossTier2, h.panel.safetyLossTier3], [null, 0, 0]);
+      assert.deepEqual([h.panel.safetyPaySince, h.panel.safetyLossTier1, h.panel.safetyLossTier2], [null, 0, 0]);
       const get = () => h.store.getPanel(h.panel.id)!;
-      h.store.updatePanel(h.panel.id, { safetyPaySince: 12345, safetyLossTier2: 10, safetyLossTier3: 40 });
-      assert.deepEqual([get().safetyPaySince, get().safetyLossTier2, get().safetyLossTier3], [12345, 10, 40]);
-      h.store.updatePanel(h.panel.id, { safetyLossTier3: 250 });
-      assert.deepEqual([get().safetyLossTier2, get().safetyLossTier3], [10, 100], 'one tier can be changed on its own');
-      h.store.updatePanel(h.panel.id, { safetyLossTier2: -3 });
-      assert.deepEqual([get().safetyLossTier2, get().safetyLossTier3], [0, 100]);
+      h.store.updatePanel(h.panel.id, { safetyPaySince: 12345, safetyLossTier1: 10, safetyLossTier2: 40 });
+      assert.deepEqual([get().safetyPaySince, get().safetyLossTier1, get().safetyLossTier2], [12345, 10, 40]);
+      h.store.updatePanel(h.panel.id, { safetyLossTier2: 250 });
+      assert.deepEqual([get().safetyLossTier1, get().safetyLossTier2], [10, 100], 'one tier can be changed on its own');
+      h.store.updatePanel(h.panel.id, { safetyLossTier1: -3 });
+      assert.deepEqual([get().safetyLossTier1, get().safetyLossTier2], [0, 100]);
       h.store.updatePanel(h.panel.id, { safetyPaySince: null });
       assert.equal(get().safetyPaySince, null);
     } finally {

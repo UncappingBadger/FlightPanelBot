@@ -8,6 +8,18 @@
  */
 export const PAYROLL_OFF_FLAG = 'FPB_DISABLE_PAYROLL';
 
+/**
+ * The full `/setup` command, with every part of it (adding panels, the sheet, FsHub, reminders, pay, the boards...), is not registered with Discord by default: those are tabs on the
+ * host's settings page, and `/setup` has only `settings`, `refresh` and `id-add`. A bot that runs without the host app (the demo, or `npm start` while developing) has no settings
+ * page, so it can set this variable to `1` to have the full command in Discord instead.
+ */
+export const FULL_SETUP_FLAG = 'FPB_FULL_SETUP';
+
+/** Is the full `/setup` command registered? Only when the variable is `1`, `true`, `yes` or `on`. */
+export function fullSetupCommand(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(?:1|true|yes|on)$/i.test((env[FULL_SETUP_FLAG] ?? '').trim());
+}
+
 /** Is paying pilots available? Yes, unless the variable is `1`, `true`, `yes` or `on`. */
 export function payrollEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return !/^(?:1|true|yes|on)$/i.test((env[PAYROLL_OFF_FLAG] ?? '').trim());

@@ -12,12 +12,12 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
 
 1. A panel in the airline's channel lists the open flights, soonest deadline first. It shows the flights that are
    open now or start within the **next 7 days** (the server admin can set that to anything from 1 to 7 days per
-   panel with `/setup window`): a schedule often runs for weeks, and all of it would bury the flights that can be
+   panel with the **Days shown** tab): a schedule often runs for weeks, and all of it would bury the flights that can be
    flown soon. A line at the end says how many are further off, and they appear on their own once they come within
    the period. (The period limits what a pilot can reach, not only what is drawn: a flight further off cannot be
    reserved, stood by for or searched for, and typing its ID does not get round that.) Below the open flights is a separate panel of the flights completed lately (see
    [below](#how-it-works-for-pilots)), so they never crowd the ones that need a pilot (the server admin can give them
-   a channel of their own with `/setup completed`). Each flight is its own **card**
+   a channel of their own with the **Completed flights** tab). Each flight is its own **card**
    (an embed with a coloured stripe: amber while a leg still needs a pilot, blue once every leg is taken, green once it
    has been flown), with the route in large type, labelled boxes and who has it, and a gap between cards so flights are
    easy to pick out. **You can tell at a glance whether a flight is open:** a flight that still needs a pilot wears a
@@ -88,8 +88,8 @@ By UncappingBadger. Unofficial: not affiliated with, endorsed by, or sponsored b
    level**: what a DM understands (`reserve`, `backup`, `flights`, `my contributions`, `metar`, `notifications`, `name`, `fshub`,
    `/banking`, `/monitor`, `cancel`), the commands anyone can use in a server, and, for each server you share with the bot,
    whether you are a member (and which airlines you may reserve for, naming the role one needs when you lack it), a **manager**
-   (a role the admins chose with `/setup refresh-roles`: `/setup refresh` and `/setup id-add`) or a **server admin** (Manage Server:
-   every `/setup` command, each with what it does). The list is read from the commands themselves, so it cannot fall behind them;
+   (a role the admins chose with the **Staff roles** tab: `/setup refresh` and `/setup id-add`) or a **server admin** (Manage Server:
+   the three `/setup` commands that are in Discord, each with what it does). The list is read from the commands themselves, so it cannot fall behind them;
    a long one comes as several messages, and in a server it is shown only to you. `help` works in a DM too.
 
 ### A flight number flown on more than one day
@@ -121,7 +121,7 @@ Press a day below, or reply with the date (like 21 Nov) or the full ID. Days are
 - **Several IDs in one message** (`SKY329, SKY216`): the bot reserves the ones that are one flight, says that `SKY216` is flown on more
   than one day (naming the IDs) and keeps the conversation open, so sending `SKY216` on its own asks the question.
 - **`/eta flight:SKY216`** names the days (`SKY216-21NOV`, ...) instead of saying it does not know the flight, and an admin's
-  **`/setup release code:SKY216`** must say which day, and is told the choices (it never frees the wrong day).
+  **the **Release a flight** tab** must say which day, and is told the choices (it never frees the wrong day).
 - **A flight whose ID lost its day** (the other days left the schedule, so `SKY216-21NOV` became `SKY216`) is still found by the dated ID
   it had, while that is the day it opens.
 
@@ -165,7 +165,7 @@ legs matches when it leaves from the first airport and later arrives at the seco
 The **date** finds the flights you could fly on that day. Type `today`, `tomorrow`, a weekday (`sat`), `14 Nov`, `14/11`
 (day first) or `2026-11-14`. Dates are **Zulu (UTC)**, the same as the flight times, so a flight counts for a day if it is
 open at some point between 00:00 and 24:00 Zulu that day. A date on its own shows everything that can be flown that day.
-**A search only looks as far ahead as the panel does**: the days your admin chose with `/setup window`, so it never finds
+**A search only looks as far ahead as the panel does**: the days your admin chose with the **Days shown** tab, so it never finds
 flights the panel doesn't list, and a date further ahead than that is turned down with the last day it can search. It shows
 the first eight matches and asks you to narrow it down if there are more.
 
@@ -197,7 +197,7 @@ column, which the managers fill in (a loss counts as a loss). Each flight is lis
 **A flight you completed that has no profit entered yet** isn't left out silently: the bot names it by ID, and the total is
 marked as only what it can see so far, so it changes once the managers enter the rest. Your name in the sheet is the one
 you gave with `name <your name>`, otherwise your Discord name, so if the sheet has you under another name, send `name` first.
-It only answers for airlines in servers you are in, and needs the airline's sheet to be linked (`/setup sheet`) and to have
+It only answers for airlines in servers you are in, and needs the airline's sheet to be linked (the **Google Sheet** tab) and to have
 a *Profit Made* column.
 
 If a flight is removed, its route changes, or an admin frees it, the people affected get a DM.
@@ -258,8 +258,8 @@ So the list comes from a swappable **job source** (`src/jobs/types.ts`):
 
 | Source | When | Refresh |
 |---|---|---|
-| **Google Sheet**: link the schedule sheet your airline already keeps, with `/setup sheet` | real use today, if the airline coordinates flights in a sheet | every hour, automatically |
-| **File import**: an admin uploads a CSV or JSON of flights with `/setup import` | real use today | each time you import |
+| **Google Sheet**: link the schedule sheet your airline already keeps, with the **Google Sheet** tab | real use today, if the airline coordinates flights in a sheet | every hour, automatically |
+| **File import**: an admin uploads a CSV or JSON of flights with the **Import flights** tab | real use today | each time you import |
 | **Demo**: fictional flights | `npm run demo` | every 24 hours, automatically |
 | **Aeroconomy feed** | only if FsHub provides an API | every 24 hours (the scheduler and refresher are already built; only the source is missing) |
 
@@ -275,11 +275,10 @@ file that carries the bot and the Node.js it needs, so the host installs nothing
 1. Double-click it. (Windows may warn that the program is unsigned: **More info**, then **Run anyway**.)
 2. A tray icon appears near the clock and the setup page opens in the browser. The host creates **their own
    Discord bot** (a bot token belongs to one bot, so tokens are never shared), pastes its token, and presses
-   **Add the bot to a server**. The bot gives itself its slash commands in each server it joins, so `/setup`
-   works at once. There is no `.env` file and no script to run. (A FsHub token can be added on the same page,
+   **Add the bot to a server**. The bot gives itself its slash commands in each server it joins, so `/setup settings`, `/setup refresh` and `/setup id-add` work at once. The airline itself is set up on the settings page, in its tabs. There is no `.env` file and no script to run. (A FsHub token can be added on the same page,
    but only if you want the [FsHub features](#fshub-optional); nothing needs one.)
 3. The icon's colour shows the state (green online, amber starting or needs setup, red needs attention). The
-   menu opens the setup page, copies the invite link, opens the **User manual**, shows the log and data folder,
+   menu opens the settings page (every setting is a tab there: see the *Admin guide* and *Landing safety and pay* below), copies the invite link, opens the **User manual**, shows the log and data folder,
    restarts the bot, switches **Start with Windows** on or off, and quits.
 
 Settings, the database and logs live in `%APPDATA%\FlightPanelBot`. The setup page listens on this computer
@@ -348,42 +347,52 @@ You need Node.js 22.13 or newer.
 
 ## Admin guide
 
-Only people with **Manage Server** can use `/setup`. **Naming the airline is an admin-only action**; pilots
-never do it. Because the bot runs in your own server, Discord's Manage Server permission is the only gate: the
-bot does not check anyone against an airline roster (the optional [FsHub connection](#fshub-optional) only
-matches pilots to their IDs; it never decides who may use the bot).
+**Everything about an airline is set up on the bot's settings page**, not in Discord. It is on the computer that runs the bot
+(right-click the tray icon, **Open settings**), so it is for whoever runs the bot, usually the server owner. It listens on that computer
+only, and a key that only the tray program knows is needed to open it. **Naming the airline is an admin-only action**; pilots never do it.
+In Discord, the only gate for what is left of `/setup` is the Manage Server permission: the bot does not check anyone against an airline roster
+(the optional [FsHub connection](#fshub-optional) only matches pilots to their IDs; it never decides who may use the bot).
 
-| Command | What it does |
+Each thing that used to be a `/setup` subcommand is **a tab of its own** on that page (24 of them, listed below in groups). Pick the **server** and the **airline** at the top
+of the page; a tab says in words which of the two it applies to (and the tab says so again under its title). A tab's form is made from the command's own options, so the boxes,
+their choices and their limits are exactly the command's. **Every box says what leaving it empty means** (usually "no change", but for example an empty role on *Who can reserve*
+opens the panel to everyone, and a channel alone on the *Market board* tab turns the board on), and a tab whose button does something when everything is empty says so on the button.
+A tab that shows how things stand reads it when you open it, without changing anything. What the bot answers is shown under the button, headed by whether it accepted the change.
+Anything that cannot be undone asks first. Two things stay in Discord as well, because the people trusted with them need not reach the host's computer: **`/setup refresh`** and
+**`/setup id-add`** (which members with a role chosen in the *Staff roles* tab can use), and **`/setup settings`** says where the rest is. A bot that runs without the host app
+(the demo, or `npm start` while developing) has no settings page; setting the environment variable `FPB_FULL_SETUP=1` gives it the full `/setup` command in Discord instead. In the table below and in the rest of this guide, a setting written like `mode:off` or `role` means the box of that name in the tab, set to Off or filled in: the guide kept the commands' words for them, and the page puts a clearer name on each box.
+
+| Tab on the settings page | What it does |
 |---|---|
-| `/setup panel-add airline channel [prefix] [role]` | Name the airline (just type it, 2 to 60 characters, no `@`) and post its panel in a channel. Flight IDs look like `DMO-001`; the prefix is made from the name (initials) unless you set one. Optionally require a role to reserve. Typing a name already used here (any capitals) updates that panel instead of adding another; a server can host several airlines. |
-| `/setup market [mode] [channel]` | Show the AeroDAQ in-game market in a channel, kept up to date (see [below](#aerodaq-fuel-prices-and-the-market)). With nothing given it says how things stand. |
-| `/setup weather [mode] [channel] [airports]` | Keep a weather board in a channel: a grid of buttons, one per airport (just its code, with a dot for how its weather rates), for the airports you choose (default KBOS KMIA SKBO EGLL) and then the airports of the flights in the next 24 hours; pressing one shows its METAR to that person only, and a **Search airport** button finds any other (see [below](#the-weather-board)). With nothing given it says how things stand. |
-| `/setup fshub [link] [confirm] [autocomplete] [airline]` | Link a panel to your airline's FsHub roster so pilots are matched to their pilot IDs without being asked, and completed flights show the aircraft FsHub recorded (needs a [FsHub token](#fshub-optional)). `link` is the airline's short name (e.g. `SKY`), its FsHub number or a link to its page; `link:none` stops. `confirm:off` stops reading the airline's flights, which also returns **Complete** to the pilot-picks mode. `autocomplete:off` stops the [hourly automatic completion](#completing-automatically-every-hour) (on by default); `autocomplete:on` turns it back on and checks now. With no options it reads the roster and flights now and runs the check. |
-| `/setup panel-role [role] [airline]` | Change which role can reserve on a panel. Leave the role empty to open it to everyone. |
-| `/setup sheet link [airline]` | Read the panel's flights from your airline's Google Sheet schedule, every hour. `link:none` stops. |
-| `/setup writeback [mode] [airline]` | Check, or switch on or off, writing pilots' names and completions to the panel's sheet (needs the [write-back setup](docs/WRITEBACK_SETUP.md)). |
-| `/setup import file [airline]` | Replace the panel's flights from a CSV or JSON file. (Not available while a sheet is linked.) |
-| `/setup template` | Download an example flights file (itself a valid import). |
-| `/setup release code [leg] [airline]` | Free someone's reservation on a flight (they're told). |
-| `/setup panels` | List panels with open flights and how many legs are reserved. |
-| `/setup reminders [mode] [role] [cleanup] [airline]` | Choose who is pinged by the midnight (UTC) list of the day's flights that have no pilot. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each list at 23:59 UTC; `off` leaves them in the channel. With no options it shows the current setting. |
-| `/setup window [days] [airline]` | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. `/setup panels` shows it too. |
-| `/setup depart-warning [minutes] [mode] [airline]` | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
-| `/setup live-tracking [mode] [airline]` | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
-| `/setup safety-pay [mode] [minimum-loss] [tier2-loss] [tier3-loss] [deductions] [airline]` | Link the **pilot's pay to landing safety** (see *Landing safety and pay* below): a landing at -400 to -599 fpm pays the pilot only **8%** of the flight's profit, one at -600 or harder only **5%**, and a pilot landing at -375 to -399 is sent a warning with no fine. Off by default. `mode:on` asks you one question first: **what percentage of the $2,000 minimum pay does a pilot lose** after a hard landing? The same for both tiers (buttons for **0%**, **25%**, **50%** and **100%**, or `minimum-loss:15`), or different for each tier (the **Different for each tier** button asks about Tier 2, then Tier 3, or give `tier2-loss:10 tier3-loss:40`); `mode:off` switches it off, and the same options on their own change the answers while it is on. It only affects flights that land **after** you turn it on. When a pilot lands at Tier 2 or 3 your managers are sent a report by DM and a row is added to `hard-landings.csv` in the data folder; a flight whose landing rate can't be trusted is left out of `/setup profit` and your managers are told. `deductions:on` also writes **what each cut took off** into the sheet's **Safety Deductions** column (see *Landing safety and pay*); off by default. Needs the bot's FsHub token and the panel linked to its airline's FsHub roster (`/setup fshub`). With no options it shows the setting. |
-| `/setup flight-numbers [mode] [airline]` | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (`/setup fshub`). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. Where the bot writes to the sheet and the sheet has a *Flight Number* column, it also writes each flight's number into the column's empty cells. |
-| `/setup profit [action] [send-to] [channel] [who-can-write] [role] [airline] [business]` | Compare what Aeroconomy says each flight **made** (its aircraft logbooks) with the sheet's **Profit Made** column. By default it only **reports** (what agrees, what differs, what is blank) and changes nothing. `action:fill` shows the blank cells it would fill in and writes them only after someone presses **Write** on that preview. `action:deductions` does the same for the **Safety Deductions** missing from flights already filled in (see *Landing safety and pay*). `send-to` chooses where that preview appears (only to you in the reply, your DMs, or a channel) and `who-can-write` / `role` lets the members of a role press **Write** too; `action:settings` shows what is set. Needs the bot's FsHub token, the panel linked to FsHub, and (to write) write-back on. Admins only. |
-| `/setup layout [mode] [dates] [airline]` | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
+| **Add or change a panel** tab | Name the airline (just type it, 2 to 60 characters, no `@`) and post its panel in a channel. Flight IDs look like `DMO-001`; the prefix is made from the name (initials) unless you set one. Optionally require a role to reserve. Typing a name already used here (any capitals) updates that panel instead of adding another; a server can host several airlines. |
+| **Market board** tab | Show the AeroDAQ in-game market in a channel, kept up to date (see [below](#aerodaq-fuel-prices-and-the-market)). With nothing given it says how things stand. |
+| **Weather board** tab | Keep a weather board in a channel: a grid of buttons, one per airport (just its code, with a dot for how its weather rates), for the airports you choose (default KBOS KMIA SKBO EGLL) and then the airports of the flights in the next 24 hours; pressing one shows its METAR to that person only, and a **Search airport** button finds any other (see [below](#the-weather-board)). With nothing given it says how things stand. |
+| **FsHub roster** tab | Link a panel to your airline's FsHub roster so pilots are matched to their pilot IDs without being asked, and completed flights show the aircraft FsHub recorded (needs a [FsHub token](#fshub-optional)). `link` is the airline's short name (e.g. `SKY`), its FsHub number or a link to its page; `link:none` stops. `confirm:off` stops reading the airline's flights, which also returns **Complete** to the pilot-picks mode. `autocomplete:off` stops the [hourly automatic completion](#completing-automatically-every-hour) (on by default); `autocomplete:on` turns it back on and checks now. With no options it reads the roster and flights now and runs the check. |
+| **Who can reserve** tab | Change which role can reserve on a panel. Leave the role empty to open it to everyone. |
+| **Google Sheet** tab | Read the panel's flights from your airline's Google Sheet schedule, every hour. `link:none` stops. |
+| **Sheet write-back** tab | Check, or switch on or off, writing pilots' names and completions to the panel's sheet (needs the [write-back setup](docs/WRITEBACK_SETUP.md)). |
+| **Import flights** tab | Replace the panel's flights from a CSV or JSON file. (Not available while a sheet is linked.) |
+| **Example file** tab | Download an example flights file (itself a valid import). |
+| **Release a flight** tab | Free someone's reservation on a flight (they're told). |
+| **All panels** tab | List panels with open flights and how many legs are reserved. |
+| **Reminders** tab | Choose who is pinged by the midnight (UTC) list of the day's flights that have no pilot. **Auto** (the default) pings the role that can reserve, or @here if anyone can; or pick a role; or turn it off. `cleanup` (on by default) deletes each list at 23:59 UTC; `off` leaves them in the channel. With no options it shows the current setting. |
+| **Days shown** tab | Choose how many days ahead the panel lists flights, from **1 to 7** (a new panel shows 7). The panel lists the flights that are open now or start within that many days; later ones are counted in a line at the end and appear once they come within the period. Pilots can still reserve a flight that is left off by typing its ID. With no `days` it shows the current setting and how many flights are left off. the **All panels** tab shows it too. |
+| **Departure warning** tab | Warn the pilot of a flight, and its backup, by private message shortly before the **latest take-off that still lands inside the flight's window** (see *Late-departure warnings* below). `minutes` (5 to 180, default **30**) is how long before; `mode:off` switches it off and `mode:on` back on. With no options it shows the setting. |
+| **Live tracking** tab | Follow your pilots' flights **live** with FsHub's public live feed: a late-departure warning skips a pilot already in the air, and a flight is looked for in FsHub's own record the minute its pilot lands (and completed only when FsHub shows it flown). On by default; `mode:off` switches it off, `mode:on` back on. With no options it shows the setting. See *Live tracking* below. |
+| **Landing safety** tab | Link the **pilot's pay to landing safety** (see *Landing safety and pay* below): a landing past an aircraft's **Tier 1** limit pays the pilot only the airline's **Tier 1 share** of the flight's profit (8% to start with), and one past its **Tier 2** limit the **Tier 2 share** (5%), and a pilot is sent a warning from the **warning** limit. The tab has its own page: a checkbox to turn it on, the default limits, the two shares (0 to 100), what a pilot loses of the $2,000 minimum after each tier (0 to 100), the sheet deductions, and a table of the airline's aircraft with limits for each type. It has two buttons, one for the settings above the table and one for the aircraft. |
+| **Flight numbers** tab | Take **Aeroconomy's own flight numbers** as the flights' IDs, for a flight whose sheet row has none (read from Aeroconomy's public contracts, no account or token). The panel must be linked to its airline's FsHub roster (the **FsHub roster** tab). Off by default, because it changes the IDs people know; `mode:on` turns it on and `mode:off` off. With no options it shows the setting and how many open flights have a number. Where the bot writes to the sheet and the sheet has a *Flight Number* column, it also writes each flight's number into the column's empty cells. |
+| **Profit and pay** tab | Compare what Aeroconomy says each flight **made** (its aircraft logbooks) with the sheet's **Profit Made** column. By default it only **reports** (what agrees, what differs, what is blank) and changes nothing. `action:fill` shows the blank cells it would fill in and writes them only after someone presses **Write** on that preview. `action:deductions` does the same for the **Safety Deductions** missing from flights already filled in (see *Landing safety and pay*). `send-to` chooses where that preview appears (only to you in the reply, your DMs, or a channel) and `who-can-write` / `role` lets the members of a role press **Write** too; `action:settings` shows what is set. Needs the bot's FsHub token, the panel linked to FsHub, and (to write) write-back on. Admins only. |
+| **Layout** tab | Choose how the panel looks: `cards` (a card for each flight, the **default**) or `grid` (a button for each flight, with Collapse and Expand buttons; much less scrolling), and, for the grid, whether its short dates are `dmy` (day first, 16/11/26, the default) or `mdy` (month first, 11/16/26). The panel is redrawn at once. With no options it shows the setting. See *The grid layout* below. |
 | `/payroll settings [enabled] [source-account] [pilot-info] [start-from] [at] [airline]` | **Paying pilots** (see *Paying pilots* below). Shows how it is set up, or changes it: the airline's account the pay comes out of (`source-account`), the link of the sheet's **Pilot Info** tab (`pilot-info`), the first flight day to pay (`start-from`), the time of day (Zulu) the daily list is made (`at`) and whether it is made every day (`enabled`). Changing it pays nothing. |
 | `/payroll run [airline]` | Make the list of what is due **now** and send it to be checked. Nothing is paid until someone presses **Pay**. |
 | `/payroll history [airline]` | The latest payments the bot has made or tried, and what became of each. |
 | `/payroll accounts [airline]` | The Aeroconomy bank accounts the bot's FsHub token can see, with their numbers (to find the `source-account`, or for a test transfer). |
 | `/payroll test-transfer from to [amount] [airline]` | Send a **small test payment** (a dollar unless you say, ten at most) between two accounts the bot can see, to prove paying works before any pilot is paid. It shows what it would send and sends nothing until you press **Send**. |
-| `/setup completed [channel] [mode] [airline]` | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; `/setup panels` shows it too. A pilot's List view leaves them out. |
-| `/setup refresh [airline]` | Re-fetch from an automatic source and redraw. **The first refresh after the bot is upgraded sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. Discord allows only a few edits a second, so that takes ten seconds and more on a long panel; every refresh after it (until the next upgrade) edits only the messages that changed, and puts back any that were deleted, which takes a moment. The bot also redraws every panel each time it starts. |
-| `/setup refresh-roles [role] [mode]` | Let members with a role run **`/setup refresh` and `/setup id-add`, and nothing else from `/setup`** (every other subcommand stays admin-only, and so does this one). `role` adds it (`mode:add` is the default); `mode:remove` with a `role` takes it off; `mode:clear` takes every role off; with no options it lists them. Up to 10 roles per server, and not @everyone. **Discord also has to let those members see `/setup`**: in Server Settings, Integrations, choose the bot, then `/setup`, and add the role there (a bot cannot do that part itself). |
-| `/setup id-add user id` | Set a pilot's **FsHub pilot ID** in the bot by hand, to fix a wrong one. `id` is the number from their profile address (fshub.io/pilot/**1234**/overview) or a link to their profile. With a FsHub token the bot checks the number exists and shows the name FsHub has for it; it refuses an ID FsHub has no pilot for, and one the airline's FsHub roster gives to a different Discord account (flights could not be completed with it). It replaces whatever was saved (and says what that was), it is not overwritten by later roster reads, the panels showing that pilot are redrawn, and the pilot is told in a DM. Admins, and members with a role from `/setup refresh-roles`, can use it. |
-| `/setup panel-remove airline` | Delete a panel with its flights and reservations. |
+| **Completed flights** tab | Show the **completed flights in a channel of their own**, so the panel lists only the flights that can still be flown (the default is to show them below the open flights, in the same channel). Give a `channel` to move them there: the bot needs to view, write, embed links and read history in it, and the completed flights stay up for 24 hours after they are done, as before. Moving them to another channel deletes the old messages; `mode:panel` puts them back below the open flights. With no options it shows the current setting; the **All panels** tab shows it too. A pilot's List view leaves them out. |
+| **Refresh now** tab (also `/setup refresh` in Discord) | Re-fetch from an automatic source and redraw. **The first refresh after the bot is upgraded sends every panel message again**, even for a panel with no sheet (file imports), so a panel posted by an older version of the bot picks up whatever is new (new buttons, a new look) with no need to remove and re-add it. Discord allows only a few edits a second, so that takes ten seconds and more on a long panel; every refresh after it (until the next upgrade) edits only the messages that changed, and puts back any that were deleted, which takes a moment. The bot also redraws every panel each time it starts. |
+| **Staff roles** tab | Let members with a role run **`/setup refresh` and `/setup id-add`, and nothing else** (everything else is for whoever runs the bot, on the settings page, and so is this tab). Choosing a **Role** adds it (the mode **Add the role** is the default); **Remove the role** with a role takes it off; **Clear every role** takes every role off; with both boxes empty nothing changes and the tab lists them. Up to 10 roles per server, and not @everyone. **Discord also has to let those members see the settings page**: in Server Settings, Integrations, choose the bot, then the settings page, and add the role there (a bot cannot do that part itself). |
+| **Pilot FsHub ID** tab (also `/setup id-add` in Discord) | Set a pilot's **FsHub pilot ID** in the bot by hand, to fix a wrong one. `id` is the number from their profile address (fshub.io/pilot/**1234**/overview) or a link to their profile. With a FsHub token the bot checks the number exists and shows the name FsHub has for it; it refuses an ID FsHub has no pilot for, and one the airline's FsHub roster gives to a different Discord account (flights could not be completed with it). It replaces whatever was saved (and says what that was), it is not overwritten by later roster reads, the panels showing that pilot are redrawn, and the pilot is told in a DM. Admins, and members with a role from the **Staff roles** tab, can use it. |
+| **Remove a panel** tab | Delete a panel with its flights and reservations. |
 
 ### Upgrading from a version that used FsHub
 
@@ -401,10 +410,10 @@ read-only (it never sends anything to FsHub except requests for information, and
 1. **Checks the pilot IDs people type**, and learns the name FsHub has for each (`GET /pilot/{id}`), as described
    [above](#how-it-works-for-pilots).
 2. **Reads your airline's roster** (`GET /airline/{id}/pilot`) once an hour for each panel linked with
-   `/setup fshub`. FsHub's roster lists each pilot's Discord account when they have given it in their profile, so
-   those pilots are known without being asked. `/setup fshub link:SKY` links a panel (the name is looked up among
+   the **FsHub roster** tab. FsHub's roster lists each pilot's Discord account when they have given it in their profile, so
+   those pilots are known without being asked. the **FsHub roster** tab links a panel (the name is looked up among
    the airlines the token's own account belongs to; a number or a link to the airline's page also works) and
-   reports how many pilots it found and how many are matched. `/setup panels` shows the link and any warning.
+   reports how many pilots it found and how many are matched. the **All panels** tab shows the link and any warning.
 3. **Shows the aircraft that was flown, and completes flights from FsHub's record.** For a linked panel it also reads
    the airline's recent flights (`GET /airline/{id}/flight`, about every five minutes, and again when a pilot
    presses **Complete**). A flight shows up on FsHub about a minute after landing. See [below](#confirming-flights);
@@ -432,7 +441,7 @@ it.
 #### Completing from FsHub
 
 **The Complete button has two modes.** The bot is *working from FsHub* on a panel when it has a FsHub token, the panel
-is linked to the airline's FsHub (`/setup fshub`), and reading flights is on (`confirm:on`, the default). Then
+is linked to the airline's FsHub (the **FsHub roster** tab), and reading flights is on (`confirm:on`, the default). Then
 **Complete** is one press with nothing to pick:
 
 1. The bot brings the airline's FsHub flights up to date if they are more than half a minute old (so a landing from a
@@ -462,7 +471,7 @@ Things this deliberately does and doesn't do:
 - **If FsHub can't be read** (down, token refused) nothing is completed and the pilot is told to try again; it does not
   fall back to taking their word for it. **There is no manual completion on such a panel**: a flight FsHub never
   recorded (the pilot's FsHub client wasn't running) can't be completed with the button; a manager ticks it in the
-  sheet, or an admin switches the panel to the other mode with `/setup fshub confirm:off`.
+  sheet, or an admin switches the panel to the other mode with the **FsHub roster** tab.
 - **A flight completed this way is kept completed** even if the airline's sheet is never ticked, so a bot that can't
   write to the sheet (no service account) works too: it used to refuse Complete there, and a completion the pilot only
   claimed was undone by the next sheet read after ten minutes. The reply says the sheet still shows it as not done.
@@ -471,7 +480,7 @@ Things this deliberately does and doesn't do:
 **Without the link (the other mode)**, Complete is as it always was: the pilot picks the flights they flew, confirms,
 and the panel shows them as completed, with the bot writing the name and the *Flight Completed* tick into the airline's
 Google Sheet where write-back is set up. A sheet panel the bot can't write to still refuses, as before. This is also what
-you get with no FsHub token, an unlinked panel, or `/setup fshub confirm:off`.
+you get with no FsHub token, an unlinked panel, or the **FsHub roster** tab.
 
 #### Completing automatically, every hour
 
@@ -504,13 +513,13 @@ the name with, and whom FsHub shows flying every leg. It does not guess from Dis
   did not fly a flight it can't look up. A backup is followed live like a pilot, so this happens the minute they land.
 - **If FsHub can't be read** nothing is completed and the check is tried again in ten minutes rather than an hour.
 - **Pressing Complete still works** and is instant; the hourly check is for pilots who don't press it.
-- **An admin can switch it off** per panel: `/setup fshub autocomplete:off` (pilots can still press Complete, and
+- **An admin can switch it off** per panel: the **FsHub roster** tab (pilots can still press Complete, and
   completed flights still show what FsHub recorded); `autocomplete:on` turns it back on and checks straight away. It is
-  on by default for a panel working from FsHub, and the panel's instructions say so while it is. `/setup panels` shows
-  whether it is on and when it last checked. `/setup fshub` with no options also runs the check now and says what it found.
+  on by default for a panel working from FsHub, and the panel's instructions say so while it is. the **All panels** tab shows
+  whether it is on and when it last checked. the **FsHub roster** tab with no options also runs the check now and says what it found.
 - A flight completed this way is pinned like one completed with the button, so a sheet that is never ticked doesn't undo it.
 
-`/setup fshub confirm:off` stops the reading and deletes the flights the bot had kept; `confirm:on` starts it again.
+the **FsHub roster** tab stops the reading and deletes the flights the bot had kept; `confirm:on` starts it again.
 The kept flights (airline's pilots' FsHub ID and name, route, take-off and landing time, aircraft, schedule status)
 are forgotten a week after they land. The first read finds the last week by searching FsHub's list (about 20
 requests) and later reads ask for what is new (1 request); the bot reads a little further back each time because
@@ -530,7 +539,7 @@ database (on the host's own computer) so they can be recognised when they press 
 FsHub is kept.
 
 **If FsHub can't be reached** (down, token refused, busy) nothing stops working: typed IDs are accepted unchecked,
-the roster is tried again (after about ten minutes, then every hour), and `/setup panels` shows what went wrong.
+the roster is tried again (after about ten minutes, then every hour), and the **All panels** tab shows what went wrong.
 FsHub allows 100 requests per minute; the bot keeps itself to 40 and normally makes about a dozen an hour per
 linked panel.
 
@@ -548,10 +557,10 @@ about pilots, servers or airlines.
   code is checked before anything is asked (three or four letters or digits); an airport AeroDAQ doesn't know
   gets a plain message. Answers are remembered for five minutes and one person can ask every few seconds, so a
   busy channel can't flood AeroDAQ.
-- **`/setup market mode:on channel:#market`** (admins): posts the whole market as one message (a summary with the
+- **the **Market board** tab** (admins): posts the whole market as one message (a summary with the
   biggest gainers and losers, then a table per sector: symbol, name, price, change) and redraws it every 15
   minutes by editing it in place. If someone deletes it, the next refresh posts it again; if AeroDAQ is
-  unreachable the old board stays and `/setup market` says why. The table is squeezed to fit Discord's limits
+  unreachable the old board stays and the **Market board** tab says why. The table is squeezed to fit Discord's limits
   (company names first, then rows). `mode:off` removes it. One board per server. It needs the same four channel
   permissions as a panel. The figures are percentages exactly as AeroDAQ shows them (`+0.13%`).
 
@@ -594,7 +603,7 @@ as written is shown at the bottom. It is for flight simulation only, and says so
 
 ### The weather board
 
-**`/setup weather mode:on channel:#weather`** (admins) posts a weather board in a channel and keeps it up to date. It is a **grid of
+**the **Weather board** tab** (admins) posts a weather board in a channel and keeps it up to date. It is a **grid of
 buttons, laid out like the Reserve panel**: one button for each airport, saying only its four-letter ICAO code, so a channel with dozens of
 airports stays short and easy to read. **Pressing an airport shows its full METAR**, to the person who pressed it and nobody else. No report is
 written out in the channel.
@@ -616,7 +625,7 @@ written out in the channel.
   answer for ten minutes) has anything new, and it asks for reports a little younger than that, so a redraw never reuses its own
   previous answer. Its header says when it was last checked. The messages are edited in place, and only the ones whose buttons or dots changed.
   Airports come and go as the 24 hours move.
-- **If VATSIM cannot be reached,** the board stays as it was, `/setup weather` says why, and it tries again at the next redraw. One
+- **If VATSIM cannot be reached,** the board stays as it was, the **Weather board** tab says why, and it tries again at the next redraw. One
   report that is too odd to read gets a grey dot and does not stop the rest.
 - **It fits Discord.** Up to 40 airports of flights are shown, and it says how many more there were; if someone deletes a message, or the number
   of messages changes, the board is posted again. The bot needs View Channel, Send Messages, Embed Links and Read Message History in the channel, and never pings anyone.
@@ -626,7 +635,7 @@ written out in the channel.
 - **Kind to VATSIM.** **One request per redraw, for all of the board's airports together** (up to 50 in a request, a few dozen in practice), answers shared with the DM
   `metar`, with pressing an airport and with other servers' boards, and only the airport codes are ever sent. (The first version asked for each airport separately, which
   was refused as too many requests at once: a board with a day of flights has dozens of airports.) When VATSIM says it is busy the bot waits as long
-  as it asks (at most 15 minutes) before asking again, leaves the board as it was, and `/setup weather` says how long. `/setup weather mode:off` removes the board and its messages.
+  as it asks (at most 15 minutes) before asking again, leaves the board as it was, and the **Weather board** tab says how long. the **Weather board** tab removes the board and its messages.
 
 ### Payment messages: `/banking`
 
@@ -679,8 +688,8 @@ number, so it works for any airline whose flights show there, not only the ones 
 ### Who can reserve
 
 By default anyone who can see the panel's channel can press **Reserve**, so channel permissions are the first
-line of control. To go further, choose a role with the `role` option on `/setup panel-add`, or change it later
-with `/setup panel-role` (leave the role empty to remove the requirement, or pick `@everyone`). The panel then
+line of control. To go further, choose a role with the `role` option on the **Add or change a panel** tab, or change it later
+with the **Who can reserve** tab (leave the role empty to remove the requirement, or pick `@everyone`). The panel then
 says "Reserving is open to members with @Role", and anyone without it who presses Reserve is told why. Server
 admins can always reserve. The role only gates *starting* a reservation; people can still see the panel, view
 **My flights** and give flights back. **Reserving from a DM** (`reserve DMO-004`) is held to the same rules: the bot asks Discord
@@ -689,7 +698,7 @@ whether the person is a member of the panel's server, holds the role, and can se
 
 ### Reading your airline's Google Sheet
 
-Many airlines coordinate flights in a spreadsheet. Link it with `/setup sheet link:<the sheet's address>` and
+Many airlines coordinate flights in a spreadsheet. Link it with the **Google Sheet** tab and
 the bot reads it now and then every hour. Three rules keep this safe:
 
 - **Share it as "Anyone with the link → Viewer."** Reading uses the public link, so the bot signs in to nothing;
@@ -698,8 +707,8 @@ the bot reads it now and then every hour. Three rules keep this safe:
 - **Reading never changes anything.** Unless you set up [write-back](#writing-to-the-sheet), the bot only reads:
   a pilot reserving through the bot shows on the Discord panel, not in the sheet, so someone still copies names
   across if the sheet is the airline's record.
-- **Rows it can't read are skipped and reported**, never allowed to stop the rest. `/setup sheet`, `/setup refresh`
-  and `/setup panels` list them with their row numbers.
+- **Rows it can't read are skipped and reported**, never allowed to stop the rest. the **Google Sheet** tab, `/setup refresh`
+  and the **All panels** tab list them with their row numbers.
 
 The tab is found by its column headings, in any order. The layout it understands is one flight per row:
 
@@ -711,9 +720,9 @@ The tab is found by its column headings, in any order. The layout it understands
 | `Pilot` | a name already against the flight. It shows on the panel as *(in the schedule)* and can't be reserved. `CANCELLED` closes the flight. |
 | `Backup Pilot` | shown as a note on the flight (the bot also writes a backup pilot's name here when they stand by, see [Writing to the sheet](#writing-to-the-sheet)) |
 | `Aircraft` | the required airframe |
-| `Safety Deductions` (optional) | what a hard landing took off the pilot's pay, written by `/setup profit` beside the Pilot Pay when the airline switched on `/setup safety-pay deductions:on` (see *Landing safety and pay*); `Saftey Deductions` is understood too |
+| `Safety Deductions` (optional) | what a hard landing took off the pilot's pay, written by the **Profit and pay** tab beside the Pilot Pay when the airline switched on the **Landing safety** tab (see *Landing safety and pay*); `Saftey Deductions` is understood too |
 | `Flight Completed (by Pilot)` | `TRUE` takes the flight off the open list and shows it on the panel as ✅ completed, with the pilot's name, for 24 hours (see below). A `CANCELLED` pilot is never shown as completed. |
-| `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. With `/setup flight-numbers` on and write-back set up, the bot writes the number into empty cells itself (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
+| `Flight Number` (optional) | the airline's own number for the flight, such as `SKY123` or `SKY-014`. **When it is there it is the flight's ID**: it is what the panel shows and what pilots type to reserve (any case, spaces ignored). A flight with no number keeps the bot's own ID (`WA-031`), so the two can be mixed. With the **Flight numbers** tab on and write-back set up, the bot writes the number into empty cells itself (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). The column can also be headed `Flight No`, `Flight #`, `Flight ID`, `Flight Num` or `Flt No`. See [Flight numbers](#flight-numbers) below. |
 
 | `Daily Flight Sequence` (optional) | for flights that depend on one another (the same aircraft flies them one after another): where the flight stands in the day's run, `1`, `2`, `3`... (also headed `Flight Sequence`, `Daily Sequence` or `Sequence`). It is shown on the flight with its other notes, as *Flight sequence: 2*, so nobody needs a colour to see it. The bot only shows it; it does not hold a flight back for another. |
 | `Distance (NM)` (optional) | the distance of the flight in nautical miles (also headed `Distance`). **The bot fills this in itself**, see below. |
@@ -738,7 +747,7 @@ the schedule** (every hour, and with `/setup refresh`). Nothing is asked of any 
   record of a flown flight can be longer, and is not used here.
 - **Only empty cells.** A Distance cell with anything in it (a number you typed, a zero, a note, a stray space, a formula) is never changed. The sheet is
   read afresh just before writing, each flight is found again by its route and date, and a cancelled flight is skipped. Values go in as numbers, in one request.
-- **When it happens.** Only for a sheet that has the column, only where writing to the sheet is switched on for the panel (`/setup writeback`,
+- **When it happens.** Only for a sheet that has the column, only where writing to the sheet is switched on for the panel (the **Sheet write-back** tab,
   needs the Google key), and in the background: it never holds up the refresh, and if anything goes wrong it is logged and tried again at the next
   read. A flight whose airport the bot cannot find is left blank for later.
 - **Cell formats.** What a number looks like is up to the cell's format: a Distance column copied from the Date column would show 392 as `1/26/1901`,
@@ -761,7 +770,7 @@ own `PREFIX-NNN` one. The rules, so nothing surprising happens:
   column behaves as it always has.
 - **A usable number** is letters, numbers and dashes, up to 16 characters (`SKY123`, `SKY-014`, `sky 123` becomes
   `SKY123`). Anything else (`SKY*1`, a long text) can't be an ID, because the ID is typed by pilots and put in messages:
-  that flight keeps its automatic ID and the row is reported in `/setup sheet`, `/setup refresh` and `/setup panels`.
+  that flight keeps its automatic ID and the row is reported in the **Google Sheet** tab, `/setup refresh` and the **All panels** tab.
 - **A number has to name one flight.** A number that is on two or more rows (the same flight flown on several days)
   gets the day on the end of each of those flights, in the aviation way: `SKY123` on 12 November and 13 November
   become `SKY123-12NOV` and `SKY123-13NOV`. Pilots can type that whole ID, or just the number and be asked which day (see
@@ -784,7 +793,7 @@ own `PREFIX-NNN` one. The rules, so nothing surprising happens:
 
 The daily list described above is on for every panel. Discord only lets a bot ping `@here` or a role that
 isn't set to "mentionable" if the bot has the **Mention Everyone** permission in that channel, so grant it (or
-make the role mentionable). Without it the message still appears, but nobody is notified. `/setup reminders`
+make the role mentionable). Without it the message still appears, but nobody is notified. the **Reminders** tab
 warns you when that is the case. The check runs once a minute, a failed post is retried after an hour (until 22:00 UTC),
 and nothing is posted for a panel whose channel the bot can't write in.
 
@@ -799,7 +808,7 @@ every flight time here is Zulu, whatever timezone the host's PC is set to), a mi
 old pings don't pile up. A list posted at 00:00Z lives until 23:59Z. If the bot was off at 23:59 it clears the old one as
 soon as it starts, before posting the new one. It only ever deletes its own lists (never the panel), treats one that
 someone already deleted as done, gives up on one it can't delete rather than trying forever, and removes a panel's lists
-when you remove the panel. `/setup reminders cleanup:off` leaves them in the channel for that panel (`cleanup:on` turns
+when you remove the panel. the **Reminders** tab leaves them in the channel for that panel (`cleanup:on` turns
 it back on); it is on by default.
 
 **When a pilot gives a flight back.** There is no ping for it. Instead, if the pilot takes themselves off a flight (from
@@ -835,7 +844,7 @@ A few things it does and does not do:
 
 - **Anyone can switch the warning off for themselves** by DMing the bot `notifications` (pilots and backups alike; the warning
   ends with a line saying so). Someone who has switched it off is not warned and is not counted as warned, so switching it back
-  on before the latest take-off still warns them in time. The server's own setting (`/setup depart-warning`) is unchanged.
+  on before the latest take-off still warns them in time. The server's own setting (the **Departure warning** tab) is unchanged.
 - With **live tracking** (below, on by default) it can see who is already in the air: a pilot flying the flight is not warned.
   Without it, or when the live feed cannot be read, it **cannot see a flight in the air** (FsHub's records show a flight only
   after it has landed), so the message tells anyone who has already taken off to ignore it.
@@ -846,7 +855,7 @@ A few things it does and does not do:
   at once. A message that cannot be delivered (closed DMs) is retried every ten minutes until then.
 - It is for flights with a deadline that someone holds in Discord; a flight only the airline's sheet names a pilot for
   has nobody the bot can message.
-- `/setup depart-warning [minutes] [mode] [airline]` shows the setting, changes how long before (5 to 180 minutes, 30 by
+- the **Departure warning** tab shows the setting, changes how long before (5 to 180 minutes, 30 by
   default) or switches it off (`mode:off`; `mode:on` turns it back on). It is on for every panel, including existing ones.
 
 The check runs once a minute, in the same background lane as the FsHub reads and after them.
@@ -910,21 +919,21 @@ Good to know:
   45 seconds, and only if somebody is being followed. Nothing is stored: after a restart the bot learns who is flying afresh.
 - A feed that can't be read for three minutes is not trusted: the warning then falls back to its old wording, and a failed read is
   never taken as a landing.
-- Completing on landing also needs the panel linked to FsHub with automatic completion on (`/setup fshub`); without them only the
+- Completing on landing also needs the panel linked to FsHub with automatic completion on (the **FsHub roster** tab); without them only the
   warnings use the live feed.
-- `/setup live-tracking [mode] [airline]` shows the setting or switches it (`mode:off`, `mode:on`). It is **on** for every panel.
+- the **Live tracking** tab shows the setting or switches it (`mode:off`, `mode:on`). It is **on** for every panel.
 
 ### Flight numbers from Aeroconomy
 
 Aeroconomy publishes every contract and its flights without any account or token (`https://aeroconomy.com/api/v1/contracts` and
 `/contracts/{id}/manifests`, documented at `aeroconomy.com/docs/api-v1`). Each flight there has the airline's own **flight number**
-(`SKY290`), the two airports and the landing window, which is what a schedule sheet row has too. `/setup flight-numbers mode:on` makes a
+(`SKY290`), the two airports and the landing window, which is what a schedule sheet row has too. the **Flight numbers** tab makes a
 flight whose sheet row has **no flight number of its own** take that number as its ID, when exactly one Aeroconomy flight has the same
 two airports and landing window (the end of a window may differ by up to two minutes: a sheet says 23:59:00, Aeroconomy 23:59:59).
 
 - **It is off by default**, because it changes the IDs people know (`SKY-091` becomes `SKY290`). Switching it on starts a first read; the
   flights are renamed when that finishes, once. An ID that was changed is never changed back, so switching it off leaves them as they are.
-- **The panel has to be linked to its airline's FsHub roster** (`/setup fshub`), since Aeroconomy's contracts name the airline by its
+- **The panel has to be linked to its airline's FsHub roster** (the **FsHub roster** tab), since Aeroconomy's contracts name the airline by its
   FsHub number. The bot reads the contracts awarded to that airline that are still running.
 - **A number flown on several days carries the day**: `SKY330-17NOV`. A number flown only once is plain. Pilots can type just
   `SKY330` when only one such flight is open; when more than one is, the bot asks which day (see
@@ -947,14 +956,14 @@ two airports and landing window (the end of a window may differ by up to two min
 ### Profit and loss from Aeroconomy (optional)
 
 Aeroconomy works out what every flight made or lost and records it in the logbook of the aircraft that flew it, together with the callsign, the
-FsHub flight and the pilot. `/setup profit` reads the airline's aircraft and their logbooks and compares that with the **Profit Made** your managers
+FsHub flight and the pilot. the **Profit and pay** tab reads the airline's aircraft and their logbooks and compares that with the **Profit Made** your managers
 type into the schedule sheet. **It is a command an admin runs; nothing happens by itself.** The bot never reads these logbooks, and never touches the
 sheet's numbers, unless an admin asks.
 
-- **`/setup profit`** (the default, `action:check`) **only reports**: how many completed flights agree with Aeroconomy (within a dollar, since the sheet
+- **the **Profit and pay** tab** (the default, `action:check`) **only reports**: how many completed flights agree with Aeroconomy (within a dollar, since the sheet
   is kept in whole dollars), which have a Profit Made that **differs** (listed by row, with the sheet's figure and Aeroconomy's, for a manager to look at:
   typing slips show up here), which have a **blank** Profit Made that Aeroconomy could fill, and how many it could not match. Nothing is changed.
-- **`/setup profit action:fill`** shows **exactly** the blank cells it would fill (row, flight, the amount rounded **up** to a whole dollar, as Aeroconomy has no cents, and Aeroconomy's figure to
+- **the **Profit and pay** tab** shows **exactly** the blank cells it would fill (row, flight, the amount rounded **up** to a whole dollar, as Aeroconomy has no cents, and Aeroconomy's figure to
   the cent) and waits. **Nothing is written until someone who is allowed to presses *Write*** (by default only the admin who asked, and the preview
   expires after ten minutes; see *Where the preview goes, and who can press Write* below). It then reads the sheet afresh and writes a profit only where the row is where it was, still names the same pilot, is still ticked as
   completed and the cell is **still empty**; anything else is skipped and reported. It writes **only blank Profit Made cells, as numbers**, in one
@@ -971,7 +980,7 @@ sheet's numbers, unless an admin asks.
     the admin who asked**. It is checked when the button is pressed, so changing the role takes effect on previews that are already up. `@everyone` is refused. A
     preview in a channel says who may press it, and after it is written or cancelled says **who pressed the button**. If two people press at the same moment
     only the first writes. Nobody else (not even another admin who did not ask, unless they are in the role) can press it.
-  - `/setup profit action:settings` shows what is set; giving any of the options on their own (without `action`) saves them and reads nothing from Aeroconomy.
+  - the **Profit and pay** tab shows what is set; giving any of the options on their own (without `action`) saves them and reads nothing from Aeroconomy.
 - **The pilot's pay, beside the profit.** If the sheet has a **Pilot Pay** column (not the *Pilot Paid* box), `fill` also offers the pay for each flight it
   fills, worked out by the airline's rule: a flight that made a profit pays the pilot **15% of the profit, rounded up to the next whole dollar (Aeroconomy has no cents), and never less than $2,000**; a flight that made
   a **loss** still pays **$2,000, plus $1,000 for every further 500 nautical miles beyond the first 1,000** (a started 500 counts, so 1,001 nm pays $3,000
@@ -983,7 +992,7 @@ sheet's numbers, unless an admin asks.
   pay is written as a number. A sheet whose Pilot Pay cells already hold amounts or formulas therefore gets only its profits; the preview says how many Pilot
   Pay cells were left as they are. The bot remembers each Pilot Pay cell it writes: if someone later sets one back to `$0` on purpose, the bot sees that it
   wrote there before, treats the zero as their decision, and leaves it at `$0` (the preview says so). A pay is only ever written beside a profit the bot is
-  writing in the same row. With `/setup safety-pay` on, the pay of a flight that landed hard is **cut** as described under *Landing safety and pay*, and the
+  writing in the same row. With the **Landing safety** tab on, the pay of a flight that landed hard is **cut** as described under *Landing safety and pay*, and the
   preview shows it flight by flight; a flight whose landing rate can't be trusted is **left out** of the fill altogether.
 - **What counts as the same flight.** A completed row is matched to the logbook flight with the same two airports that landed in the row's day (a little
   before it, or up to a day and a half after it begins), flown under the airline's own callsign (the code and a number, as for landing times); if
@@ -993,8 +1002,8 @@ sheet's numbers, unless an admin asks.
   shows as one the bot found no logbook flight for, and the report says so when there are any. The sheet side has no such limit: *Write* finds a row
   wherever it is in the sheet, however long ago it was flown, and a number or date that only looks like an amount (`2026-11-20`, `0-0`, `8,131-`) is
   never read as one.
-- **What it needs.** The bot's FsHub token (Aeroconomy accepts it), the panel linked to its airline's FsHub roster (`/setup fshub`), a sheet with a
-  *Profit Made* column, and, to write, the Google key and `/setup writeback` on. The airline's Aeroconomy business is found the first time from an aircraft
+- **What it needs.** The bot's FsHub token (Aeroconomy accepts it), the panel linked to its airline's FsHub roster (the **FsHub roster** tab), a sheet with a
+  *Profit Made* column, and, to write, the Google key and the **Sheet write-back** tab on. The airline's Aeroconomy business is found the first time from an aircraft
   that is out right now, either attached to a flight of the airline's contracts or flown by one of its recent pilots (public Aeroconomy pages, plus a read
   of that one aircraft with the token), and remembered, so it is only ever looked for once. When no aircraft of the airline is out the bot says so: try
   again later, or give `business:` its number, the number in the web address of the airline's business page on Aeroconomy
@@ -1009,9 +1018,9 @@ sheet's numbers, unless an admin asks.
   (before anything is read) otherwise. The business is still *found* from aircraft the airline owns, so an airline that only leases gives its business
   number once with `business:` (it is remembered after that).
 - **What it costs.** About 26 requests, spread out one every couple of seconds (about 30 seconds in all), when an admin runs it (one more for the list of leased aircraft, and one more logbook for each leased aircraft), plus one FsHub request for
-  each blank-pay flight that lost money (and, with `/setup safety-pay` on, for each flight whose pay is to be written, to read its landing rate; at most 25 a run in all), and, the first time only, about 5 more to find the airline's business (at most about 20, when it has to look
+  each blank-pay flight that lost money (and, with the **Landing safety** tab on, for each flight whose pay is to be written, to read its landing rate; at most 25 a run in all), and, the first time only, about 5 more to find the airline's business (at most about 20, when it has to look
   through several contracts). The token is only ever sent to Aeroconomy and FsHub, only in plain read requests (`GET`), without following a
-  redirect, and **`/setup profit` never writes anything to Aeroconomy**. (The only thing the bot ever sends to Aeroconomy is a payment, when an admin presses **Pay** or **Send** under *Paying pilots* below.)
+  redirect, and **the **Profit and pay** tab never writes anything to Aeroconomy**. (The only thing the bot ever sends to Aeroconomy is a payment, when an admin presses **Pay** or **Send** under *Paying pilots* below.)
 
 ### Remarks about very hard landings
 
@@ -1033,36 +1042,54 @@ from 800 and from 1,000. Nothing is ever said in a channel, and a normal or mere
 - **Pilots can switch it off**: `notifications landing off` (or the button), and it stays off until they switch it back on. A
   landing that happened while it was off is never remarked on later.
 - **Nothing to set up.** It works wherever the bot reads the airline's FsHub flights, and stops if you switch that off with
-  `/setup fshub confirm:off`.
+  the **FsHub roster** tab.
 
 ### Landing safety and pay (optional)
 
-An airline can link the pilot's pay to how well they land. It is **off** until a server admin turns it on with `/setup safety-pay mode:on`, and it is a setting of each
-panel. Turning it on asks one question first: **what percentage of the $2,000 minimum pay does a pilot lose when they land hard?** You choose whether it is the
-**same for both tiers** or **different for each**:
+An airline can link the pilot's pay to how well they land. It is **off** until it is turned on (on the settings page, in the **Landing safety** tab), and it is a setting of each
+panel. **Every number in it is the airline's to set**: how hard a landing has to be for a warning, for Tier 1 and for Tier 2 (for each type of aircraft, if you like), the
+share of the profit a pilot is paid after each tier, and how much of the $2,000 minimum pay a pilot loses.
 
-- *The same for both:* press **Lose nothing (0%)**, **Lose 25%**, **Lose 50%** or **Lose all (100%)**, or give any whole number from 0 to 100 in the command
-  (`minimum-loss:15`), which skips the question.
-- *Different for each tier:* press **Different for each tier** and the bot asks about **Tier 2** (the same four buttons), then about **Tier 3**. Or give both in the command
-  (`tier2-loss:10 tier3-loss:40`), which skips the questions. A Tier 3 landing, the harder one, can then lose more of the minimum than a Tier 2 landing, or less, as you choose.
+**What a pilot loses of the minimum.** A flight that made little, or lost money, normally pays at least $2,000. After a hard landing the airline can lower that minimum by a per cent it chooses,
+**for each tier on its own**: *After a Tier 1 landing the pilot loses this % of the $2,000 minimum pay* and *After a Tier 2 landing the pilot loses this % of the $2,000 minimum pay* in the **Landing safety** tab, each a
+whole number from 0 to 100 (0 keeps the whole minimum, 100 means there is no minimum). They start at 0. A Tier 2 landing, the harder one, can lose more of the minimum than a Tier 1 landing, or less, as you choose.
+Check both before you turn safety pay on: it is turned on with the numbers that are in the boxes.
 
-`/setup safety-pay minimum-loss:...` (both tiers) or `tier2-loss:...` and `tier3-loss:...` (either one, on its own) change the answers later, and `mode:off` switches the whole
-thing off. Giving `minimum-loss` together with a tier's own percentage is refused, and turning it on with a percentage for just one tier is too: the bot needs both.
+**The shares.** *After a Tier 1 landing the pilot is paid this % of the flight's profit* and *After a Tier 2 landing ...* (each from 0 to 100, saved with the button under them, also while safety pay is off) set the share of a
+flight's profit a pilot is paid after a Tier 1 and after a Tier 2 landing, instead of the usual 15%. They start at 8% and 5%. The checkbox **Link the pilots' pay to landing safety** turns the whole thing on or off.
+It can only be turned on for an airline linked to its FsHub roster with its flights read (the tab says what is missing), and turning it on starts from that moment: a flight that landed before is paid as it always was.
 
-The tiers use the landing rate FsHub recorded (the vertical speed at touchdown, in feet per minute):
+**The limits, aircraft by aircraft.** A landing falls in a band by the landing rate FsHub recorded (the vertical speed at touchdown, in feet per minute, here without its sign), judged by
+the limits of **the aircraft that flew it**:
 
 | Landing | What it is | What the pilot is told | The pilot's pay |
 |---|---|---|---|
-| gentler than -375 | an ordinary landing | nothing | as usual |
-| -375 to -399 | **Tier 1 Safety Warning** | a private message: an acceptable level of extra stress, and that landing rates above -400 will incur safety fines | as usual (no fine) |
-| -400 to -599 | **Tier 2 Safety Violation** | a private message: excessive stress, a hard landing | **8%** of the flight's profit |
-| -600 or harder | **Tier 3 Critical Safety Violation** | a private message: dangerous and extreme stress, an extremely hard landing | **5%** of the flight's profit |
+| gentler than the warning limit | an ordinary landing | nothing | as usual |
+| from the warning limit | **Safety Warning** | a private message: an acceptable level of extra stress, and that landings from the Tier 1 limit will incur safety fines | as usual (no fine) |
+| from the Tier 1 limit | **Tier 1 Safety Violation** | a private message: excessive stress, a hard landing | the **Tier 1 share** of the flight's profit (8% to start with) |
+| from the Tier 2 limit | **Tier 2 Critical Safety Violation** | a private message: dangerous and extreme stress, an extremely hard landing | the **Tier 2 share** (5% to start with) |
 
-- **The pay is worked out where the sheet's Pilot Pay cell is filled** (`/setup profit action:fill`, see *Profit and loss from Aeroconomy*). A flight that made a profit
-  pays 8% or 5% of the profit, rounded up to the next whole dollar, **but never less than the minimum after the percentage you chose for that tier**: $2,000 less that many per cent.
+A **new airline starts at 400, 500 and 600** (a warning from -400, Tier 1 from -500, Tier 2 from -600) for every aircraft. An airline that **already had safety pay on** before the limits could
+be set keeps the **375, 400 and 600** it had (then called Tier 1, Tier 2 and Tier 3), and its percentages carry across, so nothing about anyone's pay changes at the upgrade.
+
+**The Landing safety tab (the settings page).** The limits are not set in Discord: they are on the bot's own settings page (the tray icon's **Open settings**), in the **Landing safety** tab, which is
+only reachable from the computer that runs the bot. It lists every airline the bot is set up for, and for the one you choose it shows and saves: whether safety pay is **on**, the
+airline's **default limits** (the warning, Tier 1 and Tier 2, in feet per minute), the **shares** of the profit after each tier, **what a pilot loses of the minimum** after each tier, and
+whether the deductions are written in the sheet. Then it lists the airline's **aircraft**: the types it **owns and leases** on Aeroconomy (the same list the **Profit and pay** tab uses, so it needs the bot's
+FsHub token), the types its recent FsHub flights were flown in, and any type that already has limits of its own. Each type has three boxes, its own warning, Tier 1 and Tier 2 limits (a Cessna and a
+747 need not be judged alike); **Save aircraft limits** saves the types you changed, **Use the default** puts a type back on the airline's default, and a type that is not listed can be added by its code.
+An airline whose aircraft can't be found without its business number has a place to type it. Everything on the page is checked before anything is saved, so a refused change changes nothing, and
+a page that is open while the bot restarts (a new token, say) shows the airlines again once it is back. Limits must be whole numbers from 1 to 2,500, each at least as hard as the one before. A type with
+no limits of its own is judged by the airline's default. The type of a landing is the one **FsHub gives for the flight** (the **Profit and pay** tab falls back to the type of the aircraft whose logbook it is
+in when FsHub gave none); a flight with no type is judged by the airline's default. The safety notice names the aircraft and its limits, so a pilot sees what they were judged by. Limits are used
+**when the pay is worked out**: a pay already written in the sheet is never changed, and the notice, the report and the pay all use the same limits. The very-hard-landing remarks (600, 800 and
+1,000 fpm) are the scheduler's jokes, are not part of this, and are the same for every aircraft.
+
+- **The pay is worked out where the sheet's Pilot Pay cell is filled** (the **Profit and pay** tab, see *Profit and loss from Aeroconomy*). A flight that made a profit
+  pays the tier's share of the profit, rounded up to the next whole dollar, **but never less than the minimum after the percentage you chose for that tier**: $2,000 less that many per cent.
   At 0% the whole $2,000 minimum is kept, so a small profit costs the pilot nothing; at 25% the pay is never below $1,500; at 100% there is no minimum, and the pay is
   just the share. A flight that **lost money** is paid by its distance as usual, less the percentage for the tier of the landing: at 25%, $4,000 becomes $3,000, and at
-  100% it pays nothing. With the tiers set apart (say 10% for Tier 2 and 40% for Tier 3) each landing uses its own tier's percentage, and the safety notice the pilot is sent
+  100% it pays nothing. With the tiers set apart (say 10% for Tier 1 and 40% for Tier 2) each landing uses its own tier's percentage, and the safety notice the pilot is sent
   says that one. Both are rounded up to the next whole dollar.
 - **Only flights that landed after it was turned on.** Each panel remembers the moment it was turned on; a flight that landed earlier is paid by the usual rule and its
   pilot is sent nothing, however hard it was.
@@ -1070,15 +1097,15 @@ The tiers use the landing rate FsHub recorded (the vertical speed at touchdown, 
   one for a landing in the last three days). A pilot **cannot switch it off** with `notifications`, because it is about their pay. Then, for a landing of **-600 or harder**,
   the light-hearted remark follows (see *Remarks about very hard landings*), in gentler words that say it is the unofficial message and send the pilot off kindly. That
   remark is still the pilot's to switch off, and still comes at most once in six hours. Nothing is ever said in a channel.
-- **Safety Deductions in the sheet (optional).** `/setup safety-pay deductions:on` makes `/setup profit` also write **what the cut took off** into a column headed
+- **Safety Deductions in the sheet (optional).** the **Landing safety** tab makes the **Profit and pay** tab also write **what the cut took off** into a column headed
   **Safety Deductions** (spelled *Saftey Deductions* is understood too), right beside the Pilot Pay it fills in: what the flight would have paid by the usual rule, less what it
-  pays after the cut. A $54,489 profit that would have paid $8,174 and pays $4,360 after a Tier 2 landing writes **3814**; a flight whose pay comes to nothing writes the whole
+  pays after the cut. A $54,489 profit that would have paid $8,174 and pays $4,360 after a Tier 1 landing writes **3814**; a flight whose pay comes to nothing writes the whole
   amount it would have been. It is off until you switch it on (and `deductions:off` switches it off); it works while safety pay is on, and the setting is kept while it is off.
   The column has to be in the sheet already (the bot never adds one). A number goes into **an empty cell only**, and only beside a Pilot Pay this run is writing too (a flight
   whose pay somebody entered already has nothing written next to it); a cell with anything in it, even `TBD`, is left exactly as it is. A flight whose pay was not cut (a soft
-  landing, or a Tier 2 or 3 landing that took nothing off) writes nothing. The preview and the check report say how many would be written, and whether the sheet has no such
+  landing, or a Tier 1 or 2 landing that took nothing off) writes nothing. The preview and the check report say how many would be written, and whether the sheet has no such
   column, and the **Write** button counts the cells. It is worked out when the profit is filled in. For flights **filled in before you switched it on**, use the backfill below.
-- **Adding deductions to flights already filled in.** `/setup profit action:deductions` looks at the completed flights in the sheet that landed after safety pay was turned on and
+- **Adding deductions to flights already filled in.** the **Profit and pay** tab looks at the completed flights in the sheet that landed after safety pay was turned on and
   shows a preview, like `fill` does (the same `send-to` and `who-can-write` settings apply, and nothing is written until someone presses **Write**). A flight is offered only
   when its **Pilot Pay is exactly what the cut gives**: the bot works the pay out afresh from the Profit Made in the sheet and FsHub's landing rate and distance, and writes the
   deduction (what the flight would have paid, less that) only if the pay in the sheet is that amount. So a deduction is never recorded beside a pay it doesn't explain. It leaves
@@ -1088,27 +1115,26 @@ The tiers use the landing rate FsHub recorded (the vertical speed at touchdown, 
   flight, it asks about **at most 50 a run**; run it again for the rest (the report says how many are waiting). Every cell is checked again when **Write** is pressed, and skipped if the row
   moved, its pilot or box changed, its Pilot Pay is no longer what it was, or the deduction cell has something in it.
 - **If in doubt, nothing is filled in.** The landing rate is FsHub's. A flight it gave **no rate** for, or a rate beyond 2,500 feet a minute (a bad reading, not a touchdown),
-  or a logbook entry that names no FsHub flight, is **left out of `/setup profit` altogether, profit and pay**, so a hard landing is never paid in full by accident. The
+  or a logbook entry that names no FsHub flight, is **left out of the **Profit and pay** tab altogether, profit and pay**, so a hard landing is never paid in full by accident. The
   report lists those flights under **Left alone (safety pay)**, and your managers are sent a message naming each one (once per flight), so someone can look at it on
   FsHub and fill the cells in by hand. A flight whose landing rate simply **couldn't be read yet** (FsHub didn't answer, or the run reached its limit) just waits for the next
   run, and nobody is told.
-- **The report to your managers.** When a pilot lands at **Tier 2 or Tier 3**, your managers are sent a private message with the **pilot's name, their FsHub ID (and their
-  FsHub username, if it isn't the same as their Discord name), the flight number, the departure and arrival, the time of landing and the landing rate**. The flight number
+- **The report to your managers.** When a pilot lands at **Tier 1 or Tier 2**, your managers are sent a private message with the **pilot's name, their FsHub ID (and their
+  FsHub username, if it isn't the same as their Discord name), the flight number, the departure and arrival, the time of landing and the landing rate, the aircraft and the limit it crossed**. The flight number
   is the schedule flight the pilot holds (or is backup for) between those airports, when the bot can tell which; if not, the message says it couldn't match one. A pilot
   who isn't linked to a Discord account is reported all the same (and the message says they weren't sent the notice).
 - **The CSV.** The same facts are added, one row a landing, to **`hard-landings.csv`** in the bot's data folder (the folder that holds its database, `data` by default).
-  Its columns are Pilot Name, FsHub ID, FsHub Username (if different), Flight Number, Departure-Arrival, Landed (UTC), Landing Rate (fpm), then Tier, Airline and
-  FsHub Flight ID. It is made, with a heading, the first time; it opens in Excel with accents intact; and a name or flight number that a spreadsheet could take for a formula
+  Its columns are Pilot Name, FsHub ID, FsHub Username (if different), Flight Number, Departure-Arrival, Landed (UTC), Landing Rate (fpm), Aircraft, then Tier, Tier Limit (fpm), Airline and
+  FsHub Flight ID. A file kept by an earlier version (it has no Aircraft column, and its Tier 2 and Tier 3 are today's Tier 1 and Tier 2) is **not changed**: it is renamed `hard-landings-before-limits.csv` the first time a row is added, and a new file starts. It is made, with a heading, the first time; it opens in Excel with accents intact; and a name or flight number that a spreadsheet could take for a formula
   is written behind an apostrophe. If the file is open in another program the row can't be added, the message to your managers says so, and the row is added the next time the flight is
   seen. The bot never reads the file back or deletes from it.
-- **Who the managers are.** The members of the roles an admin set for managing the airline: the roles of `/setup refresh-roles` and the `/setup profit` write role (`who-can-write`).
+- **Who the managers are.** The members of the roles an admin set for managing the airline: the roles of the **Staff roles** tab and the the **Profit and pay** tab write role (`who-can-write`).
   Discord only lets a bot list a server's members when **Server Members Intent** is switched on for it in the Discord Developer Portal (Bot, then Privileged Gateway Intents);
   the bot doesn't ask for that itself, so it connects either way. Without it, or with no manager role set, the reports go to the **server owner** instead, so they are never lost.
-  `/setup safety-pay` (and the message after you turn it on) has a **Who is sent them** line that looks it up there and then: the people holding the roles right now, or, with a ⚠️,
+  the **Landing safety** tab (and the message after you turn it on) has a **Who is sent them** line that looks it up there and then: the people holding the roles right now, or, with a ⚠️,
   why it is only the server owner (no role set, nobody holds it, or the member list can't be read, and then it says to switch on Server Members Intent). A list that
   could not be read is looked up again after a minute, so switching the intent on takes effect almost at once. At most 25 people are sent one. The same people are told about the flights left unfilled.
-- **What it needs.** The bot's FsHub token, the panel linked to its airline's FsHub roster (`/setup fshub link:`) and FsHub flights being read (`/setup fshub
-  confirm:on`, the default). The bot says what is missing when you try to turn it on, and `/setup profit` refuses to fill pay for a panel with it on and no token, rather than
+- **What it needs.** The bot's FsHub token, the panel linked to its airline's FsHub roster (the **FsHub roster** tab) and FsHub flights being read (the **FsHub roster** tab, the default). The bot says what is missing when you try to turn it on, and the **Profit and pay** tab refuses to fill pay for a panel with it on and no token, rather than
   pay without the landing rates.
 - **Payroll.** `/payroll` (off by default) pays the Pilot Pay cell exactly as it stands when safety pay is on, because the cut was made when the cell was filled and raising it to
   the usual minimum would undo it.
@@ -1122,9 +1148,9 @@ ever paid without someone pressing it.** It is on for every copy of the bot, and
 wants none of it can set the environment variable `FPB_DISABLE_PAYROLL=1`, and the command is not registered).
 
 **What it needs**
-- The bot's **FsHub token** (the same one `/setup fshub` uses). Aeroconomy accepts it as its API key, and it acts as the account it belongs to, so that account must be an owner or
+- The bot's **FsHub token** (the same one the **FsHub roster** tab uses). Aeroconomy accepts it as its API key, and it acts as the account it belongs to, so that account must be an owner or
   manager of the airline's business, which is what lets it pay from the airline's account. Without a token the bot says paying isn't connected, and sends nothing.
-- The airline's schedule sheet with a **Pilot Pay** column, as for `/setup profit` (see *Profit and loss from Aeroconomy*), and a **Pilot Info** tab in the same sheet that lists each
+- The airline's schedule sheet with a **Pilot Pay** column, as for the **Profit and pay** tab (see *Profit and loss from Aeroconomy*), and a **Pilot Info** tab in the same sheet that lists each
   pilot: a name, a **FSHUB ID** and a **Bank Acct** column (the titles can be written a few ways; if the tab has none the bot says which titles it did find). An account looks like
   `2002-0001234`.
 - `/payroll settings source-account:<the airline's account> pilot-info:<the link of that tab> enabled:on`. The link must be the Pilot Info tab's own (it ends with `#gid=` and a
@@ -1138,10 +1164,10 @@ yours and back, to know that paying works.
 
 **The daily list.** Every day at the time you chose (12:00 Zulu if you didn't) the bot reads the sheet and makes a list of what is due: each flight ticked as **completed** whose
 **Pilot Pay** has an amount, on or after the first day to pay, that hasn't been paid (its **Pilot Paid** box isn't ticked and the bot's ledger has no payment for it). It goes where
-`/setup profit send-to` sends its previews (the admin's DMs by default), and the same people may work on it: the admin who set it up and members of the `/setup profit` **who-can-write**
+the **Profit and pay** tab sends its previews (the admin's DMs by default), and the same people may work on it: the admin who set it up and members of the the **Profit and pay** tab **who-can-write**
 role. `/payroll run` makes one now.
 - **The amount** is the Pilot Pay cell, but never less than the airline's rule: at least **$2,000** a flight, and a flight that lost money gets $2,000 for its first 1,000 nm and $1,000
-  more for each further 500 nm, by the distance FsHub recorded. (Where `/setup safety-pay` is on, the cell is paid exactly as it stands, because a hard landing has already cut it.)
+  more for each further 500 nm, by the distance FsHub recorded. (Where the **Landing safety** tab is on, the cell is paid exactly as it stands, because a hard landing has already cut it.)
   The list says when it raised a pay and why. A payment is never more than $500,000.
 - **Each payment has a unique ID**, like `32411-KORD-EGLL-111926` (the pilot's FsHub ID, the airports and the date), with the flight number's digits added when the same pilot flies the
   same route twice in a day. It is kept in a **ledger**, and Aeroconomy is sent it as the payment's *idempotency key*, so sending the same payment twice pays once.
@@ -1158,7 +1184,7 @@ role. `/payroll run` makes one now.
   tries again with the same ID (which is safe), and if there is still no answer nobody knows whether the money moved, so the payment is left marked **no answer**, stays off every list and is
   never tried again by itself. `/payroll history` shows it, and you check the account on Aeroconomy.
 - A payment is only counted as paid if Aeroconomy's answer is the payment that was sent: the same amount, to the same account.
-- After a payment goes through, the bot ticks **Pilot Paid** on its row (only an empty box is ever ticked) when write-back is on for the panel (`/setup writeback`), and otherwise lists the
+- After a payment goes through, the bot ticks **Pilot Paid** on its row (only an empty box is ever ticked) when write-back is on for the panel (the **Sheet write-back** tab), and otherwise lists the
   rows to tick by hand.
 
 **What the token can do, and what the bot does with it.** Aeroconomy's API has no separate permission for paying, so the FsHub token can move money from every account its owner controls.
@@ -1215,13 +1241,13 @@ all, and what a viewer typed is never repeated back.
 ### The grid layout
 
 By default the panel is a **card** for each flight. A server can choose a more compact **grid of buttons** instead with
-`/setup layout mode:grid` (`mode:cards` goes back; the cards stay the default and are not changed). The panel is redrawn at once.
+the **Layout** tab (`mode:cards` goes back; the cards stay the default and are not changed). The panel is redrawn at once.
 
 - **A button for each flight**, grey, with a coloured dot: 🟡 open (needs a pilot now), 🔵 taken, 🟢 completed in the last 24 hours,
   ⚪ not open yet. The label is the dot, the aircraft, the route, **when the flight opens** as a short date and time and, once it is
   taken, who has it: `🔵 B738 · EGKK✈EGCC · 12/11/26 12:00Z · alice`. The **flight's ID is not on the button**: it is in the card that
   opens when you press it. The date is **day first (16/11/26, as in the UK and Europe) by default, or month first (11/16/26, as in the
-  US)**, chosen with `/setup layout dates:mdy` (or `dmy`). A label is the same text for everyone who reads it, and cannot use Discord's
+  US)**, chosen with the **Layout** tab (or `dmy`). A label is the same text for everyone who reads it, and cannot use Discord's
   local-time stamps, so the order is the server's choice and the time is in **UTC** (the `Z`), the zone landing windows are in; the
   card has the full date in each reader's own timezone. A label is at most 80 characters: if it would be longer the pilot is dropped,
   then the aircraft, then the middle of a long chain of airports.
@@ -1238,7 +1264,7 @@ By default the panel is a **card** for each flight. A server can choose a more c
   message **unfolds by itself when nobody has pressed any button on the panel for 10 minutes**. The first message keeps its header
   and buttons when folded. Folds are kept in memory only, so a restart unfolds everything.
 - **Completed flights** are green buttons in the grid unless the server has chosen a channel of their own for them with
-  `/setup completed channel:`, in which case they appear there as full cards, exactly as before, and the grid has no green buttons.
+  the **Completed flights** tab, in which case they appear there as full cards, exactly as before, and the grid has no green buttons.
 - A pilot's **List view** (in their direct messages) and **Search** results are unchanged.
 
 ### The flights file
@@ -1268,9 +1294,9 @@ Completed** box ticked when they press **Complete**, and a backup pilot's name i
 column; cleared again when their spot ends). It touches only those three cells of that flight's row, and
 re-reads the tab and finds the row by route and date before every write. The only other things it writes are *blank* cells:
 the **Distance (NM)** of a flight, if the sheet has that column (see [The Distance column](#the-distance-column)), and a *blank*
-**Profit Made** cell (and the pilot's pay in a blank or `$0` **Pilot Pay** cell beside it, and, where the airline switched on `/setup safety-pay deductions:on`, what a hard landing took off it in an empty **Safety Deductions** cell), which only happens when an admin asks for exactly that and confirms it (see
+**Profit Made** cell (and the pilot's pay in a blank or `$0` **Pilot Pay** cell beside it, and, where the airline switched on the **Landing safety** tab, what a hard landing took off it in an empty **Safety Deductions** cell), which only happens when an admin asks for exactly that and confirms it (see
 [Profit and loss from Aeroconomy](#profit-and-loss-from-aeroconomy-optional)), and the *blank* cells of the **Flight Number** column when
-`/setup flight-numbers` is on (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). One more case changes the **Pilot** cell of a
+the **Flight numbers** tab is on (see [Flight numbers from Aeroconomy](#flight-numbers-from-aeroconomy)). One more case changes the **Pilot** cell of a
 flight that already has a pilot: when the flight's backup flew it instead, the cell takes the backup's name, but only if it still holds the name the bot
 wrote for the pilot. It never changes any other cell that has anything in it. It refuses rather than overwrite if the
 sheet already names someone else or shows the flight finished, and a *completion* is never recorded if the sheet
@@ -1278,14 +1304,14 @@ can't be updated, so the two never disagree. Names are written as plain text, ne
 
 Setting it up needs credentials only a person can create: **[docs/WRITEBACK_SETUP.md](docs/WRITEBACK_SETUP.md)**
 is the step-by-step (about ten minutes), and it suggests trying it on a copy of the sheet first.
-`/setup writeback` checks it and can switch it off per panel. Without credentials nothing changes: the bot only
+the **Sheet write-back** tab checks it and can switch it off per panel. Without credentials nothing changes: the bot only
 reads, and **Complete** on a sheet-fed panel explains that the box has to be ticked in the sheet (unless the panel
 [works from FsHub](#completing-from-fshub), where Complete works from FsHub's record without write-back).
 
 ## The refresh
 
 A linked Google Sheet is re-read **every hour**; any other automatic source (the demo) every 24 hours (a
-failed fetch keeps the existing flights, records the error in `/setup panels`, and retries in the next hourly slot, see below). Flights keep their IDs and reservations
+failed fetch keeps the existing flights, records the error in the **All panels** tab, and retries in the next hourly slot, see below). Flights keep their IDs and reservations
 across refreshes; new flights get the next ID; flights the source drops are closed and their holders told; a
 flight whose route changed loses the reservation on the changed leg. Panels fed by file import don't fetch,
 since an admin decides when the list changes. `/setup refresh` re-reads a sheet on demand.
@@ -1301,7 +1327,7 @@ FsHub shows flown**, and the read of **Aeroconomy's flight numbers**, which is e
 every hour (UTC), instead of each running an hour after its own last run and drifting apart. They run one after another in a single pass, in
 this order: the sheets first (so the flights are current), then the FsHub roster and flights, then the completing of flown flights.
 
-- **The minute is fixed for an install** and shown in `/setup panels` (and in the log when the bot starts). It is picked at random the first
+- **The minute is fixed for an install** and shown in the **All panels** tab (and in the log when the bot starts). It is picked at random the first
   time the bot runs (between 3 and 56 past the hour, so not on the hour itself) and kept in the database, so every copy of the bot does not ask
   FsHub, Google and Aeroconomy at the same instant. It never changes.
 - **A check is due when it has not been done since the slot began.** A restart does not move it, a check missed while the bot was off is done as soon
@@ -1322,9 +1348,9 @@ npm run demo
 ```
 
 This is the real bot on real Discord with generated, fictional flights; demo data lives in `data/demo.sqlite`,
-wiped on every start. The exceptions are `/setup sheet`, which works in demo mode too (so you can point a demo
-panel at a real schedule sheet), and `/fuel` and `/setup market`, which read AeroDAQ's real public data. In your
-server: `/setup panel-add airline:Demo Air channel:#somewhere`, then press **Reserve** on the panel (the bot asks
+wiped on every start. The exceptions are the **Google Sheet** tab, which works in demo mode too (so you can point a demo
+panel at a real schedule sheet), and `/fuel` and the **Market board** tab, which read AeroDAQ's real public data. In your
+server: the **Add or change a panel** tab, then press **Reserve** on the panel (the bot asks
 for a FsHub pilot ID; any number will do). Stop the normal bot first, since two copies of one bot would both answer.
 
 ## Data and privacy
@@ -1337,18 +1363,18 @@ key only as a file path in `.env`; the key file itself stays wherever you put it
 the FsHub pilot ID that person typed or that their airline's FsHub roster lists, with the name FsHub has for it
 (shown beside their name on flights they hold), per Discord user their own settings (whether `/hideunavailable` is on, and
 which of the three optional private messages they have switched off with `notifications`, and which hard landings they have been sent a remark or a safety notice about), and per server the channel and message of an AeroDAQ market
-board if one is switched on, per panel whether landing safety pay is on (the moment it was turned on, and what percentage of the $2,000 minimum pay a pilot loses after a Tier 2 landing and after a Tier 3 landing) and whether the deductions are written in the sheet, which hard landings it has told a pilot and the managers about, and which flights it left unfilled, and the channel, messages and chosen airports of a weather board if one is. For each pilot who asked for `/banking`: which accounts they chose (name and number) and the number of the newest payment already told, with their sealed token (the key is in `banking.key` beside the database); for each flight someone asked to be told about with `/monitor`: who, the flight number and how far it has got. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
-are kept too (pilot ID and name, route, times, aircraft), until `/setup fshub confirm:off` or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
+board if one is switched on, per panel whether landing safety pay is on (the moment it was turned on, and what percentage of the $2,000 minimum pay a pilot loses after a Tier 1 landing and after a Tier 3 landing) and whether the deductions are written in the sheet, which hard landings it has told a pilot and the managers about, and which flights it left unfilled, and the channel, messages and chosen airports of a weather board if one is. For each pilot who asked for `/banking`: which accounts they chose (name and number) and the number of the newest payment already told, with their sealed token (the key is in `banking.key` beside the database); for each flight someone asked to be told about with `/monitor`: who, the flight number and how far it has got. For each person who asked for a list of a panel in their DMs it keeps their Discord ID, the DM channel and the IDs of the list's messages (until they press Stop updates, or the panel is removed). It also remembers, in memory only, each pilot's Discord picture address for a few hours. If a panel is linked to a FsHub roster, the airline's FsHub flights of the last week
+are kept too (pilot ID and name, route, times, aircraft), until the **FsHub roster** tab or a week after landing (how long each flight took, with its route and aircraft but no pilot, is kept for six months for the late-departure warning),
 and that roster's pilots who have a Discord
 account listed (name, FsHub ID, Discord ID) are kept the same way. It holds no passwords from users, and a token only from a pilot who turned on `/banking` (see *Payment messages*): sealed, in a table of its own, and deleted when they turn it off. Finished flights are forgotten a week after their deadline. Pilots must allow DMs from
 server members for the Reserve conversation to work; if they haven't, the bot says how to turn it on. What a pilot sends in a DM to reserve a flight before the bot has their FsHub pilot ID is kept, as written, for the ten minutes the conversation stays open and then forgotten. When someone reserves from a DM, or asks for `commands`, Discord is asked, by their ID, whether they are a member of the server (and what roles they hold and whether they can see the panel's channel); nothing about the answer is kept.
 
 Paying pilots keeps, per airline, how it is set up (the airline's account number, the link of the Pilot Info tab, the first day to pay and the time of the daily list), and a **ledger** of every payment it has made or tried (the pilot's name and FsHub ID, the account number paid into, the amount, the unique ID, the result and when). A pay list waiting to be checked (it carries the pilots' account numbers, read from the airline's own sheet) is kept for a day at most, and is deleted once it is paid or replaced. Nothing of this is sent anywhere but Aeroconomy, with each payment.
 
-An airline that turns on `/setup safety-pay` also gets one plain file beside the database, `hard-landings.csv`: a row for each Tier 2 or Tier 3 landing with the pilot's Discord name, FsHub ID and FsHub name, the flight number, route, time of landing and landing rate. Nothing reads it but you; delete it whenever you like (the bot makes a new one with its heading the next time it has a row to add). The same facts are sent as a private message to the people with the airline's manager roles, or to the server owner when there are none the bot can find.
+An airline that turns on the **Landing safety** tab also gets one plain file beside the database, `hard-landings.csv`: a row for each Tier 1 or Tier 2 landing with the pilot's Discord name, FsHub ID and FsHub name, the flight number, route, time of landing and landing rate. Nothing reads it but you; delete it whenever you like (the bot makes a new one with its heading the next time it has a row to add). The same facts are sent as a private message to the people with the airline's manager roles, or to the server owner when there are none the bot can find.
 
 **What the bot contacts**, and when: Discord (always); Google Sheets (`docs.google.com`, for a linked sheet, and
-the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has `/setup flight-numbers` on; and, only when an admin runs `/setup profit`, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
+the Sheets API only if write-back is set up); `aerodaq.com` (only for `/fuel` or a market board); `aeroconomy.com` (its public contract pages, only for a panel that has the **Flight numbers** tab on; and, only when an admin runs the **Profit and pay** tab, the airline's aircraft and logbooks, read with the FsHub token in plain `GET` requests);
 `aeroconomy.com` payments (`POST /banking/payments`, with the FsHub token, **only** when an admin presses **Pay** under `/payroll`, or **Send** on a `/payroll test-transfer`; and `GET /banking/accounts` for `/payroll accounts` and test transfers); `aeroconomy.com` banking (`/banking/accounts` and each account's transactions, read with a pilot's own token, in plain `GET` requests, only for a pilot who turned on `/banking`, every five minutes for each account they chose; see *Payment messages*); `movements.fshub.io` is also asked for the airline of any flight someone is watching with `/monitor`, once a minute (see *Watching a flight*);
 `metar.vatsim.net` (VATSIM's public METAR service, no account or key, only when someone DMs the bot `metar <airport>`, presses an airport on a weather board or uses its Search button, and, for a server with a weather board, once every ten minutes, all its airports in one request; only the airport codes are sent; read-only; see *Weather reports* and *The weather board*);
 `movements.fshub.io` (FsHub's public live-flight feed, no account or key: an airline's list of flights, one request for the airline about once a minute, shared by the landing estimates, live tracking and `/monitor`; and, only for a followed pilot that list does not have, the list of pilots online and the current flight of that pilot if online, asked about by their public FsHub ID, at most about once every 45 seconds and only while someone is being followed; read-only, nothing else is sent; see *Live tracking*); `davidmegginson.github.io` (OurAirports' public airport list, `airports.csv`, a plain download of about 12 MB with no account or key, read when a late-departure warning or a sheet's Distance column needs the position of an airport the bot does not know yet, never twice within ten minutes and otherwise at most twice a day; the positions of all the airports in it that have an airline-style code are kept (about 35,000, 2 to 3 MB), and nothing else from it; nothing is sent but the request itself);
@@ -1367,7 +1393,7 @@ npm run typecheck     # src and tests
 ```
 
 `src/services` and `src/jobs` know nothing about Discord; `src/discord` is the thin layer on top (the panel
-renderer, the DM conversation, `/setup`, `/fuel`, the market board). `src/jobs/sheet.ts` is the Google Sheet
+renderer, the DM conversation, `/fuel`, the market board; `setupConsole.ts` is what the settings page runs the `/setup` commands with). `src/jobs/sheet.ts` is the Google Sheet
 reader, `src/aerodaq` the AeroDAQ client, `src/fshub` the read-only FsHub client (GET only, fixed host, token in a
 header, own request budget; `src/services/fshubSync.ts` reads linked rosters), `src/host/updates.ts` the GitHub
 update check. The FsHub client is optional: with no token `ctx.fshub` is null and nothing contacts FsHub. A future
@@ -1377,7 +1403,7 @@ Aeroconomy job feed would be a new class in `src/jobs` with one `fetch` method.
 
 For watching the bot's timers fire and its speed, there are two tools, neither part of a release:
 
-- **`npm run build:host -- --test`** writes `release-test/FlightPanelBot-TEST.exe` (a diagnostic build: `--scale <n>` sets the speed, **288** by default, which makes a day last five minutes and an hour twelve and a half seconds). Its clock runs fast, so the midnight list of flights without a pilot, flights leaving the panel a day after they were flown, the hourly slot and the schedule reads all happen every few minutes or seconds; every log line shows the real time and `[clock …]`, the time the bot believes it is. It **never contacts Google, FsHub, Aeroconomy accounts or Twitch**: whatever sheet link `/setup sheet` is given, the flights are made up (an invented airline and pilots, kept in a local file), and they keep changing (new days appear, pilots sign up, flown flights are ticked, a few are cancelled; `src/testbuild/testSheet.ts`). It keeps its own data folder (`%APPDATA%\FlightPanelBot-TEST`) and its setup page is on port **47812**, so it never touches the real bot's settings or database; give it a Discord bot of its own, since two programs signed in as one bot would both answer every button. The log has `[clock]` (a new day begins), `[fired]` (a step did something), `[test]` (what the made-up sheet changed), `[perf]` (once a minute: how late the bot's one thread is for everything else, memory, the size of the database, how often and how long each scheduled step ran) and `Slow:` lines (`src/testbuild/perfMonitor.ts`).
+- **`npm run build:host -- --test`** writes `release-test/FlightPanelBot-TEST.exe` (a diagnostic build: `--scale <n>` sets the speed, **288** by default, which makes a day last five minutes and an hour twelve and a half seconds). Its clock runs fast, so the midnight list of flights without a pilot, flights leaving the panel a day after they were flown, the hourly slot and the schedule reads all happen every few minutes or seconds; every log line shows the real time and `[clock …]`, the time the bot believes it is. It **never contacts Google, FsHub, Aeroconomy accounts or Twitch**: whatever sheet link the **Google Sheet** tab is given, the flights are made up (an invented airline and pilots, kept in a local file), and they keep changing (new days appear, pilots sign up, flown flights are ticked, a few are cancelled; `src/testbuild/testSheet.ts`). It keeps its own data folder (`%APPDATA%\FlightPanelBot-TEST`) and its setup page is on port **47812**, so it never touches the real bot's settings or database; give it a Discord bot of its own, since two programs signed in as one bot would both answer every button. The log has `[clock]` (a new day begins), `[fired]` (a step did something), `[test]` (what the made-up sheet changed), `[perf]` (once a minute: how late the bot's one thread is for everything else, memory, the size of the database, how often and how long each scheduled step ran) and `Slow:` lines (`src/testbuild/perfMonitor.ts`).
 - **`npx tsx test/soak/soak.ts [minutes] [scale]`** runs the bot's real services (scheduler, sheet reads and writes, panel redraws, the midnight list, FsHub completion) on the same fast clock against a pretend Discord, Google and FsHub that answer after a believable delay, with invented pilots who reserve, give back and fly flights, and prints a summary: how long a pilot waits from pressing Reserve to being told, the calls made to each outside service, the thread delay, memory and every `Slow:` line. Nothing leaves the computer.
 
 ## Licence

@@ -3,6 +3,8 @@ import { readFileSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Logger } from '../util/log.js';
+import { setupTabs, tabPhrase, type SetupConsole } from '../discord/setupConsole.js';
+import { SettingsError, type AirlineSettings, type LimitsChange, type SafetyPatch } from '../services/airlineSettings.js';
 import { fshubTokenProblem, normalizeFsHubToken } from '../fshub/client.js';
 import { checkDiscordToken, checkFsHubToken } from './accounts.js';
 import type { HostPaths } from './paths.js';
@@ -41,6 +43,8 @@ export interface WebServer {
 }
 
 const MAX_BODY_BYTES = 256 * 1024;
+/** The settings page's command runner takes more: a flights file for the import tab can be 256 KB of text, which is a little more once it is JSON. */
+const MAX_RUN_BODY_BYTES = 1024 * 1024;
 
 class HttpError extends Error {
   constructor(
@@ -57,13 +61,13 @@ const safeEqual = (a: string, b: string) => {
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) throw new HttpError(415, 'Send JSON.');
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'That is too large.');
+    if (size > limit) throw new HttpError(413, 'That is too large.');
     chunks.push(chunk as Buffer);
   }
   try {
@@ -122,6 +126,34 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
     };
   };
 
+  /** The airline settings of the running bot. */
+  const settingsOf = (): AirlineSettings => {
+    const settings = opts.supervisor.settings();
+    if (!settings) throw new HttpError(409, 'The bot is not running, so there are no airlines to show yet. Once it is online (it needs the Discord token), they appear here.');
+    return settings;
+  };
+  /** The `/setup` console of the running bot. */
+  const setupOf = (): SetupConsole => {
+    const setup = opts.supervisor.setup();
+    if (!setup) throw new HttpError(409, 'The bot is not running, so there is nothing to set up yet. Once it is online (it needs the Discord token), the servers appear here.');
+    return setup;
+  };
+  /** A panel number from the page. */
+  const panelOf = (raw: unknown): number => {
+    const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1) throw new HttpError(400, 'Choose an airline.');
+    return n;
+  };
+  /** Runs a settings call, turning a refused setting into an answer the page can show. */
+  const asHttp = async <T>(run: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (e) {
+      if (e instanceof SettingsError) throw new HttpError(e.status, e.message);
+      throw e;
+    }
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Only our own address: a web page on the internet that points a hostname at this computer is refused.
     const host = (req.headers.host ?? '').toLowerCase();
@@ -140,11 +172,34 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
 
     if (req.method === 'GET' && url.pathname === '/api/twitch') return json(res, 200, twitchView());
 
+    // The airlines the bot is set up for, and their landing safety pay and landing limits (only while the bot is running: its database is open then).
+    // The `/setup` commands as tabs: the tabs (and what each one asks), the servers with their airlines, and a server's channels and roles.
+    if (req.method === 'GET' && url.pathname === '/api/setup/tabs') return json(res, 200, { tabs: setupTabs() });
+    if (req.method === 'GET' && url.pathname === '/api/setup/servers') return json(res, 200, { servers: setupOf().servers() });
+    if (req.method === 'GET' && url.pathname === '/api/setup/choices') {
+      const guild = url.searchParams.get('guild') ?? '';
+      if (!/^\d{15,22}$/.test(guild)) throw new HttpError(400, 'Choose a server.');
+      const setup = setupOf();
+      try {
+        return json(res, 200, await setup.choices(guild));
+      } catch (e) {
+        throw new HttpError(404, e instanceof Error ? e.message : 'I could not read that server.');
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/airlines') return json(res, 200, { airlines: settingsOf().airlines() });
+    if (req.method === 'GET' && url.pathname === '/api/airline/safety') return json(res, 200, await asHttp(async () => settingsOf().safety(panelOf(url.searchParams.get('panel')))));
+    if (req.method === 'GET' && url.pathname === '/api/airline/fleet') {
+      const business = url.searchParams.get('business');
+      const fleet = await asHttp(() => settingsOf().fleet(panelOf(url.searchParams.get('panel')), { refresh: url.searchParams.get('refresh') === '1', ...(business ? { business: Number(business) } : {}) }));
+      // The reasons come from the commands' own wording, which names a /setup command: on this page that is a tab.
+      return json(res, 200, { ...fleet, problem: fleet.problem === null ? null : tabPhrase(fleet.problem) });
+    }
+
     if (req.method !== 'POST') throw new HttpError(404, 'Not found.');
     // A page on another site can't send JSON with our header, so this also blocks cross-site requests.
     const origin = req.headers.origin;
     if (origin !== undefined && origin !== `http://${host}`) throw new HttpError(403, 'Not allowed.');
-    const body = await readJson(req);
+    const body = await readJson(req, url.pathname === '/api/setup/run' ? MAX_RUN_BODY_BYTES : MAX_BODY_BYTES);
 
     switch (url.pathname) {
       case '/api/settings': {
@@ -313,6 +368,49 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
         opts.log.info('Twitch account disconnected');
         void opts.supervisor.restart();
         return json(res, 200, { ok: true });
+      }
+
+      // Landing safety pay for one airline: on or off, what a pilot loses of the minimum, the shares, deductions in the sheet, and the airline's default limits.
+      case '/api/airline/safety': {
+        const patch: SafetyPatch = {};
+        for (const k of ['on', 'deductions'] as const) if (k in body) patch[k] = body[k] as boolean;
+        for (const k of ['lossTier1', 'lossTier2', 'shareTier1', 'shareTier2'] as const) if (k in body) patch[k] = body[k] as number;
+        if ('defaults' in body) {
+          const d = body.defaults as Record<string, unknown> | null;
+          if (!d || typeof d !== 'object' || typeof d.warn !== 'number' || typeof d.tier1 !== 'number' || typeof d.tier2 !== 'number') throw new HttpError(400, 'Give the default limits as three numbers: warning, Tier 1 and Tier 2.');
+          patch.defaults = { warn: d.warn, tier1: d.tier1, tier2: d.tier2 };
+        }
+        return json(res, 200, await asHttp(async () => settingsOf().setSafety(panelOf(body.panel), patch)));
+      }
+
+      // The landing limits of some aircraft types: each with limits of its own, or null to put it back on the airline's default.
+      case '/api/airline/limits': {
+        if (!Array.isArray(body.changes)) throw new HttpError(400, 'Send the aircraft to change.');
+        const changes: LimitsChange[] = [];
+        for (const c of body.changes as unknown[]) {
+          const item = c as { aircraft?: unknown; limits?: unknown } | null;
+          if (!item || typeof item !== 'object' || typeof item.aircraft !== 'string') throw new HttpError(400, 'Each change needs an aircraft code.');
+          if (item.limits === null) changes.push({ aircraft: item.aircraft, limits: null });
+          else {
+            const l = item.limits as Record<string, unknown> | undefined;
+            if (!l || typeof l !== 'object' || typeof l.warn !== 'number' || typeof l.tier1 !== 'number' || typeof l.tier2 !== 'number') throw new HttpError(400, `The ${item.aircraft.slice(0, 8)} needs three limits: warning, Tier 1 and Tier 2.`);
+            changes.push({ aircraft: item.aircraft, limits: { warn: l.warn, tier1: l.tier1, tier2: l.tier2 } });
+          }
+        }
+        const done = await asHttp(async () => settingsOf().setLimits(panelOf(body.panel), changes));
+        return json(res, 200, { ok: true, ...done });
+      }
+
+      // Run a `/setup` command from its tab, as the server's owner (or, with `status`, say how things stand). A refusal is an ordinary answer with `ok: false`.
+      case '/api/setup/run': {
+        if (typeof body.tab !== 'string' || typeof body.guild !== 'string' || !/^\d{15,22}$/.test(body.guild)) throw new HttpError(400, 'Choose a tab and a server.');
+        const values = body.values;
+        if (values !== undefined && (values === null || typeof values !== 'object' || Array.isArray(values))) throw new HttpError(400, 'What was typed in the form is not valid.');
+        const panel = body.panel === undefined || body.panel === null ? null : Number(body.panel);
+        if (panel !== null && (!Number.isSafeInteger(panel) || panel < 1)) throw new HttpError(400, 'Choose an airline.');
+        const result = await setupOf().run({ tab: body.tab, guild: body.guild, panel, values: (values ?? {}) as Record<string, unknown>, status: body.status === true });
+        if (!result.ok || body.status !== true) opts.log.info(`Settings page: ${body.tab}${result.ok ? '' : ' (refused)'}`);
+        return json(res, 200, result);
       }
 
       case '/api/restart':

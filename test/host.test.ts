@@ -355,7 +355,18 @@ class FakeBot implements BotHandle {
   stopped = false;
   userTag = 'Airline Bot#0001';
   userId = BOT_ID;
-  constructor(private list: ServerInfo[] = []) {}
+  /** The airline settings the page can change; a test that uses them gives its own. */
+  settings: BotHandle['settings'];
+  /** The `/setup` console the page can run; a test that uses it gives its own. */
+  setup: BotHandle['setup'];
+  constructor(
+    private list: ServerInfo[] = [],
+    settings?: BotHandle['settings'],
+    setup?: BotHandle['setup'],
+  ) {
+    this.settings = settings ?? (null as unknown as BotHandle['settings']);
+    this.setup = setup ?? (null as unknown as BotHandle['setup']);
+  }
   servers() {
     return this.list;
   }

@@ -1,4 +1,4 @@
-import { fineShare, type FineTier, type SafetyFine } from './safetyPay.js';
+import type { FineTier, SafetyFine } from './safetyPay.js';
 
 /**
  * What a pilot is paid for a flight, by the rule the airline's CEO gave:
@@ -41,17 +41,17 @@ export const paidByDistance = (profit: number): boolean => profit < 0;
  * The pay for a flight that made `profit` dollars (negative for a loss) and was flown `distanceNm` nautical miles. A flight that lost
  * money needs its distance: without one (`null`, or anything that is not a distance) there is no pay to work out, and this says so with null.
  *
- * With a `fine` (a Tier 2 or Tier 3 landing, see `safetyPay.ts`) the pay is cut, and the airline has chosen what percentage of the $2,000 minimum pay
- * the pilot loses (`minimumLoss`, 0 to 100):
- *  - A flight that made a profit pays that tier's share of it (8% or 5%, rounded up to the next whole dollar) instead of 15%, but never less than the
+ * With a `fine` (a Tier 1 or Tier 2 landing, see `safetyPay.ts`) the pay is cut, and the airline has chosen the share of the profit the pilot is paid and what
+ * percentage of the $2,000 minimum pay the pilot loses (`minimumLoss`, 0 to 100):
+ *  - A flight that made a profit pays that tier's share of it (the airline's: 8% or 5% to start with, rounded up to the next whole dollar) instead of 15%, but never less than the
  *    minimum after the loss: $2,000 less `minimumLoss` per cent (rounded up). With no loss that is the whole $2,000; with all of it lost, there is no minimum.
  *  - A share of a loss makes no sense, so a flight that lost money is paid by its distance as usual, less `minimumLoss` per cent (rounded up).
  * Where the whole minimum is lost, a flight that made no profit, or lost money, pays nothing (0).
  */
-export function pilotPay(profit: number, distanceNm: number | null, fine?: Pick<SafetyFine, 'tier' | 'minimumLoss'> | null): PilotPay | null {
+export function pilotPay(profit: number, distanceNm: number | null, fine?: Pick<SafetyFine, 'tier' | 'minimumLoss' | 'share'> | null): PilotPay | null {
   const normal = normalPay(profit, distanceNm);
   if (normal === null || !fine) return normal;
-  const share = fineShare(fine.tier);
+  const share = Math.min(100, Math.max(0, fine.share));
   const loss = Math.min(100, Math.max(0, fine.minimumLoss));
   const kept = 100 - loss;
   const lost = paidByDistance(profit);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { FsHubError, type FsHubFlight } from '../src/fshub/client.js';
 import { parseScheduleValues } from '../src/jobs/sheet.js';
@@ -635,7 +636,7 @@ describe("the scheduler's FsHub lane", () => {
 /* ------------------------------------------------------------------ /setup fshub autocomplete */
 
 describe('/setup fshub autocomplete', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   let h: Harness;
   let d: DiscordHarness;
   let fshub: FakeFsHub;

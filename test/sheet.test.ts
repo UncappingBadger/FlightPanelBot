@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { UserError } from '../src/discord/errors.js';
 import { holderText, jobBlock } from '../src/discord/ui.js';
@@ -497,7 +498,7 @@ describe('refreshing from a linked sheet', () => {
 /* ------------------------------------------------------------------ /setup sheet */
 
 describe('/setup sheet', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   let h: Harness;
   let d: DiscordHarness;
   let google: ReturnType<typeof pretendGoogle>;

@@ -1,6 +1,7 @@
 import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite';
 import { callerPath } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
+import { safetyPolicyOf, type SafetyLimits, type SafetyPolicy } from '../services/safetyPay.js';
 import { installReservationAudit, type AuditRow } from './debugAudit.js';
 
 /* ------------------------------------------------------------------ types */
@@ -70,10 +71,16 @@ export interface Panel {
   flightNumbers: boolean;
   /** Landing safety pay (see `services/safetyPay.ts`): when it was turned on, or null while it is off. A flight that landed before then is paid as it always was. */
   safetyPaySince: number | null;
-  /** Whether the $2,000 minimum pay still applies to a flight whose pay is cut for a hard landing. */
-  /** The percentage (0 to 100) of the $2,000 minimum pay a pilot loses after a Tier 2 landing, and after a Tier 3 landing. */
+  /** The percentage (0 to 100) of the $2,000 minimum pay a pilot loses after a Tier 1 landing, and after a Tier 2 landing. */
+  safetyLossTier1: number;
   safetyLossTier2: number;
-  safetyLossTier3: number;
+  /** The percentage (0 to 100) of a flight's profit a pilot is paid after a Tier 1 landing, and after a Tier 2 landing (instead of the usual 15%). */
+  safetyShareTier1: number;
+  safetyShareTier2: number;
+  /** The airline's default landing limits, in feet per minute (a landing at least that hard): the warning, Tier 1 and Tier 2. An aircraft type with limits of its own (`safety_limits`) uses those instead. */
+  safetyWarnFpm: number;
+  safetyTier1Fpm: number;
+  safetyTier2Fpm: number;
   /** Whether what a hard landing took off a pilot's pay is also written in the sheet's Safety Deductions column. */
   safetyDeductions: boolean;
   /** How the panel is drawn: a card for each flight (the default), or a grid with a button for each flight. */
@@ -409,8 +416,13 @@ const toPanel = (r: Row): Panel => ({
   liveTracking: r.live_tracking === undefined || r.live_tracking === null ? true : n(r.live_tracking) !== 0,
   flightNumbers: r.flight_numbers !== undefined && r.flight_numbers !== null && n(r.flight_numbers) !== 0,
   safetyPaySince: nn(r.safety_pay_since),
-  safetyLossTier2: r.safety_loss_tier2 === undefined || r.safety_loss_tier2 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier2))),
-  safetyLossTier3: r.safety_loss_tier3 === undefined || r.safety_loss_tier3 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_tier3))),
+  safetyLossTier1: r.safety_loss_t1 === undefined || r.safety_loss_t1 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_t1))),
+  safetyLossTier2: r.safety_loss_t2 === undefined || r.safety_loss_t2 === null ? 0 : Math.min(100, Math.max(0, n(r.safety_loss_t2))),
+  safetyShareTier1: r.safety_share_tier1 === undefined || r.safety_share_tier1 === null ? 8 : Math.min(100, Math.max(0, n(r.safety_share_tier1))),
+  safetyShareTier2: r.safety_share_tier2 === undefined || r.safety_share_tier2 === null ? 5 : Math.min(100, Math.max(0, n(r.safety_share_tier2))),
+  safetyWarnFpm: r.safety_warn_fpm === undefined || r.safety_warn_fpm === null ? 400 : n(r.safety_warn_fpm),
+  safetyTier1Fpm: r.safety_tier1_fpm === undefined || r.safety_tier1_fpm === null ? 500 : n(r.safety_tier1_fpm),
+  safetyTier2Fpm: r.safety_tier2_fpm === undefined || r.safety_tier2_fpm === null ? 600 : n(r.safety_tier2_fpm),
   safetyDeductions: r.safety_deductions !== undefined && r.safety_deductions !== null && n(r.safety_deductions) !== 0,
   layout: s(r.layout) === 'grid' ? 'grid' : 'cards',
   gridDates: s(r.grid_dates) === 'mdy' ? 'mdy' : 'dmy',
@@ -685,8 +697,13 @@ export class Store {
       liveTracking: boolean;
       flightNumbers: boolean;
       safetyPaySince: number | null;
+      safetyLossTier1: number;
       safetyLossTier2: number;
-      safetyLossTier3: number;
+      safetyShareTier1: number;
+      safetyShareTier2: number;
+      safetyWarnFpm: number;
+      safetyTier1Fpm: number;
+      safetyTier2Fpm: number;
       safetyDeductions: boolean;
       layout: 'cards' | 'grid';
       gridDates: 'dmy' | 'mdy';
@@ -729,8 +746,14 @@ export class Store {
       params.push(patch.showDays);
     }
     if (patch.safetyPaySince !== undefined) (sets.push('safety_pay_since = ?'), params.push(patch.safetyPaySince));
-    if (patch.safetyLossTier2 !== undefined) (sets.push('safety_loss_tier2 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier2)))));
-    if (patch.safetyLossTier3 !== undefined) (sets.push('safety_loss_tier3 = ?'), params.push(Math.min(100, Math.max(0, Math.round(patch.safetyLossTier3)))));
+    const percent = (v: number) => Math.min(100, Math.max(0, Math.round(v)));
+    if (patch.safetyLossTier1 !== undefined) (sets.push('safety_loss_t1 = ?'), params.push(percent(patch.safetyLossTier1)));
+    if (patch.safetyLossTier2 !== undefined) (sets.push('safety_loss_t2 = ?'), params.push(percent(patch.safetyLossTier2)));
+    if (patch.safetyShareTier1 !== undefined) (sets.push('safety_share_tier1 = ?'), params.push(percent(patch.safetyShareTier1)));
+    if (patch.safetyShareTier2 !== undefined) (sets.push('safety_share_tier2 = ?'), params.push(percent(patch.safetyShareTier2)));
+    if (patch.safetyWarnFpm !== undefined) (sets.push('safety_warn_fpm = ?'), params.push(Math.round(patch.safetyWarnFpm)));
+    if (patch.safetyTier1Fpm !== undefined) (sets.push('safety_tier1_fpm = ?'), params.push(Math.round(patch.safetyTier1Fpm)));
+    if (patch.safetyTier2Fpm !== undefined) (sets.push('safety_tier2_fpm = ?'), params.push(Math.round(patch.safetyTier2Fpm)));
     if (patch.safetyDeductions !== undefined) (sets.push('safety_deductions = ?'), params.push(patch.safetyDeductions ? 1 : 0));
     if (patch.fshubAutoComplete !== undefined) (sets.push('fshub_autocomplete = ?'), params.push(patch.fshubAutoComplete ? 1 : 0));
     if (patch.fshubAutoCompleteAt !== undefined) (sets.push('fshub_autocomplete_at = ?'), params.push(patch.fshubAutoCompleteAt));
@@ -1176,8 +1199,48 @@ export class Store {
   /* ------------------------------------------------------------------ remarks on very hard landings */
 
   /** Has the bot already dealt with this FsHub flight (told the pilot, or decided not to)? */
+  /* ------------------------------------------------------------------ landing limits by aircraft */
+
+  /** The types of aircraft (ICAO codes, upper case) the airline's recent FsHub flights were flown in, the ones the bot still keeps. */
+  listFlownAircraftTypes(panelId: number): string[] {
+    return this.all('SELECT DISTINCT aircraft_icao FROM fshub_flights WHERE panel_id = ? AND aircraft_icao IS NOT NULL ORDER BY aircraft_icao', panelId).map((r) => s(r.aircraft_icao).toUpperCase());
+  }
+
+  /** The landing safety policy of a panel with the limits its aircraft types have of their own, or null while safety pay is off for it. */
+  safetyPolicy(panel: Panel): SafetyPolicy | null {
+    return panel.safetyPaySince === null ? null : safetyPolicyOf(panel, this.listSafetyLimits(panel.id));
+  }
+
+  /** The landing limits aircraft types of this panel have of their own, by ICAO code (upper case). A type that is not here uses the panel's default limits. */
+  listSafetyLimits(panelId: number): Map<string, SafetyLimits> {
+    const out = new Map<string, SafetyLimits>();
+    for (const r of this.all('SELECT aircraft, warn_fpm, tier1_fpm, tier2_fpm FROM safety_limits WHERE panel_id = ? ORDER BY aircraft', panelId)) {
+      out.set(s(r.aircraft), { warn: n(r.warn_fpm), tier1: n(r.tier1_fpm), tier2: n(r.tier2_fpm) });
+    }
+    return out;
+  }
+
+  /** Give an aircraft type limits of its own (its ICAO code is kept in upper case). */
+  setSafetyLimits(panelId: number, aircraft: string, limits: SafetyLimits, now: number): void {
+    this.run(
+      `INSERT INTO safety_limits(panel_id, aircraft, warn_fpm, tier1_fpm, tier2_fpm, updated_at) VALUES (?,?,?,?,?,?)
+       ON CONFLICT(panel_id, aircraft) DO UPDATE SET warn_fpm = excluded.warn_fpm, tier1_fpm = excluded.tier1_fpm, tier2_fpm = excluded.tier2_fpm, updated_at = excluded.updated_at`,
+      panelId,
+      aircraft.trim().toUpperCase(),
+      Math.round(limits.warn),
+      Math.round(limits.tier1),
+      Math.round(limits.tier2),
+      now,
+    );
+  }
+
+  /** Take an aircraft type's own limits away, so it uses the panel's default again. True if it had some. */
+  clearSafetyLimits(panelId: number, aircraft: string): boolean {
+    return this.run('DELETE FROM safety_limits WHERE panel_id = ? AND aircraft = ?', panelId, aircraft.trim().toUpperCase()).changes > 0;
+  }
+
   /**
-   * What has been done about a Tier 1, 2 or 3 landing so far, or null if nothing has: whether the pilot was sent the safety notice (`sent`) or could not be
+   * What has been done about a Warning, Tier 1 or Tier 2 landing so far, or null if nothing has: whether the pilot was sent the safety notice (`sent`) or could not be
    * (`closed`, their DMs are closed), null while they have not been tried, whether a row was written to the CSV, and whether the managers were told.
    */
   getSafetyLanding(panelId: number, flightId: number): { told: 'sent' | 'closed' | null; logged: boolean; reported: boolean } | null {

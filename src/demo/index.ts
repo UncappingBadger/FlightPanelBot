@@ -17,6 +17,8 @@ async function main(): Promise<void> {
   for (const suffix of ['', '-wal', '-shm']) rmSync(`${DEMO_DB}${suffix}`, { force: true });
   process.env.DATABASE_PATH = DEMO_DB;
   process.env.AEROBOT_DEMO = '1';
+  // The demo runs without the host app, so it has no settings page: it gets the full /setup command in Discord (see src/features.ts).
+  process.env.FPB_FULL_SETUP = '1';
 
   console.log('');
   console.log('==================== DEMO MODE ====================');

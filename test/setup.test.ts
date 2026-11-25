@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { describeError, UserError } from '../src/discord/errors.js';
 import { DemoJobSource } from '../src/jobs/demo.js';
 import { ImportError, parseJobsFile } from '../src/jobs/import.js';
@@ -8,7 +9,7 @@ import { silentLogger } from '../src/util/log.js';
 import { CHANNEL, GUILD, HOUR, makeHarness, sj, T0, USER_A, USER_B, type Harness } from './helpers.js';
 import { fakeInteraction, FakeUser, makeDiscordHarness, messageText, settle, type DiscordHarness, type FakeInteractionOptions } from './discord-helpers.js';
 
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const NEW_CHANNEL = '800000000000000001';
 const attachment = (name = 'jobs.csv', size = 200) => ({ url: `https://cdn.discordapp.com/attachments/1/2/${name}`, size, name });
 const csvResponse = (text: string) => async () => new Response(text, { status: 200 });

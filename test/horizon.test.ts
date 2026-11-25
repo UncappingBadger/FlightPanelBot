@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import type { Client } from 'discord.js';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { PanelService } from '../src/discord/panel.js';
 import { embedSize, renderPanelParts } from '../src/discord/ui.js';
@@ -308,7 +309,7 @@ describe('the panel lists the next 7 days of flights', () => {
 /* ------------------------------------------------------------------ /setup window */
 
 describe('/setup window', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   let h: Harness;
   let d: DiscordHarness;
   const pid = () => h.panel.id;

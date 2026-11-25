@@ -44,6 +44,8 @@ export interface LogFlight {
   landedAt: number;
   /** The distance Aeroconomy logged for the flight, in nautical miles (it takes it from FsHub), or null when it gave none. */
   distanceNm: number | null;
+  /** The type (ICAO code) of the aircraft whose logbook the entry is in, when known: set by whoever reads the logbook, not by Aeroconomy's entry. */
+  aircraftType?: string | null;
 }
 
 const objectOrMissing = (v: unknown): unknown => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : undefined);

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { UserError } from '../src/discord/errors.js';
 import { GoogleAuthError, loadServiceAccount, signJwt, TOKEN_URL, tokenProvider } from '../src/google/serviceAccount.js';
@@ -783,7 +784,7 @@ describe('pilots reserving, releasing and completing flights with write-back on'
     it('refuses in plain words when the panel keeps its flights in a sheet the bot cannot write to', async () => {
       await reserve(alice, 'TST-001');
       d = makeDiscordHarness(h, { writeback: null });
-      await assert.rejects(press(alice, `panel:complete:${pid()}`), (e: unknown) => e instanceof UserError && /keeps its flights in a Google Sheet, and I can't write to it/.test(e.message) && /\/setup writeback/.test(e.message));
+      await assert.rejects(press(alice, `panel:complete:${pid()}`), (e: unknown) => e instanceof UserError && /keeps its flights in a Google Sheet, and I can't write to it/.test(e.message) && /Sheet write-back/.test(e.message));
       h.store.updatePanel(pid(), { writeback: false });
       d = makeDiscordHarness(h, { writeback: wb });
       await assert.rejects(press(alice, `panel:complete:${pid()}`), /can't write to it/);
@@ -810,7 +811,7 @@ describe('pilots reserving, releasing and completing flights with write-back on'
   });
 
   describe('admins releasing someone', () => {
-    const setup = commands.find((c) => c.data.name === 'setup')!;
+    const setup = setupCommand;
     it('takes the bot\'s name off the sheet too, and says so', async () => {
       await reserve(alice, 'TST-001');
       const f = fakeInteraction({ sub: 'release', admin: true, options: { code: 'TST-001' } });
@@ -947,7 +948,7 @@ describe('completing flights: the rules', () => {
 /* ------------------------------------------------------------------ admin commands */
 
 describe('/setup writeback and the sheet link', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   let h: Harness;
   let d: DiscordHarness;
   let g: FakeGoogle;

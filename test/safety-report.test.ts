@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -11,6 +11,7 @@ import type { HeldFlight } from '../src/services/airlineProfits.js';
 import { AFTER_NOTICE_CLOSERS, AFTER_NOTICE_INTROS, composeRemark, HardLandings, SAFETY_FRESH_FOR_MS } from '../src/services/hardLanding.js';
 import {
   appendPenaltyCsv,
+  setAsideOldCsv,
   CSV_HEADER,
   csvField,
   csvLine,
@@ -37,7 +38,10 @@ const MANAGER_2 = '810000000000000002';
 
 const report = (over: Partial<PenaltyReport> = {}): PenaltyReport => ({
   airline: 'Test Air',
-  tier: 2,
+  tier: 'tier1',
+  share: 8,
+  limit: 400,
+  aircraft: 'A320',
   rate: -452,
   landedAt: Date.UTC(2026, 10, 22, 14, 5),
   pilotName: 'alice',
@@ -65,28 +69,28 @@ describe('the hard-landings CSV', () => {
     assert.equal(HARD_LANDINGS_CSV, 'hard-landings.csv');
   });
 
-  it('has the columns in the order the airline asked for, then the tier, the airline and FsHub\'s own flight number', () => {
-    assert.deepEqual([...CSV_HEADER], ['Pilot Name', 'FsHub ID', 'FsHub Username (if different)', 'Flight Number', 'Departure-Arrival', 'Landed (UTC)', 'Landing Rate (fpm)', 'Tier', 'Airline', 'FsHub Flight ID']);
+  it('has the columns in the order the airline asked for, then the aircraft, the tier and its limit, the airline and FsHub\'s own flight number', () => {
+    assert.deepEqual([...CSV_HEADER], ['Pilot Name', 'FsHub ID', 'FsHub Username (if different)', 'Flight Number', 'Departure-Arrival', 'Landed (UTC)', 'Landing Rate (fpm)', 'Aircraft', 'Tier', 'Tier Limit (fpm)', 'Airline', 'FsHub Flight ID']);
   });
 
   it('is one line a landing: the pilot, FsHub ID and name, flight number, route, time of landing in UTC and the rate', () => {
-    assert.equal(csvLine(report()), 'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-452,Tier 2,Test Air,5100001');
+    assert.equal(csvLine(report()), 'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-452,A320,Tier 1,400,Test Air,5100001');
     assert.equal(utcText(Date.UTC(2026, 0, 3, 9, 7)), '2026-01-03 09:07');
   });
 
   it('leaves the FsHub username and the flight number blank when there is none', () => {
-    assert.equal(csvLine(report({ fshubUsername: null, flightNumber: null })), 'alice,1001,,,EGLL-EGKK,2026-11-22 14:05,-452,Tier 2,Test Air,5100001');
+    assert.equal(csvLine(report({ fshubUsername: null, flightNumber: null })), 'alice,1001,,,EGLL-EGKK,2026-11-22 14:05,-452,A320,Tier 1,400,Test Air,5100001');
   });
 
   it('is created with a heading (and the mark that lets Excel read accents) the first time, and only the heading once', () => {
     appendPenaltyCsv(file, report());
-    appendPenaltyCsv(file, report({ flightId: 5_100_002, tier: 3, rate: -710, pilotName: 'Zoë' }));
+    appendPenaltyCsv(file, report({ flightId: 5_100_002, tier: 'tier2', share: 5, limit: 600, rate: -710, pilotName: 'Zoë' }));
     const text = readFileSync(file, 'utf8');
     assert.ok(text.startsWith(BOM));
     assert.deepEqual(text.slice(1).split('\r\n'), [
       CSV_HEADER.join(','),
-      'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-452,Tier 2,Test Air,5100001',
-      'Zoë,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-710,Tier 3,Test Air,5100002',
+      'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-452,A320,Tier 1,400,Test Air,5100001',
+      'Zoë,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-710,A320,Tier 2,600,Test Air,5100002',
       '',
     ]);
   });
@@ -120,24 +124,66 @@ describe('the hard-landings CSV', () => {
   });
 });
 
+/* ------------------------------------------------------------------ a file kept by an earlier version */
+
+describe('the hard-landings CSV of an earlier version', () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fpb-csv-old-'));
+    file = join(dir, HARD_LANDINGS_CSV);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const OLD_HEADER = 'Pilot Name,FsHub ID,FsHub Username (if different),Flight Number,Departure-Arrival,Landed (UTC),Landing Rate (fpm),Tier,Airline,FsHub Flight ID';
+  const OLD_ROW = 'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-20 14:05,-452,Tier 2,Test Air,5100001';
+
+  it('is set aside under a new name, whole, and a new file with the new columns is started (the old Tier 2 was the first pay cut, which is Tier 1 now)', () => {
+    writeFileSync(file, `${BOM}${OLD_HEADER}\r\n${OLD_ROW}\r\n`);
+    appendPenaltyCsv(file, report());
+    const kept = join(dir, `${HARD_LANDINGS_CSV.replace(/\.csv$/, '')}-before-limits.csv`);
+    assert.equal(readFileSync(kept, 'utf8'), `${BOM}${OLD_HEADER}\r\n${OLD_ROW}\r\n`, 'the old file is untouched');
+    assert.deepEqual(readFileSync(file, 'utf8').slice(1).split('\r\n'), [CSV_HEADER.join(','), 'alice,1001,Alice Pilot,TST216,EGLL-EGKK,2026-11-22 14:05,-452,A320,Tier 1,400,Test Air,5100001', '']);
+  });
+
+  it('does not touch a file that already has the new columns, however many rows it has', () => {
+    appendPenaltyCsv(file, report());
+    appendPenaltyCsv(file, report({ flightId: 2 }));
+    assert.equal(setAsideOldCsv(file), null);
+    assert.equal(readFileSync(file, 'utf8').split('\r\n').filter((l) => l !== '').length, 3);
+    assert.deepEqual(readdirSync(dir), [HARD_LANDINGS_CSV]);
+  });
+
+  it('numbers the name when an earlier file was set aside already, and does nothing for a file that is not there', () => {
+    assert.equal(setAsideOldCsv(file), null);
+    writeFileSync(file, `${OLD_HEADER}\r\n`);
+    const first = setAsideOldCsv(file);
+    writeFileSync(file, `${OLD_HEADER}\r\n${OLD_ROW}\r\n`);
+    const second = setAsideOldCsv(file);
+    assert.match(first!, /-before-limits\.csv$/);
+    assert.match(second!, /-before-limits-2\.csv$/);
+    assert.equal(existsSync(file), false);
+    assert.equal(readdirSync(dir).length, 2);
+  });
+});
+
 /* ------------------------------------------------------------------ the messages */
 
 describe('what managers are sent', () => {
   it('reports a penalty landing: pilot, FsHub ID and name, flight, route, time and rate', () => {
     const text = penaltyMessage(report(), true, true);
-    assert.match(text, /^🚨 \*\*Safety violation, Tier 2\*\* · Test Air\n/);
+    assert.match(text, /^🚨 \*\*Safety violation, Tier 1\*\* · Test Air\n/);
     assert.match(text, /\*\*Pilot:\*\* \*\*alice\*\* · FsHub ID 1001 · FsHub username Alice Pilot\n/);
     assert.match(text, /\*\*Flight:\*\* TST216 · EGLL → EGKK\n/);
     assert.match(text, /\*\*Landed:\*\* <t:\d+:f> \(2026-11-22 14:05 UTC\)\n/);
-    assert.match(text, /\*\*Landing rate:\*\* -452 fpm\n/);
+    assert.match(text, /\*\*Landing rate:\*\* -452 fpm in the A320 \(its Tier 1 limit is -400 fpm\)\n/);
     assert.match(text, /8% of the profit instead of 15%/);
     assert.match(text, /The pilot has been sent the safety notice\./);
     assert.match(text, /Added to hard-landings\.csv in my data folder\./);
   });
 
-  it('uses the Tier 3 sign and share, and leaves out the FsHub username when there is none', () => {
-    const text = penaltyMessage(report({ tier: 3, fshubUsername: null }), true, true);
-    assert.match(text, /^🛑 \*\*Safety violation, Tier 3\*\*/);
+  it('uses the Tier 2 sign and share, and leaves out the FsHub username when there is none', () => {
+    const text = penaltyMessage(report({ tier: 'tier2', share: 5, limit: 600, fshubUsername: null }), true, true);
+    assert.match(text, /^🛑 \*\*Safety violation, Tier 2\*\*/);
     assert.match(text, /5% of the profit/);
     assert.doesNotMatch(text, /FsHub username/);
   });
@@ -320,7 +366,7 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
   });
   const panel = () => h.store.getPanel(h.panel.id)!;
   const check = (...flights: FlownFlight[]) => svc.check(panel(), flights);
-  const turnOn = (minimumLoss = 0, since = NOW - DAY) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier2: minimumLoss, safetyLossTier3: minimumLoss });
+  const turnOn = (minimumLoss = 0, since = NOW - DAY) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier1: minimumLoss, safetyLossTier2: minimumLoss });
   const make = (o: { managers?: boolean; csv?: boolean; nameOf?: boolean } = {}) =>
     new HardLandings(
       h.store,
@@ -356,14 +402,15 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
     await h.close();
   });
 
-  it('sends the pilot the safety notice, then the managers the report, and adds a row to the CSV, for a Tier 2 landing', async () => {
+  it('sends the pilot the safety notice, then the managers the report, and adds a row to the CSV, for a Tier 1 landing', async () => {
     const f = flight({ landingRate: -452 });
     assert.equal(await check(f), 3);
     assert.deepEqual(sent.map((s) => s.to), [USER_A.discordId, MANAGER_1, MANAGER_2], 'the pilot first, then the managers');
-    assert.match(sent[0]!.content, /Tier 2 Safety Violation[^]*-452 fpm/);
-    assert.match(sent[1]!.content, /^🚨 \*\*Safety violation, Tier 2\*\* · Test Air/);
+    assert.match(sent[0]!.content, /Tier 1 Safety Violation[^]*-452 fpm/);
+    assert.match(sent[0]!.content, /The limits for the A320: warning from -375 fpm, Tier 1 from -400, Tier 2 from -600\./, 'the aircraft FsHub named, and the limits it was judged by');
+    assert.match(sent[1]!.content, /^🚨 \*\*Safety violation, Tier 1\*\* · Test Air/);
     assert.equal(sent[1]!.content, sent[2]!.content, 'the same report to each manager');
-    assert.deepEqual(rows(), [`alice,1001,Alice Pilot,,EGLL-EGKK,${utcText(f.arrivedAt)},-452,Tier 2,Test Air,${f.flightId}`]);
+    assert.deepEqual(rows(), [`alice,1001,Alice Pilot,,EGLL-EGKK,${utcText(f.arrivedAt)},-452,A320,Tier 1,400,Test Air,${f.flightId}`]);
     assert.match(sent[1]!.content, /Added to hard-landings\.csv in my data folder\./);
   });
 
@@ -395,21 +442,21 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
     assert.equal(rows()[0]!.split(',')[3], job.code);
   });
 
-  it('does the same for Tier 3, with its own notice', async () => {
+  it('does the same for Tier 2, with its own notice', async () => {
     assert.equal(await check(flight({ landingRate: -650 })), 4, 'the notice, two reports, and the remark that follows');
-    assert.match(sent[0]!.content, /Tier 3 Critical Safety Violation/);
-    assert.match(sent[1]!.content, /Safety violation, Tier 3/);
-    assert.match(rows()[0]!, /,-650,Tier 3,/);
+    assert.match(sent[0]!.content, /Tier 2 Critical Safety Violation/);
+    assert.match(sent[1]!.content, /Safety violation, Tier 2/);
+    assert.match(rows()[0]!, /,-650,A320,Tier 2,600,/);
   });
 
   it('says each tier\'s own percentage of the minimum in the notice, when the airline set the tiers apart', async () => {
-    h.store.updatePanel(h.panel.id, { safetyLossTier2: 10, safetyLossTier3: 40 });
+    h.store.updatePanel(h.panel.id, { safetyLossTier1: 10, safetyLossTier2: 40 });
     await check(flight({ landingRate: -450 }), flight({ landingRate: -650 }));
     const notices = sent.filter((s) => s.to === USER_A.discordId && /Safety Violation/.test(s.content));
     assert.equal(notices.length, 2);
-    assert.match(notices[0]!.content, /Tier 2 Safety Violation[^]*takes 10% off the \$2,000 minimum pay/);
-    assert.match(notices[1]!.content, /Tier 3 Critical Safety Violation[^]*takes 40% off the \$2,000 minimum pay/);
-    h.store.updatePanel(h.panel.id, { safetyLossTier2: 0, safetyLossTier3: 100 });
+    assert.match(notices[0]!.content, /Tier 1 Safety Violation[^]*takes 10% off the \$2,000 minimum pay/);
+    assert.match(notices[1]!.content, /Tier 2 Critical Safety Violation[^]*takes 40% off the \$2,000 minimum pay/);
+    h.store.updatePanel(h.panel.id, { safetyLossTier1: 0, safetyLossTier2: 100 });
     sent = [];
     await check(flight({ landingRate: -450, flightId: 6_100_001 }), flight({ landingRate: -650, flightId: 6_100_002 }));
     const later = sent.filter((s) => s.to === USER_A.discordId && /Safety Violation/.test(s.content));
@@ -417,14 +464,52 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
     assert.match(later[1]!.content, /takes all of the \$2,000 minimum pay/);
   });
 
-  it('sends only the warning for a Tier 1 landing: nothing to the managers, nothing in the CSV', async () => {
+  it('judges a landing by the limits of the aircraft that flew it: the same rate is a violation in one aircraft and nothing in another', async () => {
+    h.store.setSafetyLimits(h.panel.id, 'A320', { warn: 350, tier1: 450, tier2: 550 }, NOW);
+    h.store.setSafetyLimits(h.panel.id, 'B748', { warn: 700, tier1: 850, tier2: 1000 }, NOW);
+    // -460 is past the A320's Tier 1 limit of 450, a warning only by the airline's default (375, 400, 600: it is Tier 1 there too, so use the 747-8 and a plain one)
+    assert.equal(await check(flight({ aircraftIcao: 'A320', landingRate: -460 })), 3, 'the notice and the report to two managers');
+    assert.match(sent[0]!.content, /Tier 1 Safety Violation/);
+    assert.match(sent[0]!.content, /The limits for the A320: warning from -350 fpm, Tier 1 from -450, Tier 2 from -550\./);
+    assert.match(sent[0]!.content, /HARD LANDING between -450 and -549fpm/);
+    assert.match(sent[1]!.content, /\*\*Landing rate:\*\* -460 fpm in the A320 \(its Tier 1 limit is -450 fpm\)/);
+    assert.match(rows()[0]!, /,-460,A320,Tier 1,450,/);
+    sent = [];
+    assert.equal(await check(flight({ aircraftIcao: 'B748', landingRate: -460 })), 0, 'nothing at all for a 747-8, whose warning starts at 700');
+    assert.equal(rows().length, 1);
+    assert.equal(await check(flight({ aircraftIcao: 'B748', landingRate: -900 })), 4, 'but -900 is past its Tier 1 limit of 850 (the notice, two reports and the light-hearted remark that follows a landing of -600 or harder)');
+    assert.match(rows().at(-1)!, /,-900,B748,Tier 1,850,/);
+    assert.match(sent[0]!.content, /The limits for the B748: warning from -700 fpm, Tier 1 from -850, Tier 2 from -1000\./);
+  });
+
+  it('uses the airline\'s limits for an aircraft with none of its own, or one FsHub did not name, and says whose they are', async () => {
+    h.store.setSafetyLimits(h.panel.id, 'B748', { warn: 700, tier1: 850, tier2: 1000 }, NOW);
+    assert.equal(await check(flight({ aircraftIcao: 'C172', landingRate: -450 })), 3);
+    assert.match(sent[0]!.content, /The limits for the C172: warning from -375 fpm, Tier 1 from -400, Tier 2 from -600\./);
+    sent = [];
+    assert.equal(await check(flight({ aircraftIcao: null, landingRate: -450 })), 3);
+    assert.match(sent[0]!.content, /The airline's limits: warning from -375 fpm, Tier 1 from -400, Tier 2 from -600\./);
+    assert.match(rows().at(-1)!, /,-450,,Tier 1,400,/, 'no aircraft in the CSV either');
+  });
+
+  it('pays the share the airline set, and says it in the notice and the report', async () => {
+    h.store.updatePanel(h.panel.id, { safetyShareTier1: 12, safetyShareTier2: 3 });
+    await check(flight({ landingRate: -450 }), flight({ landingRate: -650 }));
+    const notices = sent.filter((s) => s.to === USER_A.discordId && /Safety Violation/.test(s.content));
+    assert.match(notices[0]!.content, /you will receive only 12% of this flight's profits/);
+    assert.match(notices[1]!.content, /you will receive only 3% of this flight's profits/);
+    assert.ok(sent.some((s) => /12% of the profit instead of 15%/.test(s.content)));
+    assert.ok(sent.some((s) => /3% of the profit instead of 15%/.test(s.content)));
+  });
+
+  it('sends only the warning for a landing in the warning band: nothing to the managers, nothing in the CSV', async () => {
     assert.equal(await check(flight({ landingRate: -380 })), 1);
     assert.deepEqual(sent.map((s) => s.to), [USER_A.discordId]);
-    assert.match(sent[0]!.content, /Tier 1 Safety Warning/);
+    assert.match(sent[0]!.content, /\*\*Safety Warning\*\*/);
     assert.equal(existsSync(file), false);
   });
 
-  it('sends nothing for a landing gentler than Tier 1, one with no rate, or one too hard to believe', async () => {
+  it('sends nothing for a landing gentler than the warning, one with no rate, or one too hard to believe', async () => {
     assert.equal(await check(flight({ landingRate: -374 }), flight({ landingRate: null }), flight({ landingRate: 0 }), flight({ landingRate: -3000 })), 0);
     assert.deepEqual(sent, []);
     assert.equal(existsSync(file), false);
@@ -542,7 +627,7 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
       const f = flight({ landingRate: -900 });
       assert.equal(await check(f), 4);
       assert.deepEqual(sent.map((s) => s.to), [USER_A.discordId, MANAGER_1, MANAGER_2, USER_A.discordId], 'the airline\'s message first, the joke last');
-      assert.match(sent[0]!.content, /Tier 3 Critical Safety Violation/);
+      assert.match(sent[0]!.content, /Tier 2 Critical Safety Violation/);
       assert.equal(sent[3]!.content, composeRemark({ rate: -900, route: 'EGLL → EGKK', aircraft: 'A320', airline: 'Test Air', flightId: f.flightId, afterNotice: true }));
       assert.match(sent[3]!.content, /^☕ \*\*Kevin, Scheduler\*\*\n/);
     });
@@ -576,7 +661,7 @@ describe('when a pilot lands hard for an airline with safety pay on', () => {
       }
     });
 
-    it('is not sent for a Tier 2 landing, which is under -600', async () => {
+    it('is not sent for a Tier 1 landing, which is under -600', async () => {
       assert.equal(await check(flight({ landingRate: -500 })), 3);
       assert.ok(sent.every((s) => !s.content.startsWith('☕')));
     });
@@ -818,12 +903,12 @@ describe('the roles the server owner set, and who is sent the safety reports', (
     sent = [];
     listFails = false;
     h.store.setPilotId(USER_A.discordId, 1001, NOW);
-    h.store.updatePanel(h.panel.id, { safetyPaySince: NOW - DAY, safetyLossTier2: 0, safetyLossTier3: 0 });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: NOW - DAY, safetyLossTier1: 0, safetyLossTier2: 0 });
     build();
   });
   afterEach(() => h.close());
 
-  it('sends a Tier 2 or Tier 3 report to the members of the /setup refresh-roles role', async () => {
+  it('sends a Tier 1 or Tier 2 report to the members of the /setup refresh-roles role', async () => {
     h.store.addRefreshRole(SERVER, MANAGER_1, NOW);
     await svc.check(panel(), [hard(7_000_001)]);
     assert.deepEqual(reports(), [REFRESHER], 'the role holder, and not the owner, a bystander or a bot');

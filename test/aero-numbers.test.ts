@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AeroconomyClient, AeroconomyError, AEROCONOMY_API, type AeroContract, type AeroFlight } from '../src/aeroconomy/client.js';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import type { SourceJob, JobSource } from '../src/jobs/types.js';
 import { AeroNumbers, flightCodes, matchNumbers, type NumberedJob } from '../src/services/aeroNumbers.js';
 import { matchFlight } from '../src/services/flightEtas.js';
@@ -16,7 +16,7 @@ const MIN = 60_000;
 const DAY = 24 * HOUR;
 const AIRLINE = 4242;
 const NOW = T0 + 6 * HOUR;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });

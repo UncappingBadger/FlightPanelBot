@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../src/db/db.js';
 import { ROUTE_TIME_MAX_MINUTES, ROUTE_TIME_MIN_MINUTES, Store, type FlownFlight, type RouteTime } from '../src/db/store.js';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { speedFor, speedKindOf } from '../src/services/aircraftSpeeds.js';
 import { AirportDirectory, AIRPORTS_URL, greatCircleNm, pickAirports } from '../src/services/airports.js';
@@ -25,7 +25,7 @@ import { FakeUser, fakeInteraction, makeDiscordHarness, settle, type DiscordHarn
 
 const MIN = 60_000;
 const DAY = 24 * HOUR;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 
 /* ------------------------------------------------------------------ how long a flight takes */
 

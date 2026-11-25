@@ -6,7 +6,8 @@ import { AeroconomyClient, AEROCONOMY_API, type AeroContract, type AeroFlight } 
 import { AeroconomyError } from '../src/aeroconomy/http.js';
 import { MIGRATIONS } from '../src/db/db.js';
 import { Store } from '../src/db/store.js';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { previewText, profitReport } from '../src/discord/profitUi.js';
 import { noPings } from '../src/discord/ui.js';
 import { tokenProvider } from '../src/google/serviceAccount.js';
@@ -937,7 +938,7 @@ describe('filling blank Profit Made cells in the sheet', () => {
 /* ------------------------------------------------------------------ the command */
 
 describe('/setup profit', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const profitButtons = componentHandlers.find((c) => c.prefix === 'profit')!;
   let h: Harness;
   let d: DiscordHarness;

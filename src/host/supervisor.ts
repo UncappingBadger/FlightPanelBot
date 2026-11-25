@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { startBot as realStartBot, type BotHandle, type ServerInfo, type StartOptions } from '../bot.js';
 import type { Config } from '../config.js';
+import type { SetupConsole } from '../discord/setupConsole.js';
+import type { AirlineSettings } from '../services/airlineSettings.js';
 import type { Logger } from '../util/log.js';
 import { inviteUrl } from './invite.js';
 import type { HostPaths } from './paths.js';
@@ -59,6 +61,16 @@ export class Supervisor {
     this.startBot = o.startBot ?? realStartBot;
     this.now = o.now ?? Date.now;
     this.updatedAt = this.now();
+  }
+
+  /** What the settings page can change about each airline, or null while the bot is not running (its database is only open then). */
+  settings(): AirlineSettings | null {
+    return this.bot?.settings ?? null;
+  }
+
+  /** What the settings page runs the `/setup` commands with, or null while the bot is not running. */
+  setup(): SetupConsole | null {
+    return this.bot?.setup ?? null;
   }
 
   state(): HostState {

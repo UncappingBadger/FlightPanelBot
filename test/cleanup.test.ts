@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MIGRATIONS, openDatabase } from '../src/db/db.js';
 import { Store } from '../src/db/store.js';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { startOfUtcDay } from '../src/discord/panel.js';
 import type { Reminder } from '../src/services/reminders.js';
 import { Scheduler } from '../src/services/scheduler.js';
@@ -247,7 +247,7 @@ describe('clearing the "pilots needed" announcements at 23:59', () => {
 
     it('/setup panel-remove does it, and the notes go with the panel', async () => {
       const id = await announce();
-      const setup = commands.find((c) => c.data.name === 'setup')!;
+      const setup = setupCommand;
       const f = fakeInteraction({ sub: 'panel-remove', admin: true, options: { airline: 'TST' } });
       await setup.execute(d.ctx, f.i);
       assert.equal(alive(id), false);
@@ -290,7 +290,7 @@ describe('clearing the "pilots needed" announcements at 23:59', () => {
 describe('/setup reminders cleanup', () => {
   let h: Harness;
   let d: DiscordHarness;
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const guildFake = () => ({
     channels: { fetch: async (id: string) => ({ id, permissionsFor: () => ({ has: () => true }) }) },
     roles: { fetch: async () => null },

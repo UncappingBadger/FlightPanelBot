@@ -59,7 +59,7 @@ export class SourceRefresher {
   /** Fetch and apply now. Throws if the panel has no source or the source fails (old jobs are left as they were). */
   async refresh(panel: Panel): Promise<RefreshOutcome> {
     const source = this.sourceFor(panel);
-    if (!source) throw new JobError('BAD_INPUT', "This panel's flights come from file imports, so there's nothing to fetch. Use `/setup import`.");
+    if (!source) throw new JobError('BAD_INPUT', "This panel's flights come from file imports, so there's nothing to fetch. Load flights with the **Import flights** tab of the bot's settings page.");
     const now = this.now();
     this.lastAttempt.set(panel.id, now);
     if (DEBUG_BUILD) dbg(this.log, `refresh START ${panel.airlineName} (panel ${panel.id}), source ${source.kind}, last refresh ${panel.lastRefreshAt === null ? 'never' : new Date(panel.lastRefreshAt).toISOString()}, asked by ${callerPath(1, 5)}`);

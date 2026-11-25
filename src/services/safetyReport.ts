@@ -1,16 +1,16 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { FlownFlight, Panel, Store } from '../db/store.js';
 import { plainText, truncate } from '../util/format.js';
 import type { Logger } from '../util/log.js';
 import type { HeldFlight } from './airlineProfits.js';
 import { landingWindow } from './flightMatch.js';
-import { fineShare, IMPLAUSIBLE_FPM, type FineTier } from './safetyPay.js';
+import { IMPLAUSIBLE_FPM, tierName, type FineTier } from './safetyPay.js';
 
 /**
  * What management is told about landing safety, and the file the bot keeps of it.
  *
- *  - When a pilot lands at Tier 2 or Tier 3 (the tiers that cut pay), the airline's managers are sent a report by private message, and the same facts are
+ *  - When a pilot lands at Tier 1 or Tier 2 (the tiers that cut pay), the airline's managers are sent a report by private message, and the same facts are
  *    added to a CSV file in the bot's data folder: `hard-landings.csv`.
  *  - When safety pay is on and a flight's pay is left unfilled because FsHub's landing rate cannot be trusted, the managers are told that too.
  *
@@ -48,6 +48,11 @@ export type SendDm = (discordId: string, content: string) => Promise<boolean>;
 export interface PenaltyReport {
   airline: string;
   tier: FineTier;
+  /** The percentage of the flight's profit the pilot is paid after this landing, and the limit of the tier as the aircraft's limits had it (feet per minute). */
+  share: number;
+  limit: number;
+  /** The aircraft's type (ICAO code), when FsHub gave one. */
+  aircraft: string | null;
   /** The landing rate in feet per minute, a descent negative (-452). */
   rate: number;
   landedAt: number;
@@ -68,7 +73,7 @@ export interface PenaltyReport {
 export const utcText = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
 
 /** The columns of the CSV, in the order the airline asked for them, with the airline, the tier and FsHub's flight number after. */
-export const CSV_HEADER = ['Pilot Name', 'FsHub ID', 'FsHub Username (if different)', 'Flight Number', 'Departure-Arrival', 'Landed (UTC)', 'Landing Rate (fpm)', 'Tier', 'Airline', 'FsHub Flight ID'] as const;
+export const CSV_HEADER = ['Pilot Name', 'FsHub ID', 'FsHub Username (if different)', 'Flight Number', 'Departure-Arrival', 'Landed (UTC)', 'Landing Rate (fpm)', 'Aircraft', 'Tier', 'Tier Limit (fpm)', 'Airline', 'FsHub Flight ID'] as const;
 
 /**
  * A value as one CSV field. A text that a spreadsheet would run as a formula (it starts with `=`, `+`, `-`, `@`, a tab or a return) is put behind an
@@ -92,7 +97,9 @@ export function csvLine(r: PenaltyReport): string {
     `${r.dep}-${r.arr}`,
     utcText(r.landedAt),
     r.rate,
-    `Tier ${r.tier}`,
+    r.aircraft,
+    tierName(r.tier),
+    r.limit,
     r.airline,
     r.flightId,
   ]
@@ -100,9 +107,25 @@ export function csvLine(r: PenaltyReport): string {
     .join(',');
 }
 
+/**
+ * A file kept by an earlier version has other columns, and its Tier column spoke of Tier 2 and Tier 3 where there are now Tier 1 and Tier 2 (the warning was Tier 1). It is
+ * not changed: it is renamed to `<name>-before-limits.csv` (with a number if that name is taken), and a new file with the new columns is started. Returns where the old one went, or null.
+ */
+export function setAsideOldCsv(file: string): string | null {
+  if (!existsSync(file)) return null;
+  const first = (readFileSync(file, 'utf8').split(/\r?\n/, 1)[0] ?? '').replace(/^\uFEFF/, '');
+  if (first === CSV_HEADER.join(',')) return null;
+  const base = file.replace(/\.csv$/i, '');
+  let to = `${base}-before-limits.csv`;
+  for (let i = 2; existsSync(to); i++) to = `${base}-before-limits-${i}.csv`;
+  renameSync(file, to);
+  return to;
+}
+
 /** Add a row to the CSV, writing the heading first when the file is new (with the mark that lets Excel read the accents). Throws when the file cannot be written (open in another program, say). */
 export function appendPenaltyCsv(file: string, r: PenaltyReport): void {
   mkdirSync(dirname(file), { recursive: true });
+  setAsideOldCsv(file);
   if (!existsSync(file)) writeFileSync(file, `﻿${CSV_HEADER.join(',')}\r\n`, 'utf8');
   appendFileSync(file, `${csvLine(r)}\r\n`, 'utf8');
 }
@@ -113,14 +136,13 @@ export function appendPenaltyCsv(file: string, r: PenaltyReport): void {
  */
 export function penaltyMessage(r: PenaltyReport, pilotTold: boolean | null, logged: boolean | null): string {
   const who = [`**${plainText(truncate(r.pilotName, 60))}**`, `FsHub ID ${r.fshubId}`, ...(r.fshubUsername ? [`FsHub username ${plainText(truncate(r.fshubUsername, 60))}`] : [])].join(' · ');
-  const share = fineShare(r.tier);
   return [
-    `${r.tier === 3 ? '🛑' : '🚨'} **Safety violation, Tier ${r.tier}** · ${plainText(truncate(r.airline, 60))}`,
+    `${r.tier === 'tier2' ? '🛑' : '🚨'} **Safety violation, ${tierName(r.tier)}** · ${plainText(truncate(r.airline, 60))}`,
     `**Pilot:** ${who}`,
     `**Flight:** ${r.flightNumber ? `${plainText(truncate(r.flightNumber, 40))} · ` : ''}${r.dep} → ${r.arr}${r.flightNumber ? '' : ' (not matched to a flight in the schedule)'}`,
     `**Landed:** <t:${Math.floor(r.landedAt / 1000)}:f> (${utcText(r.landedAt)} UTC)`,
-    `**Landing rate:** ${r.rate} fpm`,
-    `The pilot's pay for this flight is cut (${share}% of the profit instead of 15%, and the airline's minimum-pay rule).`,
+    `**Landing rate:** ${r.rate} fpm${r.aircraft ? ` in the ${plainText(r.aircraft)} (its ${tierName(r.tier)} limit is -${r.limit} fpm)` : ` (the ${tierName(r.tier)} limit is -${r.limit} fpm)`}`,
+    `The pilot's pay for this flight is cut (${r.share}% of the profit instead of 15%, and the airline's minimum-pay rule).`,
     pilotTold === null ? "The pilot isn't linked to a Discord account, so they were not sent the safety notice." : pilotTold ? 'The pilot has been sent the safety notice.' : "The pilot couldn't be sent the safety notice (closed DMs, perhaps).",
     ...(logged === null ? [] : [logged ? `Added to ${HARD_LANDINGS_CSV} in my data folder.` : `I couldn't add it to ${HARD_LANDINGS_CSV} (is the file open in another program?). I'll try again.`]),
   ].join('\n');

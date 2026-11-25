@@ -711,6 +711,34 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE panels ADD COLUMN safety_deductions INTEGER NOT NULL DEFAULT 0;
   `,
+
+  /* v42: landing safety limits by aircraft, and the whole of the rule an airline's own. The tiers are now called Warning, Tier 1 and Tier 2 (they were Tier 1 for the
+     warning, and Tier 2 and Tier 3 for the two pay cuts), so the old 'safety_loss_tier2' and 'safety_loss_tier3' (what a pilot loses of the minimum pay after the first and the
+     second pay cut) are copied to 'safety_loss_t1' and 'safety_loss_t2' and no longer read. 'safety_warn_fpm', 'safety_tier1_fpm' and 'safety_tier2_fpm' are the airline's
+     default limits (feet per minute, a landing at least that hard): a panel that already had safety pay on keeps what it had (375, 400 and 600), a new one starts at
+     400, 500 and 600. 'safety_share_tier1' and 'safety_share_tier2' are the percentage of a flight's profit a pilot is paid after each pay cut (they were fixed at 8 and 5).
+     'safety_limits' holds the limits an aircraft type has of its own (its ICAO code, upper case); a type with no row uses the airline's default. */
+  `
+  ALTER TABLE panels ADD COLUMN safety_warn_fpm INTEGER NOT NULL DEFAULT 400;
+  ALTER TABLE panels ADD COLUMN safety_tier1_fpm INTEGER NOT NULL DEFAULT 500;
+  ALTER TABLE panels ADD COLUMN safety_tier2_fpm INTEGER NOT NULL DEFAULT 600;
+  ALTER TABLE panels ADD COLUMN safety_share_tier1 INTEGER NOT NULL DEFAULT 8;
+  ALTER TABLE panels ADD COLUMN safety_share_tier2 INTEGER NOT NULL DEFAULT 5;
+  ALTER TABLE panels ADD COLUMN safety_loss_t1 INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE panels ADD COLUMN safety_loss_t2 INTEGER NOT NULL DEFAULT 0;
+  UPDATE panels SET safety_loss_t1 = safety_loss_tier2, safety_loss_t2 = safety_loss_tier3;
+  UPDATE panels SET safety_warn_fpm = 375, safety_tier1_fpm = 400, safety_tier2_fpm = 600 WHERE safety_pay_since IS NOT NULL;
+
+  CREATE TABLE safety_limits (
+    panel_id   INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    aircraft   TEXT NOT NULL,
+    warn_fpm   INTEGER NOT NULL,
+    tier1_fpm  INTEGER NOT NULL,
+    tier2_fpm  INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, aircraft)
+  );
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

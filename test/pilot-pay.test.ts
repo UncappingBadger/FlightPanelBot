@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { deductionPreviewText, deductionReport, previewText, profitReport } from '../src/discord/profitUi.js';
 import { FsHubError, distanceNmOf, parseFlightPage, type FlightPage, type FsHubFlight } from '../src/fshub/client.js';
 import { tokenProvider } from '../src/google/serviceAccount.js';
 import { SheetsApi } from '../src/google/sheetsApi.js';
-import { AirlineProfits, compareProfits, planPay, ProfitError, type DeductionAnalysis, type HeldFlight, type ProfitAnalysis, type ProfitFillPlan } from '../src/services/airlineProfits.js';
+import { safetyPolicyOf } from '../src/services/safetyPay.js';
+import { AirlineProfits, compareDeductions, compareProfits, planPay, ProfitError, type DeductionAnalysis, type HeldFlight, type ProfitAnalysis, type ProfitFillPlan } from '../src/services/airlineProfits.js';
 import type { Panel } from '../src/db/store.js';
 import { pilotPay } from '../src/services/pilotPay.js';
 import { SheetWriteBack } from '../src/services/writeback.js';
@@ -218,6 +220,48 @@ describe('planning the pilot pay beside a blank profit', () => {
   });
 });
 
+/* ------------------------------------------------------------------ landing limits by aircraft */
+
+describe('the pay of a flight judged by the limits of its aircraft', () => {
+  const policy = safetyPolicyOf(
+    { safetyPaySince: 1, safetyLossTier1: 0, safetyLossTier2: 0, safetyShareTier1: 8, safetyShareTier2: 5, safetyWarnFpm: 400, safetyTier1Fpm: 500, safetyTier2Fpm: 600 },
+    new Map([['A320', { warn: 350, tier1: 450, tier2: 550 }]]),
+  )!;
+  const flights = [lf({ profit: 54489, flightId: 1 }), lf({ entryId: 2, dep: 'EGCC', arr: 'EGLL', pilotName: 'B', profit: 54489, flightId: 2 })];
+  const rows = [sheetRow({ row: 3 }), sheetRow({ row: 4, sourceKey: 'a@b', pilot: 'B', route: 'EGCC → EGLL' })];
+  const landing = new Map<number, number | null>([[1, -480], [2, -480]]);
+
+  it('cuts the pay of a landing past the aircraft\'s own limit, and leaves the same landing alone in an aircraft on the default', () => {
+    const r = compareProfits(rows, flights, 'TST', new Map(), new Set(), { policy, landing, aircraft: new Map([[1, 'A320'], [2, 'B738']]) });
+    assert.deepEqual(r.fills.map((f) => [f.row, f.pay, f.payPlan.safety?.tier ?? null]), [[3, 4360, 'tier1'], [4, 8174, null]], '-480 is Tier 1 for the A320 (from 450) and below the default Tier 1 (500) for the B738');
+  });
+
+  it('takes the type FsHub names for the flight before the type of the aircraft whose logbook it is in', () => {
+    const typed = flights.map((f) => ({ ...f, aircraftType: 'B738' }));
+    const byLogbook = compareProfits(rows, typed, 'TST', new Map(), new Set(), { policy, landing });
+    assert.deepEqual(byLogbook.fills.map((f) => f.payPlan.safety?.tier ?? null), [null, null], 'the logbook says B738 for both: the default limits, no cut at -480');
+    const byFsHub = compareProfits(rows, typed, 'TST', new Map(), new Set(), { policy, landing, aircraft: new Map([[1, 'A320']]) });
+    assert.deepEqual(byFsHub.fills.map((f) => f.payPlan.safety?.tier ?? null), ['tier1', null], 'FsHub said the first was an A320');
+    const logbookA320 = compareProfits(rows, [{ ...flights[0]!, aircraftType: 'A320' }, flights[1]!], 'TST', new Map(), new Set(), { policy, landing });
+    assert.deepEqual(logbookA320.fills.map((f) => f.payPlan.safety?.tier ?? null), ['tier1', null], 'and the logbook\'s type is used when FsHub gave none');
+  });
+
+  it('pays the share the airline set for the tier', () => {
+    const generous = { ...policy, shareTier1: 12 };
+    const r = compareProfits(rows, flights, 'TST', new Map(), new Set(), { policy: generous, landing, aircraft: new Map([[1, 'A320']]) });
+    assert.equal(r.fills[0]!.pay, 6539, '12% of $54,489 is $6,538.68');
+    assert.equal(r.fills[0]!.payPlan.safety?.share, 12);
+  });
+
+  it('works the missing deductions out by the aircraft\'s limits too', () => {
+    const paid = [sheetRow({ row: 3, payRaw: '$4,360', profit: 54489, profitRaw: '$54,489', deductionRaw: '' })];
+    const withLimit = compareDeductions(paid, [flights[0]!], 'TST', new Map(), landing, policy, new Map([[1, 'A320']]));
+    assert.deepEqual(withLimit.fills.map((f) => [f.row, f.tier, f.deduction]), [[3, 'tier1', 3814]]);
+    const without = compareDeductions(paid, [flights[0]!], 'TST', new Map(), landing, policy, new Map([[1, 'B738']]));
+    assert.equal(without.fills.length, 0, 'in an aircraft on the default limits the landing was no fine, so no cut is recorded');
+  });
+});
+
 /* ------------------------------------------------------------------ finding the Pilot Pay column */
 
 describe('finding the Pilot Pay column', () => {
@@ -349,8 +393,8 @@ describe('working out the pay when reading an airline', () => {
     /** The landing rate FsHub gives, by flight (absent: the flight is listed with no rate). */
     let rates: Map<number, number | null>;
     const day = 24 * HOUR;
-    const turnOn = (minimumLoss: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier2: minimumLoss, safetyLossTier3: minimumLoss });
-    const turnOnSplit = (tier2: number, tier3: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier2: tier2, safetyLossTier3: tier3 });
+    const turnOn = (minimumLoss: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier1: minimumLoss, safetyLossTier2: minimumLoss });
+    const turnOnSplit = (tier2: number, tier3: number, since = D12 - day) => h.store.updatePanel(h.panel.id, { safetyPaySince: since, safetyLossTier1: tier2, safetyLossTier2: tier3 });
     beforeEach(() => {
       rates = new Map();
       answer = async (cursor) => page([{ id: cursor + 1, distanceNm: 1502, landingRate: rates.get(cursor + 1) ?? null }]);
@@ -369,15 +413,15 @@ describe('working out the pay when reading an airline', () => {
       assert.deepEqual(heldCalls, [], 'and nobody is told anything');
     });
 
-    it('asks FsHub about every flight whose pay is to be written, and cuts the pay of a Tier 2 or Tier 3 landing (nothing lost of the minimum)', async () => {
+    it('asks FsHub about every flight whose pay is to be written, and cuts the pay of a Tier 1 or Tier 2 landing (nothing lost of the minimum)', async () => {
       turnOn(0);
-      rates.set(5000, -450); // Tier 2 on a profit of $54,489
-      rates.set(5001, -650); // Tier 3 on a loss: $4,000 by distance
+      rates.set(5000, -450); // Tier 1 on a profit of $54,489
+      rates.set(5001, -650); // Tier 2 on a loss: $4,000 by distance
       const a = await profits().analyse(panel());
       assert.deepEqual(asked, [[AIRLINE, 4999, 1], [AIRLINE, 5000, 1]], 'a request for each of the two flights');
       assert.deepEqual(byRow(a), [[2, 4360, 'safety'], [3, 4000, 'safety']], '8% of $54,489 is $4,359.12, up to $4,360; a loss pay loses nothing when none of the minimum is lost');
-      assert.deepEqual(a.fills[0]!.payPlan.safety, { tier: 2, fpm: 450, share: 8, normal: 8174, minimumLoss: 0, byMinimum: false });
-      assert.deepEqual(a.fills[1]!.payPlan.safety, { tier: 3, fpm: 650, share: 5, normal: 4000, minimumLoss: 0, byMinimum: false });
+      assert.deepEqual(a.fills[0]!.payPlan.safety, { tier: 'tier1', fpm: 450, share: 8, normal: 8174, minimumLoss: 0, byMinimum: false });
+      assert.deepEqual(a.fills[1]!.payPlan.safety, { tier: 'tier2', fpm: 650, share: 5, normal: 4000, minimumLoss: 0, byMinimum: false });
     });
 
     it('takes the airline\'s percentage off the pay of a flight that lost money, and keeps a profit\'s share above the reduced minimum', async () => {
@@ -390,23 +434,23 @@ describe('working out the pay when reading an airline', () => {
 
     it('uses each tier\'s own percentage when the airline set the tiers apart', async () => {
       turnOnSplit(10, 40);
-      rates.set(5000, -650); // Tier 3 on a profit of $54,489
-      rates.set(5001, -450); // Tier 2 on a loss: $4,000 by distance
+      rates.set(5000, -650); // Tier 2 on a profit of $54,489
+      rates.set(5001, -450); // Tier 1 on a loss: $4,000 by distance
       const a = await profits().analyse(panel());
-      assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, 3600, 'safety']], '5% of $54,489 is $2,725, above the Tier 3 floor of $1,200; $4,000 less the Tier 2 10% is $3,600');
+      assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, 3600, 'safety']], '5% of $54,489 is $2,725, above the Tier 2 floor of $1,200; $4,000 less the Tier 1 10% is $3,600');
       assert.equal(a.fills[0]!.payPlan.safety!.minimumLoss, 40);
       assert.equal(a.fills[1]!.payPlan.safety!.minimumLoss, 10);
       const swapped = (rates.set(5000, -450), rates.set(5001, -650), await profits().analyse(panel()));
-      assert.deepEqual(byRow(swapped), [[2, 4360, 'safety'], [3, 2400, 'safety']], '8% of $54,489 is $4,360; the Tier 3 loss pay is $4,000 less 40%');
+      assert.deepEqual(byRow(swapped), [[2, 4360, 'safety'], [3, 2400, 'safety']], '8% of $54,489 is $4,360; the Tier 2 loss pay is $4,000 less 40%');
     });
 
     it('gives a small profit the floor of its own tier: the $2,000 minimum less that tier\'s percentage', async () => {
       turnOnSplit(10, 40);
       logbook = [lf({ profit: 10000, distanceNm: 500, flightId: 5000 }), logbook[1] as LogFlight];
       rates.set(5000, -450);
-      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1800, 'Tier 2: $2,000 less 10%');
+      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1800, 'Tier 1: $2,000 less 10%');
       rates.set(5000, -650);
-      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1200, 'Tier 3: $2,000 less 40%');
+      assert.equal((await profits().analyse(panel())).fills[0]!.pay, 1200, 'Tier 2: $2,000 less 40%');
     });
 
     it('writes nothing for a flight that lost money where the airline takes all of the minimum, and the preview says so', async () => {
@@ -415,7 +459,7 @@ describe('working out the pay when reading an airline', () => {
       rates.set(5001, -450);
       const a = await profits().analyse(panel());
       assert.deepEqual(byRow(a), [[2, 2725, 'safety'], [3, null, 'safety']]);
-      assert.match(profitReport('Test Air', a), /pilot pay: nothing to write \(Tier 2 safety: landed at -450 fpm, the usual loss pay for 1,502 nm, less 100%; \$4,000 without the cut\)/);
+      assert.match(profitReport('Test Air', a), /pilot pay: nothing to write \(Tier 1 safety: landed at -450 fpm, the usual loss pay for 1,502 nm, less 100%; \$4,000 without the cut\)/);
     });
 
     it('pays a small profit the reduced minimum, and says it was the minimum that decided it', async () => {
@@ -425,7 +469,7 @@ describe('working out the pay when reading an airline', () => {
       const a = await profits().analyse(panel());
       assert.equal(a.fills[0]!.pay, 1500, '8% of $10,000 is $800; the $2,000 minimum less 25% is $1,500');
       assert.equal(a.fills[0]!.payPlan.safety!.byMinimum, true);
-      assert.match(profitReport('Test Air', a), /pilot pay \$1,500 \(Tier 2 safety: landed at -450 fpm, the \$2,000 minimum, less 25%; \$2,000 without the cut\)/);
+      assert.match(profitReport('Test Air', a), /pilot pay \$1,500 \(Tier 1 safety: landed at -450 fpm, the \$2,000 minimum, less 25%; \$2,000 without the cut\)/);
     });
 
     it('does not cut the pay for a Tier 1 landing or a gentler one, and pays it the usual way', async () => {
@@ -505,7 +549,7 @@ describe('working out the pay when reading an airline', () => {
       rates.set(5001, -900);
       const a = await profits().analyse(panel());
       assert.deepEqual(asked.map((x) => x[1]), [5000], 'only the later flight, the loss, is asked about');
-      assert.equal(a.fills[0]!.pay, 8174, 'a Tier 3 landing from before it was turned on costs nothing');
+      assert.equal(a.fills[0]!.pay, 8174, 'a Tier 2 landing from before it was turned on costs nothing');
       assert.equal(a.fills[0]!.payPlan.safety, undefined);
       assert.equal(a.fills[1]!.payPlan.basis, 'safety');
     });
@@ -526,8 +570,8 @@ describe('working out the pay when reading an airline', () => {
       rates.set(5000, -450);
       rates.set(5001, -650);
       const text = profitReport('Test Air', await profits().analyse(panel()));
-      assert.match(text, /pilot pay \$4,360 \(Tier 2 safety: landed at -450 fpm, 8% of the profit; \$8,174 without the cut\)/);
-      assert.match(text, /pilot pay \$3,000 \(Tier 3 safety: landed at -650 fpm, the usual loss pay for 1,502 nm, less 25%; \$4,000 without the cut\)/);
+      assert.match(text, /pilot pay \$4,360 \(Tier 1 safety: landed at -450 fpm, 8% of the profit; \$8,174 without the cut\)/);
+      assert.match(text, /pilot pay \$3,000 \(Tier 2 safety: landed at -650 fpm, the usual loss pay for 1,502 nm, less 25%; \$4,000 without the cut\)/);
       assert.match(text, /• ⚖️ \*\*2\*\* have their pilot pay cut for a hard landing \(safety pay\)/);
     });
 
@@ -815,7 +859,7 @@ describe('what the admin reads about the pay', () => {
 /* ------------------------------------------------------------------ the command, end to end */
 
 describe('/setup profit action:fill with a Pilot Pay column', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const profitButtons = componentHandlers.find((c) => c.prefix === 'profit')!;
   let h: Harness;
   let d: DiscordHarness;
@@ -931,7 +975,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
 
   it('writes what a hard landing took off beside the pay, counts it in the button, and says so, when the airline asked for deductions', async () => {
     g.values = [[...GRID_HEADER, 'Saftey Deductions'], ['Week 2', '11/8/2026', 'Week 2'], [...row('EGLL-EGCC', '11/12/2026', 'Alex', true, '', ''), '']];
-    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier2: 0, safetyLossTier3: 0, safetyDeductions: true });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier1: 0, safetyLossTier2: 0, safetyDeductions: true });
     d.ctx.profits = new AirlineProfits({
       store: h.store,
       account: {
@@ -954,7 +998,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
     });
     const { text, components } = await run({ options: { action: 'fill' } });
     assert.match(text, /I would also write what the hard landing takes off the pay \(what it would have paid, less what it pays\) into \*\*1\*\* empty Safety Deductions cell\./);
-    assert.match(text, /pilot pay \$4,360 \(Tier 2 safety[^)]*\) · deduction \$3,814/);
+    assert.match(text, /pilot pay \$4,360 \(Tier 1 safety[^)]*\) · deduction \$3,814/);
     assert.match(JSON.stringify(components[0].toJSON?.() ?? components[0]), /Write 3 cells/, 'the profit, the pay and the deduction');
     const done = await press(idsOf(components)[0]!);
     assert.match(done, /And \*\*1\*\* Pilot Pay cell: K3/);
@@ -967,10 +1011,10 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
     g.values = [
       [...GRID_HEADER, 'Saftey Deductions'],
       ['Week 2', '11/8/2026', 'Week 2'],
-      [...row('EGLL-EGCC', '11/12/2026', 'Alex', true, '$54,489', '$4,360'), ''], // row 3: a Tier 2 landing, paid the cut pay
+      [...row('EGLL-EGCC', '11/12/2026', 'Alex', true, '$54,489', '$4,360'), ''], // row 3: a Tier 1 landing, paid the cut pay
       [...row('EGCC-EGLL', '11/12/2026', 'Taylor', true, '$20,000', '$3,000'), ''], // row 4: paid in full for a hard landing
     ];
-    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier2: 0, safetyLossTier3: 0, safetyDeductions: true });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier1: 0, safetyLossTier2: 0, safetyDeductions: true });
     d.ctx.profits = new AirlineProfits({
       store: h.store,
       account: {
@@ -994,7 +1038,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
     const { text, components } = await run({ options: { action: 'deductions' } });
     assert.match(text, /^✍️ \*\*Add missing Safety Deductions: /);
     assert.match(text, /into \*\*1\*\* empty Safety Deductions cell, beside Pilot Pay that already matches the cut/);
-    assert.match(text, /• row 3 · TST101 EGLL → EGCC · Thu 12 Nov · Tier 2 \(-450 fpm\) · paid \$4,360, \$8,174 without the cut · deduction \$3,814/);
+    assert.match(text, /• row 3 · TST101 EGLL → EGCC · Thu 12 Nov · Tier 1 \(-450 fpm\) · paid \$4,360, \$8,174 without the cut · deduction \$3,814/);
     assert.match(text, /\*\*1\*\* landed hard but was paid in full in the sheet/);
     assert.match(JSON.stringify(components[0].toJSON?.() ?? components[0]), /Write 1 cell/);
     assert.equal(g.writes.length, 0, 'nothing yet');
@@ -1017,7 +1061,7 @@ describe('/setup profit action:fill with a Pilot Pay column', () => {
 
   it('is told when a pay changed between the preview and the button, and writes nothing for it', async () => {
     g.values = [[...GRID_HEADER, 'Saftey Deductions'], ['Week 2', '11/8/2026', 'Week 2'], [...row('EGLL-EGCC', '11/12/2026', 'Alex', true, '$54,489', '$4,360'), '']];
-    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier2: 0, safetyLossTier3: 0, safetyDeductions: true });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - 24 * HOUR, safetyLossTier1: 0, safetyLossTier2: 0, safetyDeductions: true });
     d.ctx.profits = new AirlineProfits({
       store: h.store,
       account: {
@@ -1116,7 +1160,7 @@ describe('what a hard landing takes off, when the airline asked for it in the sh
     [...row('KMIA-KORD', '11/12/2026', 'Sam', true, '', pay2), deduction2],
   ];
   const turnOn = (minimumLoss: number, deductions = true) =>
-    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - day, safetyLossTier2: minimumLoss, safetyLossTier3: minimumLoss, safetyDeductions: deductions });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - day, safetyLossTier1: minimumLoss, safetyLossTier2: minimumLoss, safetyDeductions: deductions });
   const deductions = (a: ProfitAnalysis) => a.fills.map((f) => [f.row, f.deduction ?? null, f.deductionCell ?? null]);
 
   beforeEach(async () => {
@@ -1132,7 +1176,7 @@ describe('what a hard landing takes off, when the airline asked for it in the sh
     await h.close();
   });
 
-  it('is what the flight would have paid less what it pays: a Tier 2 landing on a profit takes $8,174 down to $4,360', async () => {
+  it('is what the flight would have paid less what it pays: a Tier 1 landing on a profit takes $8,174 down to $4,360', async () => {
     turnOn(0);
     rates.set(5000, -450);
     const a = await profits().analyse(panel());
@@ -1201,7 +1245,7 @@ describe('what a hard landing takes off, when the airline asked for it in the sh
     rates.set(5000, -450);
     const a = await profits().analyse(panel());
     assert.match(profitReport('Test Air', a), /• 🧾 Safety Deductions beside those: \*\*1\*\* would be written/);
-    assert.match(profitReport('Test Air', a), /pilot pay \$4,360 \(Tier 2 safety[^)]*\) · deduction \$3,814/);
+    assert.match(profitReport('Test Air', a), /pilot pay \$4,360 \(Tier 1 safety[^)]*\) · deduction \$3,814/);
     const text = previewText('Test Air', a.fills);
     assert.match(text, /I would also write what the hard landing takes off the pay \(what it would have paid, less what it pays\) into \*\*1\*\* empty Safety Deductions cell\./);
     assert.match(text, /· deduction \$3,814/);
@@ -1365,7 +1409,7 @@ describe('adding the deductions to flights that are already filled in', () => {
     [...row('KMIA-KORD', '11/12/2026', 'Sam', true, '-$4,000', pay2), deduction2],
   ];
   const turnOn = (minimumLoss = 0, deductions = true) =>
-    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - day, safetyLossTier2: minimumLoss, safetyLossTier3: minimumLoss, safetyDeductions: deductions });
+    h.store.updatePanel(h.panel.id, { safetyPaySince: D12 - day, safetyLossTier1: minimumLoss, safetyLossTier2: minimumLoss, safetyDeductions: deductions });
   const lines = (a: DeductionAnalysis) => a.fills.map((f) => [f.row, f.tier, f.fpm, f.pay, f.normal, f.deduction]);
 
   beforeEach(async () => {
@@ -1386,7 +1430,7 @@ describe('adding the deductions to flights that are already filled in', () => {
 
   it('finds a flight whose pay is exactly what the cut gives, and works the deduction out: what it would have paid, less what it was paid', async () => {
     const a = await profits().analyseDeductions(panel());
-    assert.deepEqual(lines(a), [[2, 2, 450, 4360, 8174, 3814]], 'Tier 2 on a $54,489 profit: $8,174 down to $4,360. The loss flight was paid its usual $4,000: the cut took nothing off it');
+    assert.deepEqual(lines(a), [[2, 'tier1', 450, 4360, 8174, 3814]], 'Tier 1 on a $54,489 profit: $8,174 down to $4,360. The loss flight was paid its usual $4,000: the cut took nothing off it');
     assert.deepEqual([a.matched, a.uncut, a.paidInFull, a.differs, a.unpaid, a.already, a.noRate, a.waiting], [2, 1, 0, 0, 0, 0, 0, 0]);
     assert.deepEqual(asked, [5000, 5001].map((id) => id), 'FsHub was asked about each flight once, for its landing rate and distance');
   });
@@ -1395,14 +1439,14 @@ describe('adding the deductions to flights that are already filled in', () => {
     turnOn(25);
     sheet = rows('$4,360', '$3,000');
     const a = await profits().analyseDeductions(panel());
-    assert.deepEqual(lines(a).at(-1), [3, 2, 450, 3000, 4000, 1000], '$4,000 less 25% is $3,000');
+    assert.deepEqual(lines(a).at(-1), [3, 'tier1', 450, 3000, 4000, 1000], '$4,000 less 25% is $3,000');
   });
 
   it('records a pay of nothing, where the airline takes all of the minimum: the empty pay cell is what the cut gives', async () => {
     turnOn(100);
     sheet = rows('$4,360', '');
     const a = await profits().analyseDeductions(panel());
-    assert.deepEqual(lines(a).at(-1), [3, 2, 450, 0, 4000, 4000]);
+    assert.deepEqual(lines(a).at(-1), [3, 'tier1', 450, 0, 4000, 4000]);
     assert.equal(a.unpaid, 0);
   });
 
@@ -1430,10 +1474,10 @@ describe('adding the deductions to flights that are already filled in', () => {
     sheet = rows('$4,360', '$4,000', '$500');
     assert.deepEqual([(await profits().analyseDeductions(panel())).fills.length, (await profits().analyseDeductions(panel())).already], [0, 1]);
     sheet = rows('$4,360', '$4,000', '$0');
-    assert.deepEqual(lines(await profits().analyseDeductions(panel())), [[2, 2, 450, 4360, 8174, 3814]]);
+    assert.deepEqual(lines(await profits().analyseDeductions(panel())), [[2, 'tier1', 450, 4360, 8174, 3814]]);
   });
 
-  it('does not count a flight that landed before safety pay was turned on, a softer landing than Tier 2, or a flight with no profit in the sheet yet', async () => {
+  it('does not count a flight that landed before safety pay was turned on, a softer landing than Tier 1, or a flight with no profit in the sheet yet', async () => {
     h.store.updatePanel(h.panel.id, { safetyPaySince: D12 + 30 * HOUR });
     assert.deepEqual([(await profits().analyseDeductions(panel())).fills.length, (await profits().analyseDeductions(panel())).uncut], [0, 2], 'both landed before');
     turnOn();
@@ -1510,13 +1554,13 @@ describe('adding the deductions to flights that are already filled in', () => {
     assert.match(report, /• ✋ \*\*1\*\* has a Pilot Pay that is not what the cut gives/);
     const preview = deductionPreviewText('Test Air', a, 'Pressed by nobody.');
     assert.match(preview, /^✍️ \*\*Add missing Safety Deductions: Test Air\*\*\nI would write what each hard landing took off \(what the flight would have paid, less what it was paid\) into \*\*1\*\* empty Safety Deductions cell, beside Pilot Pay that already matches the cut\. I would change nothing else\./);
-    assert.match(preview, /• row 2 · TST101 EGLL → EGCC · Thu 12 Nov · Tier 2 \(-450 fpm\) · paid \$4,360, \$8,174 without the cut · deduction \$3,814/);
+    assert.match(preview, /• row 2 · TST101 EGLL → EGCC · Thu 12 Nov · Tier 1 \(-450 fpm\) · paid \$4,360, \$8,174 without the cut · deduction \$3,814/);
     assert.match(preview, /Nothing is written unless you press \*\*Write\*\*\.\nPressed by nobody\.$/);
     assert.ok(!/✍️ \*\*1\*\* can have/.test(preview), 'the preview does not say the same thing twice');
   });
 
   it('keeps a long preview inside one Discord message', () => {
-    const fills = Array.from({ length: 80 }, (_, i) => ({ sourceKey: `k${i}`, row: 100 + i, pilot: 'Alex', route: 'EGLL → EGCC', day: D12, callsign: 'TST101', pay: 18518518, normal: 29629629, deduction: 11111111, tier: 3 as const, fpm: 1999 }));
+    const fills = Array.from({ length: 80 }, (_, i) => ({ sourceKey: `k${i}`, row: 100 + i, pilot: 'Alex', route: 'EGLL → EGCC', day: D12, callsign: 'TST101', pay: 18518518, normal: 29629629, deduction: 11111111, tier: 'tier2' as const, fpm: 1999 }));
     const a = { business: 1, aircraft: 3, leased: 0, leasedHidden: 0, leasedProblem: null, readAt: T0, matched: 400, fills, already: 3, uncut: 200, paidInFull: 12, differs: 7, unpaid: 4, noRate: 9, waiting: 20 };
     assert.ok(deductionPreviewText('Test Air', a, 'A note about who may press it, and where.').length <= 1990, `${deductionPreviewText('Test Air', a).length} characters`);
     assert.ok(deductionReport('Test Air', a).length <= 1990);

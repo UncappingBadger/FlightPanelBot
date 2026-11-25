@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MIGRATIONS } from '../src/db/db.js';
 import { Store, type FlownFlight, type JobView } from '../src/db/store.js';
 import { completedCard, flightFacts, fshubFlightLink, renderPanelParts } from '../src/discord/ui.js';
-import { componentHandlers, commands } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { FsHubClient, FsHubError, parseFlightPage, type FsHubFlight } from '../src/fshub/client.js';
 import { confirmationsFor, confirmationsSignature, landingWindow, sameAircraft, WINDOW_GRACE_MS } from '../src/services/flightMatch.js';
 import { FLIGHT_KEEP_MS, FLIGHT_SYNC_MS, FSHUB_SYNC_MS, FsHubSync, RESCAN_MS } from '../src/services/fshubSync.js';
@@ -13,7 +14,7 @@ import { FakeFsHub, FakeUser, fakeComponent, fakeInteraction, makeDiscordHarness
 
 /* Everything below is made up. The pilots, airlines and flights are not real. */
 
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const AIRLINE_ID = 8123;
 const DAY = 24 * HOUR;
 

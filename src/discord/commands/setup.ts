@@ -467,6 +467,13 @@ export const setupCommand: Command = {
         )
         .addIntegerOption((o) =>
           o
+            .setName('tier1-loss')
+            .setDescription('Per cent of the $2,000 minimum a pilot loses after a Tier 1 landing (to set the tiers apart)')
+            .setMinValue(0)
+            .setMaxValue(100),
+        )
+        .addIntegerOption((o) =>
+          o
             .setName('tier2-loss')
             .setDescription('Per cent of the $2,000 minimum a pilot loses after a Tier 2 landing (to set the tiers apart)')
             .setMinValue(0)
@@ -474,8 +481,15 @@ export const setupCommand: Command = {
         )
         .addIntegerOption((o) =>
           o
-            .setName('tier3-loss')
-            .setDescription('Per cent of the $2,000 minimum a pilot loses after a Tier 3 landing (to set the tiers apart)')
+            .setName('tier1-share')
+            .setDescription('Per cent of the profit a pilot is paid after a Tier 1 landing, instead of 15 (8 to start)')
+            .setMinValue(0)
+            .setMaxValue(100),
+        )
+        .addIntegerOption((o) =>
+          o
+            .setName('tier2-share')
+            .setDescription('Per cent of the profit a pilot is paid after a Tier 2 landing, instead of 15 (5 to start)')
             .setMinValue(0)
             .setMaxValue(100),
         )
@@ -766,17 +780,24 @@ export const setupCommand: Command = {
         }
         const file = interaction.options.getAttachment('file', true);
         if (file.size > MAX_IMPORT_BYTES) throw new UserError(`That file is larger than ${MAX_IMPORT_BYTES / 1024} KB.`);
-        let host = '';
-        try {
-          host = new URL(file.url).hostname;
-        } catch {
-          /* handled below */
-        }
-        if (!ATTACHMENT_HOSTS.has(host)) throw new UserError('Please attach the file directly to the command (I only read files uploaded to Discord).');
+        let text: string;
+        // The settings page hands over the file's text itself (it is chosen on this computer); a file attached in Discord is downloaded from Discord.
+        const inline = (file as { inlineText?: unknown }).inlineText;
+        if (typeof inline === 'string') text = inline;
+        else {
+          let host = '';
+          try {
+            host = new URL(file.url).hostname;
+          } catch {
+            /* handled below */
+          }
+          if (!ATTACHMENT_HOSTS.has(host)) throw new UserError('Please attach the file directly to the command (I only read files uploaded to Discord).');
 
-        const res = await ctx.fetchFn(file.url, { signal: AbortSignal.timeout(15_000) }).catch(() => null);
-        if (!res || !res.ok) throw new UserError("I couldn't download that file. Try uploading it again.");
-        const jobs = parseJobsFile(await res.text(), file.name ?? 'jobs.csv');
+          const res = await ctx.fetchFn(file.url, { signal: AbortSignal.timeout(15_000) }).catch(() => null);
+          if (!res || !res.ok) throw new UserError("I couldn't download that file. Try uploading it again.");
+          text = await res.text();
+        }
+        const jobs = parseJobsFile(text, file.name ?? 'jobs.csv');
 
         const r = ctx.jobs.sync(panel.id, jobs);
         ctx.store.updatePanel(panel.id, { lastRefreshAt: ctx.now(), lastRefreshError: null, lastRefreshNote: null });
@@ -981,7 +1002,14 @@ export const setupCommand: Command = {
           ctx,
           panel,
           interaction.options.getString('mode'),
-          { both: interaction.options.getInteger('minimum-loss'), tier2: interaction.options.getInteger('tier2-loss'), tier3: interaction.options.getInteger('tier3-loss'), deductions: interaction.options.getString('deductions') },
+          {
+            both: interaction.options.getInteger('minimum-loss'),
+            tier1: interaction.options.getInteger('tier1-loss'),
+            tier2: interaction.options.getInteger('tier2-loss'),
+            share1: interaction.options.getInteger('tier1-share'),
+            share2: interaction.options.getInteger('tier2-share'),
+            deductions: interaction.options.getString('deductions'),
+          },
           await reachText(ctx, panel),
         );
         await interaction.editReply({ ...reply, allowedMentions: noPings });

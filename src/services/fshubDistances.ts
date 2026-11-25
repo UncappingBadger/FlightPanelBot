@@ -17,6 +17,8 @@ export async function fshubDistances(fshub: Pick<FsHubApi, 'airlineFlights'>, ai
 export interface FlightFacts {
   distanceNm: number | null;
   landingRate: number | null;
+  /** The type (ICAO code) of the aircraft that flew it, in upper case, when FsHub gave one. */
+  aircraftIcao?: string | null;
 }
 
 /**
@@ -32,7 +34,7 @@ export async function fshubFlightFacts(fshub: Pick<FsHubApi, 'airlineFlights'>, 
       // FsHub lists an airline's flights from just after a cursor, oldest first, so the flight just before this one's ID gives this one.
       const page = await fshub.airlineFlights(airlineId, id - 1, 1);
       const f = page.flights.find((x) => x.id === id);
-      if (f) out.set(id, { distanceNm: typeof f.distanceNm === 'number' ? f.distanceNm : null, landingRate: typeof f.landingRate === 'number' ? f.landingRate : null });
+      if (f) out.set(id, { distanceNm: typeof f.distanceNm === 'number' ? f.distanceNm : null, landingRate: typeof f.landingRate === 'number' ? f.landingRate : null, aircraftIcao: f.aircraftIcao ? f.aircraftIcao.toUpperCase() : null });
     } catch (e) {
       log.debug(`FsHub gave nothing for flight ${id}: ${e instanceof Error ? e.message : String(e)}`);
       if (e instanceof FsHubError && e.kind === 'rate-limited') break;

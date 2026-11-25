@@ -9,7 +9,7 @@ import { isUnsetPay, parseMoney, readSheetFlights, type SheetFlight, type SheetF
 import { callsignCode } from './flightEtas.js';
 import { fshubFlightFacts, type FlightFacts } from './fshubDistances.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
-import { fineFor, readLanding, safetyPolicyOf, type FineTier, type SafetyFine, type SafetyPolicy } from './safetyPay.js';
+import { fineFor, limitsFor, normalizeAircraft, readLanding, type FineTier, type SafetyFine, type SafetyPolicy } from './safetyPay.js';
 import type { ProfitFill } from './writeback.js';
 import { appNow } from '../util/clock.js';
 
@@ -251,6 +251,8 @@ export function payCellOf(row: SheetFlight, wroteBefore = false): PayCell {
 export interface SafetyContext {
   policy: SafetyPolicy | null;
   landing: ReadonlyMap<number, number | null>;
+  /** The type of aircraft FsHub says flew each flight it was asked about (what the landing is judged by); a flight not in it is judged by the type of the aircraft whose logbook it is in. */
+  aircraft?: ReadonlyMap<number, string | null>;
   /** The airline asked for what a hard landing takes off the pay to be written in the Safety Deductions column too. */
   deductions?: boolean;
 }
@@ -304,7 +306,8 @@ export function compareProfits(
           waiting++;
           continue;
         }
-        const read = readLanding(safety.landing.get(flight.flightId));
+        const type = safety.aircraft?.get(flight.flightId) ?? flight.aircraftType ?? null;
+        const read = readLanding(safety.landing.get(flight.flightId), limitsFor(safety.policy!, type));
         if (read.kind === 'none') {
           hold('no-landing-rate', null);
           continue;
@@ -313,7 +316,7 @@ export function compareProfits(
           hold('landing-rate-not-believed', read.fpm);
           continue;
         }
-        fine = fineFor(read, flight.landedAt, safety.policy);
+        fine = fineFor(read, flight.landedAt, safety.policy, type);
       }
       const payPlan = planPay(value, row, flight.flightId, flight.distanceNm, distances, wrote, fine);
       // What the hard landing took off: what the flight would have paid, less what it pays. Only written beside a pay this bot is writing too (the pay cell empty),
@@ -417,6 +420,7 @@ export function compareDeductions(
   distances: ReadonlyMap<number, number>,
   landing: ReadonlyMap<number, number | null>,
   policy: SafetyPolicy,
+  aircraft: ReadonlyMap<number, string | null> = new Map(),
 ): Omit<DeductionAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> & { needFacts: number[] } {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
   const { pairs } = pairRows(rows.filter((r) => r.completed), usable);
@@ -443,12 +447,13 @@ export function compareDeductions(
       out.waiting++;
       continue;
     }
-    const read = readLanding(landing.get(flight.flightId));
+    const type = aircraft.get(flight.flightId) ?? flight.aircraftType ?? null;
+    const read = readLanding(landing.get(flight.flightId), limitsFor(policy, type));
     if (read.kind !== 'ok') {
       out.noRate++;
       continue;
     }
-    const fine = fineFor(read, flight.landedAt, policy);
+    const fine = fineFor(read, flight.landedAt, policy, type);
     if (fine === null) {
       out.uncut++;
       continue;
@@ -524,6 +529,17 @@ export interface AirlineProfitsDeps {
   now?: () => number;
 }
 
+/** The aircraft types of an airline's fleet, as Aeroconomy lists its aircraft: how many of each it owns, and how many it leases. */
+export interface FleetTypes {
+  businessId: number;
+  /** Each type's ICAO code (upper case) with the number of aircraft of it the airline owns and the number it leases. */
+  types: Map<string, { owned: number; leased: number }>;
+  /** Aircraft whose type Aeroconomy did not say (they are in no type above). */
+  untyped: number;
+  /** Why the list of leased aircraft could not be read (the owned ones were), or null. */
+  problem: string | null;
+}
+
 export class AirlineProfits {
   private readonly now: () => number;
   private readonly log: Logger;
@@ -531,6 +547,43 @@ export class AirlineProfits {
   constructor(private readonly d: AirlineProfitsDeps) {
     this.now = d.now ?? appNow;
     this.log = d.logger ?? silentLogger;
+  }
+
+  /**
+   * The types of aircraft in the airline's fleet, from Aeroconomy: the aircraft the airline owns and the ones it leases (a leased aircraft flies its flights too, so its
+   * type is the airline's as well). It reads the lists of aircraft only, never a logbook, so an aircraft whose logbook is hidden from the bot still counts. A list of
+   * leased aircraft that cannot be read is no reason to stop: the owned ones are still given, and `problem` says what went wrong.
+   */
+  async fleetTypes(panel: Panel, business?: number): Promise<FleetTypes> {
+    if (panel.fshubAirlineId === null) throw new ProfitError("This panel isn't linked to its airline's FsHub roster (`/setup fshub`), so I don't know which airline's aircraft to look at.");
+    const airlineId = panel.fshubAirlineId;
+    const businessId = await this.businessOf(panel, airlineId, business);
+    const owned = await this.d.account.ownedAircraft(businessId);
+    const { aircraft: leasedAll, problem } = await this.leasedFleet(businessId);
+    const ownedSerials = new Set(owned.map((a) => a.serial));
+    const leased = leasedAll.filter((a, i) => !ownedSerials.has(a.serial) && leasedAll.findIndex((b) => b.serial === a.serial) === i);
+    // A business number an admin typed has to be the airline's own before it is trusted (and remembered, as `/setup profit` does).
+    if (business !== undefined) {
+      await this.checkOwner(owned, leased, airlineId);
+      this.d.store.setKv(businessKey(airlineId), String(business));
+    }
+    const types = new Map<string, { owned: number; leased: number }>();
+    let untyped = 0;
+    const count = (list: AeroAircraft[], which: 'owned' | 'leased'): void => {
+      for (const a of list) {
+        const code = normalizeAircraft(a.type);
+        if (code === null) {
+          untyped++;
+          continue;
+        }
+        const entry = types.get(code) ?? { owned: 0, leased: 0 };
+        entry[which]++;
+        types.set(code, entry);
+      }
+    };
+    count(owned, 'owned');
+    count(leased, 'leased');
+    return { businessId, types, untyped, problem };
   }
 
   /** What both a profit check and a look for missing deductions start from: the airline's logbooks, and its sheet read as a schedule. */
@@ -554,13 +607,14 @@ export class AirlineProfits {
     }
 
     const flights: LogFlight[] = [];
-    for (const a of owned) flights.push(...(await this.d.account.logbook(a.serial)));
+    const tagged = (a: AeroAircraft, list: LogFlight[]): LogFlight[] => list.map((f) => ({ ...f, aircraftType: a.type }));
+    for (const a of owned) flights.push(...tagged(a, await this.d.account.logbook(a.serial)));
     // A leased aircraft's logbook may not be this account's to see (it says so with a 403): that one is left out, and said so, rather than costing the rest.
     let leasedRead = 0;
     let leasedHidden = 0;
     for (const a of leased) {
       try {
-        flights.push(...(await this.d.account.logbook(a.serial)));
+        flights.push(...tagged(a, await this.d.account.logbook(a.serial)));
         leasedRead++;
       } catch (e) {
         if (!(e instanceof AeroconomyError) || e.status !== 403) throw e;
@@ -588,17 +642,19 @@ export class AirlineProfits {
     // such flight: how far it was flown and how hard it landed. Only the ones whose Pilot Pay is empty need it: a pay that will not be written is
     // not worth a request.
     const wrotePay = this.d.store.payWrittenKeys(panel.id);
-    const policy = safetyPolicyOf(panel);
+    const policy = this.d.store.safetyPolicy(panel);
     if (policy && !this.d.fshub) throw new ProfitError("Safety pay is on for this airline, and it needs FsHub's landing rate for each flight, but the bot has no FsHub token, so the pay cannot be worked out.");
-    const first = compareProfits(sheet.flights, flights, code, new Map(), wrotePay, { policy, landing: new Map(), deductions: panel.safetyDeductions });
+    const first = compareProfits(sheet.flights, flights, code, new Map(), wrotePay, { policy, landing: new Map(), aircraft: new Map(), deductions: panel.safetyDeductions });
     const facts = await this.fshubFacts(airlineId, first.needFacts);
     const distances = new Map<number, number>();
     const landing = new Map<number, number | null>();
+    const flownTypes = new Map<number, string | null>();
     for (const [id, f] of facts) {
       if (f.distanceNm !== null) distances.set(id, f.distanceNm);
       landing.set(id, f.landingRate);
+      flownTypes.set(id, f.aircraftIcao ?? null);
     }
-    const { needFacts: _needed, ...result } = compareProfits(sheet.flights, flights, code, distances, wrotePay, { policy, landing, deductions: panel.safetyDeductions });
+    const { needFacts: _needed, ...result } = compareProfits(sheet.flights, flights, code, distances, wrotePay, { policy, landing, aircraft: flownTypes, deductions: panel.safetyDeductions });
     this.log.info(`Compared ${result.matched} flights of ${panel.airlineName} with Aeroconomy's logbooks: ${result.agree} agree, ${result.fills.length} blank, ${result.different.length} differ`);
     const held = result.held ?? [];
     if (held.length > 0 && this.d.onHeld) {
@@ -617,7 +673,7 @@ export class AirlineProfits {
    * At most `MAX_DEDUCTION_LOOKUPS` flights are asked about in a run; the others are counted as waiting, and a later run goes on with them.
    */
   async analyseDeductions(panel: Panel, business?: number): Promise<DeductionAnalysis> {
-    const policy = safetyPolicyOf(panel);
+    const policy = this.d.store.safetyPolicy(panel);
     if (!policy) throw new ProfitError("Landing safety pay is off for this airline, so no pay has been cut for a hard landing and there are no deductions to write. (`/setup safety-pay mode:on` turns it on.)");
     if (!panel.safetyDeductions) throw new ProfitError("Deductions aren't switched on for this airline. `/setup safety-pay deductions:on` switches them on, and then this can add them for flights already filled in.");
     if (!this.d.fshub) throw new ProfitError("Working out what a hard landing took off needs FsHub's landing rate for each flight, but the bot has no FsHub token.");
@@ -628,11 +684,13 @@ export class AirlineProfits {
     const facts = await this.fshubFacts(airlineId, first.needFacts, MAX_DEDUCTION_LOOKUPS);
     const distances = new Map<number, number>();
     const landing = new Map<number, number | null>();
+    const flownTypes = new Map<number, string | null>();
     for (const [id, f] of facts) {
       if (f.distanceNm !== null) distances.set(id, f.distanceNm);
       landing.set(id, f.landingRate);
+      flownTypes.set(id, f.aircraftIcao ?? null);
     }
-    const { needFacts: _needed, ...result } = compareDeductions(sheet.flights, flights, code, distances, landing, policy);
+    const { needFacts: _needed, ...result } = compareDeductions(sheet.flights, flights, code, distances, landing, policy, flownTypes);
     this.log.info(`Looked for missing safety deductions of ${panel.airlineName}: ${result.fills.length} to write, ${result.waiting} waiting for FsHub, ${result.differs} with a pay that is not what the cut gives`);
     return { business: businessId, aircraft, leased, leasedHidden, leasedProblem, readAt: this.now(), ...result };
   }

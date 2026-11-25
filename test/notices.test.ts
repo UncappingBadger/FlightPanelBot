@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../src/db/db.js';
 import { NOTICE_KINDS, Store } from '../src/db/store.js';
 import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage } from '../src/discord/dm.js';
 import { noticesButtons, noticesText } from '../src/discord/notices.js';
 import type { FsHubFlight } from '../src/fshub/client.js';
@@ -15,7 +16,7 @@ import { FakeUser, fakeComponent, fakeDm, fakeInteraction, makeDiscordHarness, s
 /* Everything below is made up: the pilots, the airline and the flights. */
 
 const MIN = 60_000;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 
 /* ------------------------------------------------------------------ reading what someone typed */
 

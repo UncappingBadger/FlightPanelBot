@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { componentHandlers, commands } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { openAgainText } from '../src/discord/dm.js';
 import { HOUR, T0, USER_A, USER_B, makeHarness, sj, type Harness } from './helpers.js';
 import { fakeComponent, fakeInteraction, FakeUser, makeDiscordHarness, settle, type DiscordHarness } from './discord-helpers.js';
 
 const DAY = 24 * HOUR;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 
 /** What a pilot is told after giving a flight back that nobody is standing by for. */
 const told = (code: string, route: string) =>

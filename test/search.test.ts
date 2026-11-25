@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { componentHandlers, commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { registerInteractionRouter } from '../src/discord/router.js';
 import { searchEmbeds } from '../src/discord/ui.js';
 import { flyableOn, matchesAircraft, matchesSearch, MAX_SEARCH_RESULTS, parseAircraftTypes, parseAirportCodes, parseSearchDate } from '../src/services/search.js';
@@ -562,7 +563,7 @@ describe('search through the interaction router', () => {
 describe('/setup refresh brings a panel posted by an older version up to date', () => {
   let h: Harness;
   let d: DiscordHarness;
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const pid = () => h.panel.id;
   beforeEach(async () => {
     h = await makeHarness();

@@ -109,7 +109,7 @@ describe('SourceRefresher', () => {
     const none = new SourceRefresher(h.store, h.jobs, () => null, silentLogger, () => h.clock.now);
     assert.equal(none.hasSource(h.panel), false);
     assert.equal(await none.refreshDue(), 0);
-    await assert.rejects(none.refresh(h.panel), (e: unknown) => e instanceof JobError && /\/setup import/.test(e.message));
+    await assert.rejects(none.refresh(h.panel), (e: unknown) => e instanceof JobError && /Import flights/.test(e.message));
   });
 });
 

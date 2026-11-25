@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { MAX_REMINDER_FLIGHTS, reminderTarget, renderReminder, utcDayLabel } from '../src/discord/ui.js';
 import type { SourceJob } from '../src/jobs/types.js';
@@ -601,7 +601,7 @@ describe('the channel announcement', () => {
 /* ------------------------------------------------------------------ /setup reminders */
 
 describe('/setup reminders', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const ROLE = '666666666666666666';
   let h: Harness;
   let d: DiscordHarness;

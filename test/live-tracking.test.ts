@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { FsHubError, type FsHubFlight } from '../src/fshub/client.js';
 import { LIVE_FEED, LiveFeed, LiveFeedError, type AirlineFlight, type LivePilot } from '../src/fshub/liveFeed.js';
@@ -17,7 +17,7 @@ import { FakeFsHub, FakeUser, fakeInteraction, makeDiscordHarness, settle, type 
 const MIN = 60_000;
 const AIRLINE_ID = 8123;
 const NOW = T0 + 6 * HOUR;
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 
 /* ------------------------------------------------------------------ the feed's client */
 

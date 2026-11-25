@@ -55,7 +55,11 @@ export async function makeHarness(): Promise<Harness> {
   };
   const now = () => clock.now;
   const jobs = new JobService(store, events, { now });
-  const panel = store.createPanel({ guildId: GUILD, name: AIRLINE.name, abbr: AIRLINE.abbr, prefix: 'TST', channelId: CHANNEL, now: T0 });
+  const created = store.createPanel({ guildId: GUILD, name: AIRLINE.name, abbr: AIRLINE.abbr, prefix: 'TST', channelId: CHANNEL, now: T0 });
+  // The tests of landing safety pay were written when every airline had the same limits (a warning from 375 feet per minute, 400 and 600): this panel keeps them. A new
+  // panel starts at 400, 500 and 600 (see `STARTING_LIMITS`), as the tests of that say with a panel of their own.
+  store.updatePanel(created.id, { safetyWarnFpm: 375, safetyTier1Fpm: 400, safetyTier2Fpm: 600 });
+  const panel = store.getPanel(created.id) as Panel;
   return {
     store,
     events,

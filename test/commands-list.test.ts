@@ -36,7 +36,7 @@ describe('asking for the commands', () => {
     });
     it('knows the parts of /setup, with what each does', () => {
       const names = slash.find((c) => c.name === 'setup')!.subs.map((s) => s.name);
-      for (const n of ['panel-add', 'weather', 'refresh', 'id-add', 'refresh-roles', 'release']) assert.ok(names.includes(n), n);
+      assert.deepEqual(names, ['settings', 'refresh', 'id-add'], 'the rest of /setup is on the settings page');
       assert.ok(slash.find((c) => c.name === 'setup')!.subs.every((s) => s.description.length > 0));
     });
   });

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { componentHandlers, commands } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { handleDmMessage, MAX_ATTEMPTS } from '../src/discord/dm.js';
 import { UserError } from '../src/discord/errors.js';
 import { FsHubError } from '../src/fshub/client.js';
@@ -9,7 +10,7 @@ import { fakeComponent, fakeDm, fakeInteraction, FakeFsHub, FakeUser, makeDiscor
 
 /* Everything below is made up. The pilots, airlines and Discord IDs are not real people. */
 
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const ANN = { id: 4821, name: 'Ann Pilot', base: 'EGLL', country: 'GB' };
 
 describe('checking a pilot ID with FsHub', () => {

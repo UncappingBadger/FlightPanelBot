@@ -2,7 +2,7 @@ import type { FlownFlight, Panel, Store } from '../db/store.js';
 import { plainText, routeText, truncate } from '../util/format.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { FIRE_KEVIN, REHIRE_KEVIN } from './dailyNote.js';
-import { IMPLAUSIBLE_FPM, lossForTier, readLanding, safetyNotice, safetyPolicyOf, type SafetyPolicy } from './safetyPay.js';
+import { IMPLAUSIBLE_FPM, limitsFor, lossForTier, normalizeAircraft, readLanding, safetyNotice, shareForTier, tierName, type FineTier, type SafetyLimits, type SafetyPolicy } from './safetyPay.js';
 import { appendPenaltyCsv, flightNumberOf, penaltyMessage, type ManagerLookup, type PenaltyReport } from './safetyReport.js';
 import { appNow } from '../util/clock.js';
 
@@ -224,17 +224,20 @@ export class HardLandings {
   }
 
   /**
-   * What an airline with safety pay on does about one landing that reaches a tier (Tier 1, 2 or 3): the pilot is sent the safety notice, whatever their
-   * `notifications` say (it is about their pay, so it is not one of the optional messages) and with no pause after an earlier one. A Tier 2 or Tier 3 landing,
-   * which cuts the pay, is also written to the CSV and reported to the managers. Each step is done once per flight; a step that did not work (the CSV
+   * What an airline with safety pay on does about one landing that reaches a band (the warning, Tier 1 or Tier 2, by the limits of the aircraft that flew it): the
+   * pilot is sent the safety notice, whatever their `notifications` say (it is about their pay, so it is not one of the optional messages) and with no pause after
+   * an earlier one. A Tier 1 or Tier 2 landing, which cuts the pay, is also written to the CSV and reported to the managers. Each step is done once per flight; a step that did not work (the CSV
    * was open in another program) is tried again the next time the flight is seen. Only a landing since safety pay was turned on, and recent enough, counts.
    * Returns how many private messages went out (to the pilot and the managers).
    */
   private async safety(panel: Panel, policy: SafetyPolicy, f: FlownFlight, now: number): Promise<number> {
-    const read = readLanding(f.landingRate);
+    const limits = limitsFor(policy, f.aircraftIcao);
+    const read = readLanding(f.landingRate, limits);
     if (read.kind !== 'ok' || read.tier === null) return 0;
     if (f.arrivedAt < policy.since || now - f.arrivedAt > SAFETY_FRESH_FOR_MS || f.arrivedAt > now + HOUR) return 0;
-    const penalty = read.tier >= 2;
+    const penalty = read.tier !== 'warning';
+    const aircraft = normalizeAircraft(f.aircraftIcao);
+    const share = read.tier === 'warning' ? 0 : shareForTier(policy, read.tier);
     const prior = this.store.getSafetyLanding(panel.id, f.flightId) ?? { told: null, logged: false, reported: false };
     const owner = this.ownerOf(f.pilotId);
     const wantsLog = penalty && this.csvFile !== null && !prior.logged;
@@ -247,7 +250,7 @@ export class HardLandings {
     if (wantsNotice && owner !== null) {
       let ok = false;
       try {
-        ok = await this.send(owner, safetyNotice({ tier: read.tier, fpm: read.fpm, route: routeText([{ dep: f.dep, arr: f.arr }]), airline: this.airlineName(panel), minimumLoss: lossForTier(policy, read.tier) }));
+        ok = await this.send(owner, safetyNotice({ tier: read.tier, fpm: read.fpm, route: routeText([{ dep: f.dep, arr: f.arr }]), airline: this.airlineName(panel), minimumLoss: lossForTier(policy, read.tier), share, limits, aircraft }));
       } catch (e) {
         this.log.debug(`Could not send a safety notice to ${owner}`, e);
       }
@@ -256,13 +259,13 @@ export class HardLandings {
       this.store.saveSafetyLanding(panel.id, f.flightId, { told }, now);
       if (ok) {
         sent++;
-        this.log.info(`Sent a Tier ${read.tier} safety notice (flight ${f.flightId})`);
+        this.log.info(`Sent a ${tierName(read.tier)} safety notice (flight ${f.flightId})`);
       }
     }
     if (!wantsLog && !wantsReport) return sent;
 
     // The report: who, which flight, where, when, how hard. The CSV first, so the message to the managers can say whether it was added.
-    const report = await this.reportOf(panel, f, read.tier as 2 | 3, read.fpm, owner, now);
+    const report = await this.reportOf(panel, f, read.tier as FineTier, read.fpm, owner, now, limits, share);
     let logged = prior.logged;
     if (wantsLog && this.csvFile !== null) {
       try {
@@ -295,7 +298,7 @@ export class HardLandings {
   }
 
   /** The facts of a penalty landing, for the managers and the CSV. */
-  private async reportOf(panel: Panel, f: FlownFlight, tier: 2 | 3, fpm: number, owner: string | null, now: number): Promise<PenaltyReport> {
+  private async reportOf(panel: Panel, f: FlownFlight, tier: FineTier, fpm: number, owner: string | null, now: number, limits: SafetyLimits, share: number): Promise<PenaltyReport> {
     let discordName: string | null = null;
     if (owner !== null && this.nameOf) {
       try {
@@ -309,6 +312,9 @@ export class HardLandings {
     return {
       airline: this.airlineName(panel),
       tier,
+      share,
+      limit: tier === 'tier2' ? limits.tier2 : limits.tier1,
+      aircraft: normalizeAircraft(f.aircraftIcao),
       rate: -fpm,
       landedAt: f.arrivedAt,
       pilotName,
@@ -329,13 +335,13 @@ export class HardLandings {
       const now = this.now();
       this.store.pruneLandingRemarks(now - KEEP_MS);
       this.store.pruneSafety(now - KEEP_MS);
-      const policy = safetyPolicyOf(panel);
+      const policy = this.store.safetyPolicy(panel);
       for (const f of flights) {
         // An airline with safety pay on sends its own notice (and reports a penalty) before anything light-hearted.
         let afterNotice = false;
         if (policy) {
           sent += await this.safety(panel, policy, f, now);
-          const read = readLanding(f.landingRate);
+          const read = readLanding(f.landingRate, limitsFor(policy, f.aircraftIcao));
           afterNotice = read.kind === 'ok' && read.tier !== null && f.arrivedAt >= policy.since;
         }
         const severity = severityOf(f.landingRate);

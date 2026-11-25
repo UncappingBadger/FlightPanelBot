@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { commands } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { lookUpMessages } from '../src/discord/panel.js';
 import { noteIfSlow, whileTyping } from '../src/discord/router.js';
 import { SheetsApi, SheetsError, type Cell, type SheetsPort } from '../src/google/sheetsApi.js';
@@ -406,7 +406,7 @@ describe('the panels, when the bot stops', () => {
 /* ------------------------------------------------------------------ /setup refresh */
 
 describe('/setup refresh', () => {
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const guild = { channels: { fetch: async (id: string) => ({ id, permissionsFor: () => ({ has: () => true }) }) }, members: { me: {}, fetchMe: async () => ({}) } };
   let h: Harness;
   let d: DiscordHarness;

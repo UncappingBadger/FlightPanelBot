@@ -114,7 +114,7 @@ export async function showContributions(ctx: BotContext, message: Message, reply
       if (panels.length < MAX_PANELS && (await inGuild(message, p.guildId))) panels.push(p);
     }
     if (panels.length === 0) {
-      await reply("I work this out from an airline's Google Sheet, and I don't know of one linked to a server you're in. Ask your airline's managers whether its sheet is linked with `/setup sheet`.");
+      await reply("I work this out from an airline's Google Sheet, and I don't know of one linked to a server you're in. Ask your airline's managers whether its sheet is linked (the **Google Sheet** tab of the bot's settings page).");
       return;
     }
 

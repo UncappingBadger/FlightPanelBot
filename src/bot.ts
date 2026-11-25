@@ -42,6 +42,8 @@ import { JobService } from './services/jobs.js';
 import { AeroconomyAccountClient } from './aeroconomy/account.js';
 import { AeroconomyClient } from './aeroconomy/client.js';
 import { AirlineProfits } from './services/airlineProfits.js';
+import { AirlineSettings } from './services/airlineSettings.js';
+import { SetupConsole } from './discord/setupConsole.js';
 import { AeroconomyGateway, NotConnectedGateway } from './services/payGateway.js';
 import { AeroconomyPaymentsClient } from './aeroconomy/payments.js';
 import { Payroll } from './services/payrollService.js';
@@ -87,6 +89,10 @@ export interface BotHandle {
   readonly userTag: string;
   readonly userId: string;
   servers(): ServerInfo[];
+  /** What the host's settings page can change about each airline (landing safety pay and its limits), working on the bot's own database. */
+  readonly settings: AirlineSettings;
+  /** What the host's settings page runs the `/setup` commands with: one tab for each, acting as the server's owner. */
+  readonly setup: SetupConsole;
   /** Stop cleanly: no more background work, disconnect from Discord, close the database. */
   stop(): Promise<void>;
 }
@@ -460,6 +466,15 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
     userTag: client.user!.tag,
     userId: client.user!.id,
     servers: () => [...servers.values()],
+    settings: new AirlineSettings({ store, profits, fshub: fshub !== null, now: appNow }),
+    setup: new SetupConsole({
+      ctx,
+      discord: {
+        guilds: () => [...client.guilds.cache.values()].map((g) => ({ id: g.id, name: g.name })),
+        guild: async (id) => client.guilds.fetch(id).catch(() => null),
+        user: async (id) => client.users.fetch(id).catch(() => null),
+      },
+    }),
     stop,
   };
 }

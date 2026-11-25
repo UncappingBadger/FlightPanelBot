@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import type { Job, JobView } from '../src/db/store.js';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { registerInteractionRouter } from '../src/discord/router.js';
 import { MAX_SEARCH_AIRPORTS, SEARCH_COOLDOWN_MS, WEATHER_REFRESH_MS, weatherHandler } from '../src/discord/weatherBoard.js';
@@ -721,7 +722,7 @@ describe('the Search button', () => {
 describe('/setup weather', () => {
   let h: Harness;
   let d: DiscordHarness;
-  const setup = commands.find((c) => c.data.name === 'setup')!;
+  const setup = setupCommand;
   const guildFake = (hasPerms = true) => ({
     channels: { fetch: async (id: string) => ({ id, permissionsFor: () => ({ has: () => hasPerms }) }) },
     members: { me: {}, fetchMe: async () => ({}) },

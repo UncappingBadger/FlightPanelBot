@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MessageFlags, type Client } from 'discord.js';
-import { commands, componentHandlers } from '../src/discord/commands/index.js';
+import { componentHandlers } from '../src/discord/commands/index.js';
+import { setupCommand } from '../src/discord/commands/setup.js';
 import { UserError } from '../src/discord/errors.js';
 import { MAX_FOLLOWERS, PanelService } from '../src/discord/panel.js';
 import { silentLogger } from '../src/util/log.js';
 import { CHANNEL, makeHarness, sj, USER_A, USER_B, type Harness } from './helpers.js';
 import { fakeComponent, fakeInteraction, fakeModal, FakeUser, makeDiscordHarness, messageText, settle, type DiscordHarness } from './discord-helpers.js';
 
-const setup = commands.find((c) => c.data.name === 'setup')!;
+const setup = setupCommand;
 const DONE = '800000000000000009';
 
 describe("a pilot's list view in their DMs", () => {
