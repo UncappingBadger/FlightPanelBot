@@ -383,7 +383,8 @@ Runs your virtual airline's flight panel in your own Discord server, from your o
 2. A small icon appears near the clock (look under the ^ arrow if you don't see it). Drag it onto the taskbar
    to keep it visible. Your web browser opens the setup page.
 3. Follow the page: create your own Discord bot, paste its token, then press "Add the bot to a server".
-   Type /setup in your server and follow the server owner's manual. No FsHub account or token is needed.
+   Then set your airline up in the tabs of the same page (right-click the icon, "Open settings") and follow the
+   server owner's manual. No FsHub account or token is needed.
    (If you want, the setup page also takes a FsHub token, so the bot can check the pilot IDs people type and
    match pilots to your airline's FsHub roster. Without one the bot never contacts FsHub.)
 
