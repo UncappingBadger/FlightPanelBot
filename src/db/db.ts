@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 /**
@@ -749,11 +749,29 @@ export function openDatabase(path: string): DatabaseSync {
   // A deleted row (a pilot's sealed token, once they turn payment messages off) is overwritten, not left in a freed page of the file.
   db.exec('PRAGMA secure_delete = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
-  migrate(db);
+  migrate(db, path);
   return db;
 }
 
-function migrate(db: DatabaseSync): void {
+/**
+ * Before an existing database is upgraded, keep a copy of it as it was: `backups/before-upgrade-from-v<N>/` in the data folder. One copy for each version
+ * it is upgraded from (an existing one is not replaced), so whatever an upgrade changes can be looked at, or put back, afterwards. A copy that cannot be made
+ * (a full disk) does not stop the upgrade, which is what happened before copies were made.
+ */
+function backupBeforeUpgrade(db: DatabaseSync, path: string, from: number): void {
+  if (path === ':memory:' || from === 0) return;
+  const dir = join(dirname(path), 'backups', `before-upgrade-from-v${from}`);
+  if (existsSync(dir)) return;
+  try {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // what is still in the journal goes into the file first
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(path, join(dir, basename(path)));
+  } catch {
+    /* no copy: the upgrade goes ahead as it always did */
+  }
+}
+
+function migrate(db: DatabaseSync, path = ':memory:'): void {
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number } | undefined;
   const current = Number(row?.user_version ?? 0);
   if (current > MIGRATIONS.length) {
@@ -761,6 +779,7 @@ function migrate(db: DatabaseSync): void {
       `Database schema v${current} is newer than this bot supports (v${MIGRATIONS.length}). Update the bot.`,
     );
   }
+  if (current < MIGRATIONS.length) backupBeforeUpgrade(db, path, current);
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
