@@ -281,7 +281,7 @@ file that carries the bot and the Node.js it needs, so the host installs nothing
    menu opens the settings page (every setting is a tab there: see the *Admin guide* and *Landing safety and pay* below), copies the invite link, opens the **User manual**, shows the log and data folder,
    restarts the bot, switches **Start with Windows** on or off, and quits.
 
-Settings, the database and logs live in `%APPDATA%\FlightPanelBot`. The setup page listens on this computer
+Settings, the database and logs live in `%APPDATA%\FlightPanelBot`. Before the bot upgrades an existing database to a newer version it keeps a copy of it as it was, in `data\backups\before-upgrade-from-v<N>` (one copy for each version it is upgraded from, never replaced), so an upgrade can always be looked at or put back. The setup page listens on this computer
 only, needs a secret key that only the tray program knows, and refuses requests that did not come from its own
 page, so nothing else on the machine can read the token or change it. The token is kept in that folder as
 plain text, protected by the Windows account's own folder permissions, like the `.env` file would be, and so is
