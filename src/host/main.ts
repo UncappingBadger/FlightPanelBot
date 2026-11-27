@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     void supervisor.stop().finally(() => process.exit(0));
   };
 
-  const web = await startWebServer({ supervisor, updates, paths, log, version, key, port: Number(process.env.FPB_PORT) || DEFAULT_PORT, tail: logger.tail, onQuit: () => quit('asked to quit') });
+  const web = await startWebServer({ supervisor, updates, paths, log, version, key, port: Number(process.env.FPB_PORT) || DEFAULT_PORT, tail: logger.tail, clearLog: logger.clear, onQuit: () => quit('asked to quit') });
   port = web.port;
   log.info(`Setup page on port ${port}`);
 

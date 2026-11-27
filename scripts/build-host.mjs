@@ -391,7 +391,8 @@ Runs your virtual airline's flight panel in your own Discord server, from your o
 Right-click the icon for settings, the user manual, the log, restarting the bot, "Start with Windows", and Quit.
 The bot only works while this program is running, so keep it on a computer that stays on.
 
-Your settings, data and logs are in %APPDATA%\\FlightPanelBot. Deleting that folder resets everything.
+Your settings, data and logs are in %APPDATA%\\FlightPanelBot. To reset everything, use the red Reset everything
+button at the top right of the settings page. It cannot be undone.
 
 Updates: once a day the program asks GitHub whether a newer version has been released. If there is one, the
 icon pops up a notice (once), its menu shows "A new version is available", and the setup page links to the

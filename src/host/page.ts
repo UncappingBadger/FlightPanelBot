@@ -23,6 +23,10 @@ export function renderPage(version: string): string {
   .status { display:flex; gap:12px; align-items:center; } .dot { width:14px; height:14px; border-radius:50%; background:var(--warn); flex:none; }
   .dot.online { background:var(--ok); } .dot.error { background:var(--bad); } .dot.update { background:var(--accent); } .status b { display:block; }
   .status.update { border-color:var(--accent); } label.check { display:flex; gap:8px; align-items:center; font-weight:400; margin:10px 0 0; }
+  .top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; } .top h1 { min-width:0; }
+  button.danger { background:#c62828; color:#fff; flex:none; } button.danger:hover { background:#a81f1f; }
+  dialog { width:min(560px, calc(100vw - 32px)); border:2px solid #c62828; border-radius:12px; padding:18px 20px; background:var(--card); color:var(--ink); }
+  dialog::backdrop { background:rgba(0,0,0,.6); } dialog h2 { color:var(--bad); } .row.end { justify-content:flex-end; }
   ol { padding-left: 20px; margin: 0 0 12px; } li { margin: 4px 0; }
   label { display:block; font-weight:600; margin:12px 0 4px; }
   input[type=password], input[type=text] { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
@@ -55,9 +59,26 @@ export function renderPage(version: string): string {
 </head>
 <body>
 <main>
-  <h1>Flight Panel Bot <small>v${safeVersion}</small></h1>
+  <div class="top">
+    <h1>Flight Panel Bot <small>v${safeVersion}</small></h1>
+    <button class="danger" id="reset-open" type="button">Reset everything</button>
+  </div>
+  <dialog id="reset-dialog" aria-labelledby="reset-title">
+    <h2 id="reset-title">Reset everything? This cannot be undone.</h2>
+    <p>Everything this app has saved on this computer is deleted:</p>
+    <ul>
+      <li>the Discord bot token, the FsHub token, the Google key and the Twitch sign-in;</li>
+      <li>every airline, flight panel, reservation, pilot name and setting;</li>
+      <li><b>the record of payments made to pilots.</b> The bot will no longer know what it has paid, so first tick <b>Pilot Paid</b> in your sheet for every flight that has been paid, or it can be paid again;</li>
+      <li>pilots' <code>/banking</code> sign-ins, the backup copies of the database and the logs.</li>
+    </ul>
+    <p><b>Start with Windows</b> is switched off. Your Google Sheet is not changed. Messages the bot has posted in Discord stay there: delete them by hand.</p>
+    <div class="msg hidden" id="reset-msg"></div>
+    <div class="row end"><button class="secondary" id="reset-cancel" type="button" autofocus>Cancel</button><button class="danger" id="reset-go" type="button">Delete everything</button></div>
+  </dialog>
   <p class="muted">Runs on this computer and keeps your airline's flight panel working in your Discord server. This page is only reachable from this computer.</p>
 
+  <div class="msg hidden" id="reset-done"></div>
   <div class="status"><span class="dot" id="dot"></span><div><b id="phase">Checking…</b><span class="muted" id="message"></span></div></div>
 
   <div class="status update hidden" id="update-banner">
@@ -652,6 +673,25 @@ export function renderPage(version: string): string {
   };
   $('twitch-disconnect').onclick = function () { api('/api/twitch/disconnect', {}).then(function () { show($('twitch-msg'), 'Disconnected from Twitch.', false); twitchPoll(); poll(); }); };
   $('restart').onclick = function () { api('/api/restart', {}).then(poll); };
+  /* Reset everything: the button only opens the warning; nothing is deleted until Delete everything is pressed there. */
+  $('reset-open').onclick = function () { $('reset-msg').className = 'msg hidden'; $('reset-dialog').showModal(); $('reset-cancel').focus(); };
+  $('reset-cancel').onclick = function () { $('reset-dialog').close(); };
+  $('reset-go').onclick = function () {
+    $('reset-go').disabled = true; $('reset-cancel').disabled = true;
+    show($('reset-msg'), 'Stopping the bot and deleting everything\\u2026', false);
+    api('/api/reset', { confirm: 'DELETE EVERYTHING' }).then(function () {
+      try { localStorage.removeItem('fpb-tab'); sessionStorage.setItem('fpb-reset', '1'); } catch (e) {}
+      location.reload();
+    }).catch(function (e) {
+      show($('reset-msg'), e.message, true);
+      $('reset-go').disabled = false; $('reset-cancel').disabled = false;
+    });
+  };
+  /* Esc must not hide the box while the deleting is going on. */
+  $('reset-dialog').addEventListener('cancel', function (ev) { if ($('reset-go').disabled) ev.preventDefault(); });
+  try {
+    if (sessionStorage.getItem('fpb-reset')) { sessionStorage.removeItem('fpb-reset'); show($('reset-done'), 'Everything was reset. Set the bot up again from the Discord bot tab.', false); }
+  } catch (e) {}
   $('logs-refresh').onclick = logs;
   $('google-remove').onclick = function () { api('/api/google-key/remove', {}).then(function () { show($('google-msg'), 'Key removed.', false); poll(); }); };
   $('google-file').onchange = function () {

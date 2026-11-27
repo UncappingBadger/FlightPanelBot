@@ -53,6 +53,8 @@ export class Supervisor {
   private bot: BotHandle | null = null;
   private generation = 0;
   private retryTimer: NodeJS.Timeout | null = null;
+  /** Starts that have not finished yet. */
+  private readonly starting = new Set<Promise<void>>();
   private retries = 0;
   private phase: Phase = 'stopped';
   private message = 'Not started.';
@@ -101,7 +103,30 @@ export class Supervisor {
   }
 
   /** Start, or start again, from the saved settings. */
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    const run = this.runStart();
+    this.starting.add(run);
+    const done = () => void this.starting.delete(run);
+    run.then(done, done);
+    return run;
+  }
+
+  /**
+   * Stop, and wait until nothing started earlier is still holding the database (a start that was under way opens it and only then notices
+   * it is no longer wanted). Only after this may the bot's files be touched.
+   */
+  async shutdown(): Promise<void> {
+    this.generation++;
+    this.clearRetry();
+    this.retries = 0;
+    await Promise.allSettled([...this.starting]);
+    await this.disconnect();
+    this.botName = null;
+    this.servers = [];
+    this.set('stopped', 'Stopped.');
+  }
+
+  private async runStart(): Promise<void> {
     const generation = ++this.generation;
     this.clearRetry();
     await this.disconnect();

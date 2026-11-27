@@ -6,6 +6,8 @@ export interface FileLogger {
   log: Logger;
   /** The most recent lines, oldest first, for the setup page. */
   tail(count: number): string[];
+  /** Forget the lines kept in memory, and that the file had any size: for a reset, which deletes the log files. */
+  clear(): void;
 }
 
 export interface FileLoggerOptions {
@@ -51,5 +53,10 @@ export function createFileLogger(opts: FileLoggerOptions): FileLogger {
     }
   };
 
-  return { log: createLogger(opts.level ?? 'info', sink), tail: (count) => recent.slice(-count) };
+  const clear = () => {
+    recent.length = 0;
+    size = 0;
+  };
+
+  return { log: createLogger(opts.level ?? 'info', sink), tail: (count) => recent.slice(-count), clear };
 }

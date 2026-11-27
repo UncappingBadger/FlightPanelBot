@@ -9,6 +9,7 @@ import { fshubTokenProblem, normalizeFsHubToken } from '../fshub/client.js';
 import { checkDiscordToken, checkFsHubToken } from './accounts.js';
 import type { HostPaths } from './paths.js';
 import { renderPage } from './page.js';
+import { deleteEverything, markReset } from './reset.js';
 import { BUILT_IN_TWITCH_CLIENT_ID, validClientId } from '../twitch/clientId.js';
 import { CHAT_SCOPES, pollDeviceFlow, revokeToken, startDeviceFlow, TwitchAuthError, validateToken, type DeviceCode } from '../twitch/oauth.js';
 import { readTokens, removeTokens, writeTokens } from '../twitch/tokens.js';
@@ -31,6 +32,8 @@ export interface WebOptions {
   tail: (count: number) => string[];
   /** Called when the host asks to quit. */
   onQuit: () => void;
+  /** Forget the log lines kept in memory: part of "Reset everything". */
+  clearLog?: () => void;
   /** Used to ask Discord whether a pasted token works. Replaceable in tests. */
   fetchFn?: typeof fetch;
   /** The Twitch application ID built into this app (a fork may have none). Replaceable in tests. */
@@ -45,6 +48,8 @@ export interface WebServer {
 const MAX_BODY_BYTES = 256 * 1024;
 /** The settings page's command runner takes more: a flights file for the import tab can be 256 KB of text, which is a little more once it is JSON. */
 const MAX_RUN_BODY_BYTES = 1024 * 1024;
+/** What the page sends to say the host has read the warning and means it. A request without it resets nothing. */
+export const RESET_CONFIRMATION = 'DELETE EVERYTHING';
 
 class HttpError extends Error {
   constructor(
@@ -102,6 +107,10 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
 
   // Connecting a Twitch account: the code shown to the host while they approve it on Twitch's own page. Held in memory only.
   let pending: { device: DeviceCode; clientId: string; expiresAt: number; lastPoll: number } | null = null;
+  // "Reset everything" is under way, and how many there have been: nothing else is saved meanwhile, and a save that was waiting on
+  // Discord, FsHub or Twitch when one happened is dropped, or it would put back what was just deleted.
+  let resetting = false;
+  let resets = 0;
   const clientIdForTwitch = (): string => loadSettings(opts.paths).twitch?.clientId || (opts.builtInTwitchClientId ?? BUILT_IN_TWITCH_CLIENT_ID);
   const twitchView = () => {
     const settings = loadSettings(opts.paths).twitch;
@@ -201,7 +210,39 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
     if (origin !== undefined && origin !== `http://${host}`) throw new HttpError(403, 'Not allowed.');
     const body = await readJson(req, url.pathname === '/api/setup/run' ? MAX_RUN_BODY_BYTES : MAX_BODY_BYTES);
 
+    if (resetting && url.pathname !== '/api/quit') throw new HttpError(409, 'Everything is being reset. Wait a moment.');
+    const before = resets;
+    /** Call after anything that was waited for, before saving. */
+    const stillWanted = () => {
+      if (resetting || resets !== before) throw new HttpError(409, 'Everything was reset while this was being checked, so it was not saved.');
+    };
+
     switch (url.pathname) {
+      // Stop the bot and delete everything it has saved on this computer. There is no way back.
+      case '/api/reset': {
+        if (body.confirm !== RESET_CONFIRMATION) throw new HttpError(400, 'Nothing was reset: the confirmation is missing. Use the Reset everything button.');
+        resetting = true;
+        let left: string[];
+        try {
+          pending = null;
+          const tokens = readTokens(opts.paths.twitchTokens);
+          if (tokens) await revokeToken(tokens.clientId, tokens.accessToken, fetchFn);
+          await opts.supervisor.shutdown();
+          left = deleteEverything(opts.paths);
+          opts.clearLog?.();
+          resets++;
+          if (left.length === 0) {
+            markReset(opts.paths);
+            opts.log.info('Everything was reset from the settings page');
+          } else opts.log.warn(`A reset from the settings page could not delete: ${left.join(', ')}`);
+        } finally {
+          resetting = false;
+        }
+        void opts.supervisor.restart();
+        if (left.length > 0) throw new HttpError(500, `Not everything could be deleted: ${left.join(', ')}. The rest is gone. Close anything that has those open, then reset again.`);
+        return json(res, 200, { ok: true });
+      }
+
       case '/api/settings': {
         const current = loadSettings(opts.paths);
         const notes: string[] = [];
@@ -215,6 +256,7 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
         if (check.status === 'unknown') notes.push(check.message);
         current.discordToken = discord;
 
+        stillWanted();
         saveSettings(opts.paths, current);
         void opts.supervisor.restart();
         return json(res, 200, { ok: true, notes });
@@ -256,6 +298,7 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
         if (problem) throw new HttpError(400, problem);
         const check = await checkFsHubToken(token, fetchFn);
         if (check.status === 'rejected') throw new HttpError(400, check.message);
+        stillWanted();
         const current = loadSettings(opts.paths);
         current.fshubAccessToken = token;
         saveSettings(opts.paths, current);
@@ -299,6 +342,7 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
           if (set === null) return json(res, 200, { status: 'pending' });
           const who = await validateToken(set.accessToken, fetchFn);
           if (!who) throw new TwitchAuthError('invalid', "Twitch didn't accept the new sign-in. Try again.");
+          stillWanted();
           writeTokens(opts.paths.twitchTokens, {
             clientId: p.clientId,
             accessToken: set.accessToken,
@@ -313,6 +357,7 @@ export async function startWebServer(opts: WebOptions): Promise<WebServer> {
           void opts.supervisor.restart();
           return json(res, 200, { status: 'connected', login: who.login });
         } catch (e) {
+          if (e instanceof HttpError) throw e;
           if (e instanceof TwitchAuthError && e.kind === 'unavailable') return json(res, 200, { status: 'pending', note: e.message });
           pending = null;
           throw new HttpError(400, e instanceof TwitchAuthError ? e.message : 'The Twitch sign-in failed.');

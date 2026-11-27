@@ -36,6 +36,8 @@ namespace FlightPanelBot
             }
         }
         public static string Status { get { return Path.Combine(AppHome, "status.json"); } }
+        /// <summary>Left by "Reset everything" on the settings page (see src/host/reset.ts).</summary>
+        public static string ResetMarker { get { return Path.Combine(AppHome, "reset-done"); } }
         public static string LogsDir { get { return Path.Combine(AppHome, "logs"); } }
         public static string BotLog { get { return Path.Combine(LogsDir, BuildInfo.Debug ? "bot-debug.log" : "bot.log"); } }
         /// <summary>The name shown in the tray tooltip; a diagnostic build says so, so nobody mistakes it for a release.</summary>
@@ -517,8 +519,28 @@ namespace FlightPanelBot
             Microsoft.Win32.SystemEvents.SessionEnding += delegate { if (!quitting) { quitting = true; bot.Stop(status); } };
         }
 
+        /// <summary>
+        /// Everything was reset from the settings page. "Start with Windows" is one of the settings and only the launcher keeps it. A test
+        /// or debug build, or one pointed at another folder, shares the entry with the real bot and leaves it alone.
+        /// </summary>
+        private void NoticeReset()
+        {
+            try
+            {
+                if (!File.Exists(Paths.ResetMarker)) return;
+                File.Delete(Paths.ResetMarker);
+                bool ownEntry = !BuildInfo.Test && !BuildInfo.Debug && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FPB_HOME"));
+                if (ownEntry && StartupEnabled()) ToggleStartup();
+                openedSetup = true; // the settings page is what asked, so it is already open
+                announcedOnline = false;
+                Log.Write("Everything was reset from the settings page");
+            }
+            catch (Exception e) { Log.Write("Could not finish the reset: " + e.Message); }
+        }
+
         private void Tick()
         {
+            NoticeReset();
             BotStatus s = BotStatus.Read();
             if (s != null) status = s;
             string phase;
