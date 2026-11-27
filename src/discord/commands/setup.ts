@@ -708,7 +708,7 @@ export const setupCommand: Command = {
             panelProblem(result),
             existing ? '' : `Once a day, at midnight UTC, the flights starting that day that still have no pilot will be listed in the channel, pinging ${reminderTarget(panel)?.text}, and the list is deleted at 23:59 UTC. Change that with \`/setup reminders\`.`,
             ctx.refresher.hasSource(panel)
-              ? 'Flights refresh automatically every 24 hours.'
+              ? `Flights refresh automatically every ${panel.sheetId ? 'hour' : '24 hours'}.`
               : "Next: if your airline keeps its schedule in a Google Sheet, link it with `/setup sheet`. Otherwise get a file of flights with `/setup template`, fill it in, and load it with `/setup import`.",
           ]
             .filter(Boolean)
@@ -805,7 +805,7 @@ export const setupCommand: Command = {
         await interaction.editReply({
           content: [
             `✅ Imported **${jobs.length}** flights into the **${panel.airlineName}** panel: ${r.added} new, ${r.updated} changed, ${r.removed} closed (no longer in the file).`,
-            r.released.length > 0 ? `${r.released.length} pilot${r.released.length === 1 ? ' was' : 's were'} told their reservation was released because a flight changed or was removed.` : '',
+            r.released.length > 0 ? `${r.released.length} pilot${r.released.length === 1 ? ' was' : 's were'} told their reservation was released because a flight changed, was removed or was cancelled.` : '',
             'Flights not in the file are closed, so import the full list each time. Flights keep their IDs when their `id` stays the same.',
           ]
             .filter(Boolean)
@@ -842,7 +842,7 @@ export const setupCommand: Command = {
             await writebackNote(ctx, linked),
             '• Windows are read as Zulu (UTC) and shown in each pilot\'s own timezone. A row with *Flight Completed* ticked is shown on the panel as ✅ completed for a day, then dropped. Cancelled rows are left off.',
             r.warnings.length > 0 ? `⚠️ I skipped or guessed at some rows:\n${r.warnings.map((w) => `  • ${w}`).join('\n')}` : '',
-            r.released.length > 0 ? `${r.released.length} pilot${r.released.length === 1 ? ' was' : 's were'} told their reservation was released because a flight changed or was removed.` : '',
+            r.released.length > 0 ? `${r.released.length} pilot${r.released.length === 1 ? ' was' : 's were'} told their reservation was released because a flight changed, was removed or was cancelled.` : '',
             panelProblem(result),
           ]
             .filter(Boolean)
@@ -950,7 +950,7 @@ export const setupCommand: Command = {
           content: [
             `${days !== null ? 'Done. ' : ''}The **${panel.airlineName}** panel lists the flights that are open now or start within the next **${span}**.`,
             later > 0
-              ? `${later} open flight${later === 1 ? ' starts' : 's start'} later than that and ${later === 1 ? 'is' : 'are'} left off the panel until ${later === 1 ? 'it comes' : 'they come'} within ${span}. Pilots can still reserve ${later === 1 ? 'it' : 'one'} by typing its flight ID.`
+              ? `${later} open flight${later === 1 ? ' starts' : 's start'} later than that and ${later === 1 ? 'is' : 'are'} left off the panel until ${later === 1 ? 'it comes' : 'they come'} within ${span}. Pilots can't reserve ${later === 1 ? 'it' : 'them'} before then, not even by typing the flight ID.`
               : 'Every open flight is listed.',
             `Change it with \`/setup window days:\` (${PANEL_DAYS_MIN} to ${PANEL_DAYS_MAX}).`,
           ].join('\n'),
@@ -1531,7 +1531,10 @@ export const setupCommand: Command = {
           let cleared = 0;
           for (const name of written) {
             try {
-              if (await ctx.writeback.unclaim(panel, before.job.sourceKey, name)) cleared++;
+              if (await ctx.writeback.unclaim(panel, before.job.sourceKey, name)) {
+                cleared++;
+                ctx.jobs.sheetNameCleared(before.job.id, name);
+              }
             } catch (e) {
               ctx.log.warn(`Could not take ${name} off the sheet: ${e instanceof Error ? e.message : e}`);
               sheetNote = " ⚠️ I couldn't take their name off the airline's sheet, so you'll need to.";

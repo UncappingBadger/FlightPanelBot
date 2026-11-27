@@ -11,6 +11,8 @@ export const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** A linked Google Sheet changes all day (sign-ups, ticked boxes), so it is re-read more often. */
 export const SHEET_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
+/** A read with no flights (and nothing unreadable) is believed only when fewer flights than this are still to come on the panel. */
+const EMPTY_READ_BELIEVED_BELOW = 3;
 /** How many airlines' schedules are read at the same time when several are due together. */
 const REFRESH_CONCURRENCY = 3;
 /**
@@ -65,20 +67,27 @@ export class SourceRefresher {
     if (DEBUG_BUILD) dbg(this.log, `refresh START ${panel.airlineName} (panel ${panel.id}), source ${source.kind}, last refresh ${panel.lastRefreshAt === null ? 'never' : new Date(panel.lastRefreshAt).toISOString()}, asked by ${callerPath(1, 5)}`);
     try {
       const fetched = normalizeFetched(await source.fetch({ name: panel.airlineName, abbr: panel.airlineAbbr }, now));
+      if (fetched.jobs.length === 0) this.refuseEmptyRead(panel, fetched, now);
       const jobs = this.enrich ? this.enrich(panel, fetched.jobs, fetched) : fetched.jobs;
       if (DEBUG_BUILD) dbg(this.log, `refresh: the source returned ${jobs.length} flight(s) and ${fetched.warnings.length} warning(s)${fetched.warnings.length > 0 ? `: ${fetched.warnings.join(' | ')}` : ''}`);
-      const result = this.jobs.sync(panel.id, jobs);
+      const result = this.jobs.sync(panel.id, jobs, fetched.unreadable);
       const clashes = [...new Set(result.numberClashes ?? [])];
-      const warnings =
-        clashes.length > 0
-          ? [...fetched.warnings, `the flight number${clashes.length === 1 ? '' : 's'} ${clashes.join(', ')} ${clashes.length === 1 ? 'is' : 'are'} already the ID of another flight on this panel (an earlier one, until it is cleared out), so ${clashes.length === 1 ? 'that flight keeps' : 'those flights keep'} their other ID for now`]
-          : fetched.warnings;
+      const held = result.held ?? [];
+      const warnings = [
+        // First, so that it is not cut off the end of a long list: somebody's flight depends on the row being put right.
+        ...(held.length > 0 ? [`a row of the sheet that can't be read may be ${held.join(', ')}, so ${held.length === 1 ? 'that flight is' : 'those flights are'} left as ${held.length === 1 ? 'it was' : 'they were'}, with the pilot, until the row is put right`] : []),
+        ...fetched.warnings,
+        ...(clashes.length > 0
+          ? [`the flight number${clashes.length === 1 ? '' : 's'} ${clashes.join(', ')} ${clashes.length === 1 ? 'is' : 'are'} already the ID of another flight on this panel (an earlier one, until it is cleared out), so ${clashes.length === 1 ? 'that flight keeps' : 'those flights keep'} their other ID for now`]
+          : []),
+      ];
       this.store.updatePanel(panel.id, {
         lastRefreshAt: now,
         lastRefreshError: null,
         lastRefreshNote: warnings.length > 0 ? warnings.join('; ').slice(0, 400) : null,
       });
-      this.log.info(`Refreshed ${panel.airlineName} from ${source.kind}: +${result.added} ~${result.updated} -${result.removed}${warnings.length > 0 ? ` (${warnings.length} warning${warnings.length === 1 ? '' : 's'})` : ''}`);
+      // The warnings themselves go in the log too: they say which rows' flight numbers or dates the sheet needs putting right.
+      this.log.info(`Refreshed ${panel.airlineName} from ${source.kind}: +${result.added} ~${result.updated} -${result.removed}${warnings.length > 0 ? ` (${warnings.length} warning${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ').slice(0, 600)})` : ''}`);
       if (this.afterRead) {
         const after = this.afterRead;
         void Promise.resolve()
@@ -91,6 +100,18 @@ export class SourceRefresher {
       this.store.updatePanel(panel.id, { lastRefreshError: e instanceof Error ? e.message.slice(0, 200) : 'refresh failed' });
       throw e;
     }
+  }
+
+  /**
+   * A schedule that suddenly reads as holding no flights at all is more likely broken (a date format changed, a sheet emptied while it is
+   * being pasted into) than really empty, and applying it would take every flight off the panel and release every reservation. It is not
+   * applied while rows could not be read, or while several flights are still to come.
+   */
+  private refuseEmptyRead(panel: Panel, fetched: FetchedJobs, now: number): void {
+    const coming = this.store.listOpenJobViews(panel.id).filter((v) => v.job.deadline === null || v.job.deadline > now).length;
+    if (coming === 0 || (fetched.warnings.length === 0 && coming < EMPTY_READ_BELIEVED_BELOW)) return;
+    const why = fetched.warnings.length > 0 ? ` (${fetched.warnings.slice(0, 2).join('; ')})` : '';
+    throw new JobError('BAD_INPUT', `The sheet was read but no flights were found in it${why}, so the ${coming} flight${coming === 1 ? '' : 's'} on the panel and ${coming === 1 ? 'its' : 'their'} reservations are left as they were.`);
   }
 
   /**

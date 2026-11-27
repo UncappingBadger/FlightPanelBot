@@ -123,6 +123,8 @@ export class AeroconomyPaymentsClient {
     });
     const what = `${last4(p.sourceAccount)} to ${last4(p.recipientAccount)}`;
 
+    // Set once a try has gone without a clear answer (no reply, or a server error): from then on a refusal no longer means nothing moved.
+    let unanswered = false;
     for (let attempt = 1; ; attempt++) {
       let res: Response;
       try {
@@ -141,6 +143,7 @@ export class AeroconomyPaymentsClient {
         });
       } catch (e) {
         // It may have been processed with the answer lost on the way: send it again with the same key, which is safe either way.
+        unanswered = true;
         if (attempt < MAX_ATTEMPTS) {
           this.log.debug(`A payment (${what}) got no answer (${e instanceof Error ? e.name : 'error'}); sending it again with the same key`);
           await this.sleep(2000 * attempt);
@@ -158,10 +161,12 @@ export class AeroconomyPaymentsClient {
           await this.sleep(seconds * 1000);
           continue;
         }
+        if (unanswered) throw new AeroconomyError('Aeroconomy never answered an earlier try and then asked me to slow down, so nobody knows whether the money moved.', 429);
         return { ok: false, status: 429, reason: 'Aeroconomy asked me to slow down, and still did after waiting. Nothing was sent.' };
       }
       if (res.status >= 500) {
         await res.body?.cancel().catch(() => undefined);
+        unanswered = true;
         if (attempt < MAX_ATTEMPTS) {
           await this.sleep(2000 * attempt);
           continue;
@@ -175,6 +180,7 @@ export class AeroconomyPaymentsClient {
 
       const text = await readTextCapped(res, MAX_BODY_BYTES).catch(() => null);
       if (res.status === 200 || res.status === 201) return this.taken(res, text, p, what);
+      if (unanswered) throw new AeroconomyError(`Aeroconomy never answered an earlier try and answered ${res.status} to the next, so nobody knows whether the money moved.`, res.status);
       return { ok: false, status: res.status, reason: this.refusal(res.status, text) };
     }
   }

@@ -401,9 +401,10 @@ describe('keeping the settings, the ledger and the lists', () => {
     assert.equal(store.getPayrollSettings(panelId), null);
     assert.deepEqual(store.listPayrollEnabled(), []);
     const first = store.savePayrollSettings(panelId, { sourceAccount: SOURCE });
-    assert.deepEqual(first, { panelId, enabled: false, sourceAccount: SOURCE, infoSheetId: null, infoGid: null, startDay: null, runAtMinute: 720, ownerId: null, lastRunDay: null });
-    const second = store.savePayrollSettings(panelId, { enabled: true, infoSheetId: 'sheet', infoGid: '5', startDay: D10, runAtMinute: 60, ownerId: 'u', lastRunDay: D11 });
-    assert.deepEqual(second, { panelId, enabled: true, sourceAccount: SOURCE, infoSheetId: 'sheet', infoGid: '5', startDay: D10, runAtMinute: 60, ownerId: 'u', lastRunDay: D11 });
+    assert.deepEqual(first, { panelId, enabled: false, sourceAccount: SOURCE, infoSheetId: null, infoGid: null, startDay: null, runAtMinute: 720, ownerId: null, lastRunDay: null, sendTo: 'here', channelId: null });
+    const second = store.savePayrollSettings(panelId, { enabled: true, infoSheetId: 'sheet', infoGid: '5', startDay: D10, runAtMinute: 60, ownerId: 'u', lastRunDay: D11, sendTo: 'channel', channelId: 'c1' });
+    assert.deepEqual(second, { panelId, enabled: true, sourceAccount: SOURCE, infoSheetId: 'sheet', infoGid: '5', startDay: D10, runAtMinute: 60, ownerId: 'u', lastRunDay: D11, sendTo: 'channel', channelId: 'c1' });
+    assert.throws(() => store.savePayrollSettings(panelId, { sendTo: 'everywhere' as 'dm' }), /goes here, to a DM or to a channel/);
     assert.equal(store.listPayrollEnabled().length, 1);
     assert.throws(() => store.savePayrollSettings(panelId, { runAtMinute: 1440 }), /minute from 0 to 1439/);
     assert.throws(() => store.savePayrollSettings(panelId, { runAtMinute: -1 }), /minute from 0 to 1439/);
@@ -1221,6 +1222,8 @@ describe('/payroll and its buttons', () => {
   });
 
   const configure = () => h.store.savePayrollSettings(pid(), { enabled: true, sourceAccount: SOURCE, infoSheetId: SHEET_ID, infoGid: INFO_GID, startDay: D10, ownerId: USER_A.discordId });
+  /** Choose where the pay list goes, as `/payroll settings send-to:` does. */
+  const listsTo = (sendTo: 'here' | 'dm' | 'channel', channelId?: string) => h.store.savePayrollSettings(pid(), { sendTo, ...(channelId ? { channelId } : {}) });
   const connect = () => (d.ctx.payroll = new Payroll({ store: h.store, gateway: gw, writeback: wb, fetchFn, now: () => h.clock.now }));
 
   describe('the command', () => {
@@ -1265,7 +1268,7 @@ describe('/payroll and its buttons', () => {
       assert.equal(r.error, null);
       assert.match(r.text, /^Done\. Nothing was paid\./);
       assert.match(r.text, /is \*\*on\*\*/);
-      assert.deepEqual(h.store.getPayrollSettings(pid()), { panelId: pid(), enabled: true, sourceAccount: SOURCE, infoSheetId: SHEET_ID, infoGid: INFO_GID, startDay: D10, runAtMinute: 390, ownerId: USER_A.discordId, lastRunDay: null });
+      assert.deepEqual(h.store.getPayrollSettings(pid()), { panelId: pid(), enabled: true, sourceAccount: SOURCE, infoSheetId: SHEET_ID, infoGid: INFO_GID, startDay: D10, runAtMinute: 390, ownerId: USER_A.discordId, lastRunDay: null, sendTo: 'here', channelId: null });
       assert.match(r.text, /\*\*2026-11-10\*\* on/);
       assert.match(r.text, /\*\*06:30 Zulu\*\*/);
       assert.match(r.text, /DMs of <@111111111111111111>/);
@@ -1309,10 +1312,47 @@ describe('/payroll and its buttons', () => {
     });
 
     it('show who works on the list the way /setup profit says', async () => {
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL, profitRoleId: ROLE });
+      h.store.updatePanel(pid(), { profitRoleId: ROLE });
       const r = await settingsOf({ 'source-account': SOURCE });
-      assert.ok(r.text.includes(`posted in <#${PAY_CHANNEL}>`), r.text);
       assert.ok(r.text.includes(`any member of <@&${ROLE}>`), r.text);
+      assert.match(r.text, /They can change a line's account and amount, and press \*\*Pay\*\*\./);
+    });
+
+    it('choose a channel for the pay list, and say that whoever reads it sees the account numbers', async () => {
+      const r = await settingsOf({ 'send-to': 'channel', channel: { id: PAY_CHANNEL } });
+      assert.equal(r.error, null);
+      assert.deepEqual([h.store.getPayrollSettings(pid())!.sendTo, h.store.getPayrollSettings(pid())!.channelId], ['channel', PAY_CHANNEL]);
+      assert.ok(r.text.includes(`posted in <#${PAY_CHANNEL}>`), r.text);
+      assert.ok(r.text.includes(`**Everyone who can read <#${PAY_CHANNEL}> sees those numbers.**`), r.text);
+      const back = await settingsOf({ 'send-to': 'here' });
+      assert.doesNotMatch(back.text, /Everyone who can read/);
+      assert.deepEqual([h.store.getPayrollSettings(pid())!.sendTo, h.store.getPayrollSettings(pid())!.channelId], ['here', PAY_CHANNEL], 'kept for switching back');
+      await settingsOf({ 'send-to': 'channel' });
+      assert.equal(h.store.getPayrollSettings(pid())!.sendTo, 'channel');
+      assert.equal(h.store.getPanel(pid())!.profitSendTo, 'here', 'where profit previews go is not touched');
+      noDmsOrPosts();
+    });
+
+    it('take a channel on its own to mean that channel', async () => {
+      await settingsOf({ channel: { id: PAY_CHANNEL } });
+      assert.deepEqual([h.store.getPayrollSettings(pid())!.sendTo, h.store.getPayrollSettings(pid())!.channelId], ['channel', PAY_CHANNEL]);
+    });
+
+    it('refuse a channel that cannot be used, and save nothing', async () => {
+      const cases: Array<[Record<string, unknown>, RegExp]> = [
+        [{ 'send-to': 'channel' }, /Choose the channel with the `channel` option/],
+        [{ 'send-to': 'dm', channel: { id: PAY_CHANNEL } }, /A channel only goes with the "Channel" choice/],
+        [{ channel: { id: 'not-in-this-server' } }, /I can't see that channel/],
+        [{ 'send-to': 'everywhere' }, /Choose where the pay list is shown/],
+      ];
+      for (const [options, message] of cases) {
+        const r = await settingsOf(options);
+        assert.match(r.error?.message ?? 'no error', message, JSON.stringify(options));
+        assert.equal(h.store.getPayrollSettings(pid()), null, `nothing saved after ${JSON.stringify(options)}`);
+      }
+      channel.hiddenFrom.add('the-bot');
+      assert.match((await settingsOf({ channel: { id: PAY_CHANNEL } })).error?.message ?? 'no error', /I'm missing permissions in <#c-paylist>/);
+      assert.equal(h.store.getPayrollSettings(pid()), null);
     });
   });
 
@@ -1653,7 +1693,8 @@ describe('/payroll and its buttons', () => {
     it('also lets the members of the role chosen for /setup profit press the buttons of a list posted in a channel, and says who did', async () => {
       configure();
       connect();
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL, profitRoleId: ROLE });
+      listsTo('channel', PAY_CHANNEL);
+      h.store.updatePanel(pid(), { profitRoleId: ROLE });
       const asked = await run('run');
       assert.ok(asked.text.includes(`📣 I posted the pay list in <#${PAY_CHANNEL}>`), asked.text);
       assert.equal(channel.sent.length, 1);
@@ -1673,7 +1714,8 @@ describe('/payroll and its buttons', () => {
     it('reads the role when the button is pressed, so a role removed meanwhile can no longer press', async () => {
       configure();
       connect();
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL, profitRoleId: ROLE });
+      listsTo('channel', PAY_CHANNEL);
+      h.store.updatePanel(pid(), { profitRoleId: ROLE });
       await run('run');
       const pay = idStarting(channel.sent[0]!.payload.components, 'payroll:pay');
       h.store.updatePanel(pid(), { profitRoleId: null });
@@ -1685,7 +1727,8 @@ describe('/payroll and its buttons', () => {
     it('lets only one of two people who press Pay at once pay', async () => {
       configure();
       connect();
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL, profitRoleId: ROLE });
+      listsTo('channel', PAY_CHANNEL);
+      h.store.updatePanel(pid(), { profitRoleId: ROLE });
       await run('run');
       const pay = idStarting(channel.sent[0]!.payload.components, 'payroll:pay');
       const [a, b] = await Promise.all([press(pay), press(pay, { user: helper, admin: false, roles: [ROLE] })]);
@@ -1698,7 +1741,7 @@ describe('/payroll and its buttons', () => {
     it("lets the admin work on a list in their DMs, where only they are, as long as they still are an admin or in the role", async () => {
       configure();
       connect();
-      h.store.updatePanel(pid(), { profitSendTo: 'dm' });
+      listsTo('dm');
       const asked = await run('run');
       assert.match(asked.text, /I sent the pay list to your DMs/);
       assert.deepEqual(asked.components, []);
@@ -1719,14 +1762,14 @@ describe('/payroll and its buttons', () => {
   describe('where the list goes', () => {
     it('falls back to the reply, with a line saying why, when the DMs are closed or the channel cannot be posted in', async () => {
       configure();
-      h.store.updatePanel(pid(), { profitSendTo: 'dm' });
+      listsTo('dm');
       admin.failDms = true;
       const dm = await run('run');
       assert.match(dm.text, /⚠️ I couldn't send it to your DMs \(DMs from this server are closed\), so it is here instead\./);
       assert.match(dm.text, /Pilot payments: Test Air/);
       assert.deepEqual(labelsOf(dm.components), ['Amend', 'Pay 2 · $9,500', 'Cancel'], 'and it can be worked on there');
       admin.failDms = false;
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: 'elsewhere' });
+      listsTo('channel', 'elsewhere');
       const gone = await run('run');
       assert.match(gone.text, /⚠️ I couldn't post it in <#elsewhere> \(I can't post in that channel any more\), so it is here instead, for you alone\./);
       assert.match(gone.text, /Pilot payments: Test Air/);
@@ -1735,7 +1778,7 @@ describe('/payroll and its buttons', () => {
       broken.send = async () => {
         throw Object.assign(new Error('Missing Access'), { code: 50001 });
       };
-      h.store.updatePanel(pid(), { profitChannelId: PAY_CHANNEL });
+      listsTo('channel', PAY_CHANNEL);
       const denied = await run('run', { guild: guildWith(broken) });
       assert.match(denied.text, /I couldn't post it in <#c-paylist> \(I'm missing access or permissions there\)/);
     });
@@ -1749,16 +1792,28 @@ describe('/payroll and its buttons', () => {
       assert.equal(h.store.getPayrollDraft(token, T0), null);
     });
 
-    it('sends a list made by itself where the panel sends the preview, and to the admin who set it up when that is "here"', async () => {
+    it('does not post the pay list where profit previews go: only in a channel chosen for it', async () => {
+      configure();
+      d.client.channels_.set(PAY_CHANNEL, channel);
+      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL, profitRoleId: ROLE });
+      const asked = await run('run');
+      assert.match(asked.text, /Pilot payments: Test Air/, 'shown in the reply, to whoever asked');
+      const draft = await d.ctx.payroll!.prepare(h.store.getPanel(pid())!, h.store.getPayrollSettings(pid())!);
+      const daily = await sendList(d.ctx, h.store.getPanel(pid())!, h.store.getPayrollSettings(pid())!, draft, { askerId: USER_A.discordId, client: d.client as any });
+      assert.equal(daily?.where, 'dm');
+      assert.equal(channel.sent.length, 0, 'nothing in the profit channel');
+    });
+
+    it('sends a list made by itself where it was chosen for the pay list, and to the admin who set it up when that is "here"', async () => {
       configure();
       const draft = await d.ctx.payroll!.prepare(h.store.getPanel(pid())!, h.store.getPayrollSettings(pid())!);
-      const settings = h.store.getPayrollSettings(pid())!;
-      const dm = await sendList(d.ctx, h.store.getPanel(pid())!, settings, draft, { askerId: USER_A.discordId, client: d.client as any });
+      const dm = await sendList(d.ctx, h.store.getPanel(pid())!, h.store.getPayrollSettings(pid())!, draft, { askerId: USER_A.discordId, client: d.client as any });
       assert.equal(dm?.where, 'dm');
       assert.equal(admin.dms.length, 1);
       assert.equal(channel.sent.length, 0);
       d.client.channels_.set(PAY_CHANNEL, channel);
-      h.store.updatePanel(pid(), { profitSendTo: 'channel', profitChannelId: PAY_CHANNEL });
+      listsTo('channel', PAY_CHANNEL);
+      const settings = h.store.getPayrollSettings(pid())!;
       const posted = await sendList(d.ctx, h.store.getPanel(pid())!, settings, draft, { askerId: USER_A.discordId, client: d.client as any });
       assert.equal(posted?.where, 'channel');
       assert.equal(channel.sent.length, 1);

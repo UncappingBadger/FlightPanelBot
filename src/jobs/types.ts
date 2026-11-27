@@ -29,6 +29,10 @@ export interface SourceJob {
    * one; when it is missing, or cannot be used, the flight gets the automatic ID as before.
    */
   flightNumber?: string | null;
+  /** What the sheet's flight number cell says, when it says anything: such a row takes no other number, even if what it says cannot be used. */
+  numberCell?: string | null;
+  /** Set when the number was filled in from Aeroconomy, because the source gave none: the source's own numbers come first. */
+  numberFrom?: 'aeroconomy';
   title: string | null;
   legs: SourceLeg[];
   /** Required airframe, e.g. "A20N" or "Boeing 737-800". */
@@ -42,15 +46,29 @@ export interface SourceJob {
   /** How far the flight is, in nautical miles, when the source says (a schedule sheet's Distance column) or the bot has worked it out. */
   distanceNm?: number | null;
   /**
-   * The source says this job is finished or cancelled. It leaves the panel quietly, without telling
-   * anyone who held it that it was "removed".
+   * The source says this job is finished or cancelled. It leaves the panel without telling anyone who
+   * held it that it was "removed" (a cancelled one says so itself, see `cancelled`).
    */
   closed?: boolean;
+  /** The airline cancelled the flight. Whoever holds it, or stands by for it, is let go and told. Implies `closed`. */
+  cancelled?: boolean;
   /**
    * The source says the flight was flown. It is closed like any other, but the panel keeps showing it,
    * marked completed, for a day. Implies `closed`.
    */
   completed?: boolean;
+}
+
+/** A schedule row that could not be read as a flight (a half-typed date or route, say): what of it could be. */
+export interface UnreadableRow {
+  /** The sheet row (1 = the first row). */
+  row: number;
+  /** The route as a flight's key has it (`EGLL-EGPH`), when it could be read. */
+  route: string | null;
+  /** The day (`2026-11-12`), when it could be read. */
+  day: string | null;
+  /** What the Pilot cell says, when it names somebody. */
+  pilot: string | null;
 }
 
 /** A flight row of a schedule sheet whose Flight Number cell is empty: what is needed to find the flight's number. */
@@ -76,6 +94,8 @@ export interface FetchedJobs {
    * which is what the bot can fill in. Missing when the sheet has no such column.
    */
   blankDistances?: string[];
+  /** Rows that could not be read as a flight: a flight somebody holds that may be one of them is not taken for gone. */
+  unreadable?: UnreadableRow[];
 }
 
 /** Something that can list the current jobs for an airline. Polled once every 24 hours. */

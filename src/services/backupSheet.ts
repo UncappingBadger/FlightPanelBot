@@ -1,4 +1,5 @@
 import type { Store } from '../db/store.js';
+import { sheetNameOf } from './pilotNames.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
 import type { JobListener } from './events.js';
 import { silentLogger, type Logger } from '../util/log.js';
@@ -83,7 +84,7 @@ export class BackupSheetCheck {
       for (const b of this.d.store.listUnloggedBackups(panel.id)) {
         if (budget-- <= 0) break;
         out.checked++;
-        const name = this.d.store.getPilotName(b.discordId) ?? b.username;
+        const name = sheetNameOf(this.d.store.getPilotName(b.discordId), b.username);
         try {
           if (await writeback.claimBackup(panel, b.sourceKey, name)) {
             this.d.store.setBackupSheetName(b.jobId, b.discordId, name);

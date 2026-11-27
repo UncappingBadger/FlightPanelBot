@@ -201,10 +201,11 @@ function whyNot(e: unknown, where: 'dm' | 'channel'): string {
 }
 
 /**
- * Send a list to be checked, where the panel sends the Profit Made preview (`/setup profit send-to`): to the admin who asked in the reply,
- * to their DMs, or to a channel. A list nobody asked for (the daily one) has no reply to go in, so "here" means the DMs of the admin who set
- * payroll up. If a DM or a channel does not work the list is tried in the next place, so it is never lost. Older lists of the panel are dropped.
- * Returns where it went, or null if it could not be delivered anywhere.
+ * Send a list to be checked, where an admin chose for pay lists (`/payroll settings send-to`): to the admin who asked in the reply, to their
+ * DMs, or to a channel. It never follows where profit previews go: the list holds bank account numbers, so it is posted in a channel only when
+ * one was chosen for it. A list nobody asked for (the daily one) has no reply to go in, so "here" means the DMs of the admin who set payroll
+ * up. If a DM or a channel does not work the list is tried in the next, more private place, so it is never lost. Older lists of the panel are
+ * dropped. Returns where it went, or null if it could not be delivered anywhere.
  */
 export async function sendList(
   ctx: BotContext,
@@ -223,13 +224,13 @@ export async function sendList(
     return { token, message: renderList(draft, token, { mode: 'list', page: 0 }, connected, note) };
   };
   const interaction = who.interaction;
-  let want: Place = panel.profitSendTo;
-  if (want === 'channel' && !panel.profitChannelId) want = interaction ? 'here' : 'dm';
+  let want: Place = settings.sendTo;
+  if (want === 'channel' && !settings.channelId) want = interaction ? 'here' : 'dm';
   if (!interaction && want === 'here') want = 'dm';
   let instead = '';
 
   if (want === 'channel') {
-    const channelId = panel.profitChannelId as string;
+    const channelId = settings.channelId as string;
     const press = roleId ? `<@${who.askerId}> or anyone with <@&${roleId}> can press **Pay**.` : `Only <@${who.askerId}> can press **Pay**.`;
     const { token, message } = make('channel', press);
     try {

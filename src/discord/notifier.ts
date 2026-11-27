@@ -12,6 +12,7 @@ const REASON: Record<ReleasedNotice['reason'], string> = {
   removed: 'is no longer listed, so your reservation was released',
   changed: 'changed (different route), so your reservation was released. Check the panel and reserve again if you still want it',
   admin: 'was released by a server admin',
+  cancelled: 'was cancelled by the airline, so your reservation was released',
 };
 
 /** A server's members are listed this many at a time, and at most this many times (so a very large server is not read in full). */
@@ -165,8 +166,8 @@ export class Notifier {
         const user = await this.client.users.fetch(b.discordId);
         await user.send({
           content:
-            b.reason === 'removed'
-              ? `Heads up: flight **${b.jobCode}**, which you were down as backup for, is no longer listed, so your backup spot has ended.`
+            b.reason === 'removed' || b.reason === 'cancelled'
+              ? `Heads up: flight **${b.jobCode}**, which you were down as backup for, ${b.reason === 'cancelled' ? 'was cancelled by the airline' : 'is no longer listed'}, so your backup spot has ended.`
               : `Heads up: nobody is flying **${b.jobCode}** any more, and you were down as its backup. Your backup spot has ended, and the flight is open again: press **Reserve** on the panel if you want it.`,
           allowedMentions: noPings,
         });

@@ -16,6 +16,8 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 /** Flights that landed longer ago than this are forgotten. */
 export const FLIGHT_KEEP_MS = 7 * DAY;
+/** Which flight a landing completed is remembered well past the landing itself being forgotten. */
+const USED_KEEP_MS = 30 * DAY;
 /** The first read goes back this far. */
 const FIRST_READ_BACK_MS = 7 * DAY;
 /**
@@ -214,6 +216,7 @@ export class FsHubSync {
         if (pass === MAX_PAGES_PER_PASS - 1) more = true;
       }
       this.store.pruneFshubFlights(panel.id, keepFrom);
+      this.store.pruneFshubUsed(now - USED_KEEP_MS);
       this.store.updatePanel(panel.id, { fshubFlightCursor: resume, fshubFlightsAt: more ? now - FLIGHT_SYNC_MS : now, fshubFlightsNote: null });
       const kept = this.store.countFshubFlights(panel.id);
       this.log.debug(`FsHub flights for panel ${panel.id}: ${added} new, ${kept} kept${more ? ', more to read' : ''}`);

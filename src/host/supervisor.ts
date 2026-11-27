@@ -34,8 +34,13 @@ export function explainStartFailure(e: unknown): { message: string; retry: boole
   if (code === 'DisallowedIntents' || /disallowed intents/i.test(text)) {
     return { message: 'Discord refused the connection because of the bot\'s intent settings. Leave all three "Privileged Gateway Intents" switched off on the Bot tab.', retry: false };
   }
-  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|fetch failed|took too long|getaddrinfo|socket hang up/i.test(`${code ?? ''} ${text}`)) {
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|fetch failed|took too long|getaddrinfo|socket hang up|operation was aborted|AbortError/i.test(`${code ?? ''} ${text}`)) {
     return { message: "I can't reach Discord right now. I'll keep trying by myself.", retry: true };
+  }
+  // Discord itself having trouble (a server error, or asking everyone to slow down) passes: it is no reason to stay offline until someone looks.
+  const status = (e as { status?: unknown } | null)?.status;
+  if ((typeof status === 'number' && (status >= 500 || status === 429)) || /service unavailable|bad gateway|gateway time-?out|internal server error/i.test(text)) {
+    return { message: "Discord isn't answering properly right now. I'll keep trying by myself.", retry: true };
   }
   return { message: text.length > 300 ? `${text.slice(0, 300)}…` : text, retry: false };
 }

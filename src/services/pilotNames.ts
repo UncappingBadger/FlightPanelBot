@@ -1,5 +1,15 @@
 import type { JobView, Store } from '../db/store.js';
 import { str } from '../jobs/import.js';
+import { isCancelled } from '../jobs/sheet.js';
+
+/**
+ * Can this name be written in a schedule sheet? A Pilot cell starting "cancel" is how an airline cancels a flight, so a name that starts that
+ * way would cancel the flights it is written against.
+ */
+export const usableSheetName = (name: string | null | undefined): name is string => !!name && name.trim() !== '' && !isCancelled(name);
+
+/** The first of these names that can be written in a sheet, or "Pilot" when none can. */
+export const sheetNameOf = (...names: Array<string | null | undefined>): string => names.find(usableSheetName) ?? 'Pilot';
 
 /** Are these two the same name? Capital letters and spaces at the ends don't count. */
 export const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();

@@ -1,5 +1,5 @@
 import { parseCsv, parseLegChain } from '../jobs/import.js';
-import { DEDUCTION_COLUMNS, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseSheetDate, PAY_COLUMNS, PROFIT_COLUMNS } from '../jobs/sheet.js';
+import { DEDUCTION_COLUMNS, findFlightNumberColumn, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseSheetDate, PAY_COLUMNS, PROFIT_COLUMNS } from '../jobs/sheet.js';
 import { normalizeFlightNumber } from '../jobs/types.js';
 
 /**
@@ -121,7 +121,7 @@ export function readSheetFlights(csv: string): SheetFlights | null {
   const iPay = at((n) => PAY_COLUMNS.includes(n));
   const iDeduction = at((n) => DEDUCTION_COLUMNS.includes(n));
   const iPaid = at((n) => PAID_COLUMNS.includes(n));
-  const iFlightNo = at((n) => ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'].includes(n));
+  const iFlightNo = findFlightNumberColumn(header.cells).index;
   if (iRoute < 0 || iDate < 0 || iPilot < 0 || iDone < 0) return null;
 
   const flights: SheetFlight[] = [];

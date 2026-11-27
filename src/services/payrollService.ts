@@ -8,7 +8,7 @@ import type { PaymentGateway } from './payGateway.js';
 import { WriteBackError, type PaidTick, type PaidTickResult } from './writeback.js';
 import type { FsHubApi } from '../fshub/client.js';
 import { fshubDistances } from './fshubDistances.js';
-import { buildPayLines, isAccount, isPayable, nameKey, readPilotInfo, rowStillAgrees, type BuildInput, type IdentityBook, type LedgerView, type PayDraft, type PayLine } from './payroll.js';
+import { buildPayLines, isAccount, isPayable, matchPaid, mayBePaid, nameKey, readPilotInfo, rowStillAgrees, samePilot, type BuildInput, type IdentityBook, type LedgerView, type PayDraft, type PayLine } from './payroll.js';
 import { appNow } from '../util/clock.js';
 
 /**
@@ -142,7 +142,7 @@ export class Payroll {
       flights: sheet.flights,
       info: info.rows,
       startDay: settings.startDay,
-      ledger: this.ledgerView(panel.id),
+      ledger: this.ledgerView(panel.id, sheet.flights),
       identities: this.identities(panel.id),
       flightRef: (f) => this.d.store.getJobBySourceKey(panel.id, f.sourceKey)?.code ?? f.flightNumber,
       trustCell: panel.safetyPaySince !== null,
@@ -175,7 +175,7 @@ export class Payroll {
         if (!f || f.route.split('→').length !== 2) continue; // several legs are not one FsHub flight
         const same = this.d.store
           .listFshubFlights(panel.id, line.dep, line.arr, f.day - EARLY_MS, f.day + LATE_MS)
-          .filter((c) => (line.fshubId !== null ? c.pilotId === line.fshubId : c.pilotName !== null && nameKey(c.pilotName) === nameKey(f.pilot)));
+          .filter((c) => (line.fshubId !== null ? c.pilotId === line.fshubId : c.pilotName !== null && samePilot(c.pilotName, f.pilot)));
         if (same.length === 1) picks.push({ sourceKey: line.sourceKey, flightId: (same[0] as { flightId: number }).flightId });
       }
       const claims = new Map<number, number>();
@@ -210,13 +210,12 @@ export class Payroll {
     return sheet;
   }
 
-  private ledgerView(panelId: number): LedgerView {
+  private ledgerView(panelId: number, flights: SheetFlight[]): LedgerView {
     const store = this.d.store;
+    const paid = matchPaid(flights, store.ledgerOutstanding(panelId));
     return {
-      isTaken: (key, pilot) => {
-        const e = store.ledgerBySourceKey(panelId, key);
-        return e !== null && e.status !== 'failed' && nameKey(e.pilot) === nameKey(pilot);
-      },
+      isTaken: (key) => paid.taken.has(key),
+      mayBePaid: (flight, who) => mayBePaid(paid.loose, flight, who),
       hasUniqueId: (id) => store.ledgerByUniqueId(panelId, id) !== null,
       failedIdFor: (key, pilot) => {
         const e = store.ledgerBySourceKey(panelId, key);
@@ -270,10 +269,21 @@ export class Payroll {
       else toSend.push(line);
     }
 
+    /** The payments this run itself has begun, by unique ID: the rows they cover are not someone else's payment. */
+    const mine = new Set<string>();
+    const earlierPayments = () => this.d.store.ledgerOutstanding(panel.id).filter((e) => !mine.has(e.uniqueId));
     for (let i = 0; i < toSend.length; i++) {
       const line = toSend[i] as PayLine;
       const at = this.now();
+      // Asked again at the moment of sending: the flight may have been paid since the list was made (another list, or an old one put back),
+      // under another unique ID and with its row moved. Nothing is awaited between this and writing the payment in the ledger.
+      if (matchPaid(sheet.flights, earlierPayments()).taken.has(line.sourceKey)) {
+        outcome.skipped.push({ line, reason: 'already-sent' });
+        continue;
+      }
+      mine.add(line.uniqueId);
       if (!this.d.store.ledgerBegin(panel.id, { uniqueId: line.uniqueId, sourceKey: line.sourceKey, pilot: line.pilot, fshubId: line.fshubId, account: line.account as string, cents: line.cents }, at)) {
+        mine.delete(line.uniqueId);
         outcome.skipped.push({ line, reason: 'already-sent' });
         continue;
       }
@@ -303,10 +313,10 @@ export class Payroll {
     // The box is ticked for what was paid just now, and for any flight paid earlier whose box is still empty (a tick that could not be done then).
     const paidNow = new Set(outcome.paid.map((l) => l.sourceKey));
     const ticks: PaidTick[] = outcome.paid.map((l) => ({ sourceKey: l.sourceKey, row: l.row, pilot: l.pilot }));
+    const paidBefore = matchPaid(sheet.flights, earlierPayments().filter((e) => e.status === 'paid')).taken;
     for (const f of sheet.flights) {
       if (!f.completed || f.pilotPaid !== false || paidNow.has(f.sourceKey)) continue;
-      const earlier = this.d.store.ledgerBySourceKey(panel.id, f.sourceKey);
-      if (earlier !== null && earlier.status === 'paid' && nameKey(earlier.pilot) === nameKey(f.pilot)) ticks.push({ sourceKey: f.sourceKey, row: f.row, pilot: f.pilot });
+      if (paidBefore.has(f.sourceKey)) ticks.push({ sourceKey: f.sourceKey, row: f.row, pilot: f.pilot });
     }
     outcome.tick = await this.tickPaid(panel, ticks);
     this.log.info(`Paid ${outcome.paid.length} pilot payment(s) for ${panel.airlineName}: ${outcome.failed.length} refused, ${outcome.skipped.length} left out, ${outcome.unconfirmed.length} unconfirmed`);

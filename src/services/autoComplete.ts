@@ -4,7 +4,7 @@ import { confirmationsFor, type Confirmations } from './flightMatch.js';
 import type { FsHubSync } from './fshubSync.js';
 import { HourlySlot } from './hourlySlot.js';
 import { COMPLETE_AFTER_DEADLINE_MS, JobError, type JobService } from './jobs.js';
-import { nameKey } from './pilotNames.js';
+import { nameKey, sheetNameOf } from './pilotNames.js';
 import { WriteBackError, type SheetWriteBack } from './writeback.js';
 import { appNow } from '../util/clock.js';
 
@@ -156,7 +156,7 @@ export class AutoCompleter {
       let sheetTicked = false;
       if (current.sheetId && this.d.writeback?.enabledFor(current) && view.legs.length === 1) {
         try {
-          await this.d.writeback.complete(current, view.job.sourceKey, sheetName ?? store.getPilotName(holder) ?? view.legs[0]?.holder?.username ?? 'pilot');
+          await this.d.writeback.complete(current, view.job.sourceKey, sheetName ?? sheetNameOf(store.getPilotName(holder), view.legs[0]?.holder?.username));
           sheetTicked = true;
         } catch (e) {
           if (!(e instanceof WriteBackError)) throw e;
@@ -165,8 +165,9 @@ export class AutoCompleter {
         }
       }
       try {
-        if (sheetName !== null) this.d.jobs.completeNamed(view.job.id, { discordId: holder, username: sheetName }, view.legs.map((l) => l.sheetHolder ?? ''), 'fshub');
-        else this.d.jobs.complete(view.job.id, holder, 'fshub');
+        const used = [...legs.values()].map((f) => f.flightId);
+        if (sheetName !== null) this.d.jobs.completeNamed(view.job.id, { discordId: holder, username: sheetName }, view.legs.map((l) => l.sheetHolder ?? ''), 'fshub', used);
+        else this.d.jobs.complete(view.job.id, holder, 'fshub', used);
       } catch (e) {
         if (!(e instanceof JobError)) throw e;
         continue; // completed or changed meanwhile
@@ -240,7 +241,7 @@ export class AutoCompleter {
       const legs = flown.get(view.job.id);
       if (!legs || legs.size < view.legs.length) continue; // FsHub has not shown the backup flying every leg
       const heldBy = view.legs[0]?.holder as Holder;
-      const backupName = store.getPilotName(backup.discordId) ?? backup.username;
+      const backupName = sheetNameOf(store.getPilotName(backup.discordId), backup.username);
 
       // The airline's sheet first, where the bot writes to it: the backup takes the pilot's place in the Pilot cell, and the flight is ticked.
       let wroteName: string | null = null;
@@ -261,7 +262,7 @@ export class AutoCompleter {
         }
       }
       try {
-        this.d.jobs.completeAsBackup(view.job.id, { discordId: backup.discordId, username: backup.username }, wroteName, 'fshub');
+        this.d.jobs.completeAsBackup(view.job.id, { discordId: backup.discordId, username: backup.username }, wroteName, 'fshub', [...legs.values()].map((f) => f.flightId));
       } catch (e) {
         if (!(e instanceof JobError)) throw e;
         continue; // completed or changed meanwhile

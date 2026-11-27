@@ -1,12 +1,12 @@
 import { silentLogger, type Logger } from '../util/log.js';
 
-/** Someone's reservation was taken away (the job changed, was removed, or an admin released it). */
+/** Someone's reservation was taken away (the job changed, was removed or was cancelled, or an admin released it). */
 export interface ReleasedNotice {
   panelId: number;
   discordId: string;
   jobCode: string;
   legNos: number[];
-  reason: 'removed' | 'changed' | 'admin';
+  reason: 'removed' | 'changed' | 'admin' | 'cancelled';
 }
 
 /**
@@ -18,7 +18,7 @@ export interface BackupNotice {
   panelId: number;
   discordId: string;
   jobCode: string;
-  reason: 'freed' | 'removed' | 'stood-down';
+  reason: 'freed' | 'removed' | 'stood-down' | 'cancelled';
   sourceKey?: string;
   sheetName?: string;
 }

@@ -20,7 +20,7 @@ import { andList, beyondDaysManyText, beyondDaysText, JobError, MAX_IDS_AT_ONCE,
 import { switchRemarks } from '../services/hardLanding.js';
 import { looksLikeMetar } from '../services/metar.js';
 import { parsePilotId } from '../services/pilotId.js';
-import { sheetNamesFor } from '../services/pilotNames.js';
+import { sheetNameOf, sheetNamesFor, usableSheetName } from '../services/pilotNames.js';
 import { aliasNote, expandAircraftTypes } from '../services/aircraftAliases.js';
 import { availableFor } from '../services/availability.js';
 import { dayCode } from '../services/flightIds.js';
@@ -148,7 +148,7 @@ const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 
 /** What a pilot is called in the airline's sheet: what they have told me, otherwise what Discord calls them. */
 function pilotNameFor(ctx: BotContext, user: Person): string {
-  return ctx.store.getPilotName(user.id) ?? str(user.globalName ?? user.username, 40) ?? user.username;
+  return sheetNameOf(ctx.store.getPilotName(user.id), str(user.globalName ?? user.username, 40), user.username);
 }
 
 /** Is this panel's sheet written to? The bot needs Google credentials, an admin must not have switched it off, and a sheet row is one leg. */
@@ -192,29 +192,37 @@ async function reserveAndClaim(ctx: BotContext, user: Person, jobId: number, leg
 
   const job = res.job.job;
   const name = pilotNameFor(ctx, user);
+  // Remembered before it is written, not after: the flight may be given back while Google is still answering, and the name must then
+  // be taken off again (the removal waits its turn behind this write).
+  const remember = (value: string | null) => {
+    for (const legNo of res.reserved) ctx.store.setReservationSheetName(job.id, legNo, value);
+  };
+  remember(name);
   try {
     await ctx.writeback!.claim(panel, job.sourceKey, name);
   } catch (e) {
+    remember(null);
     if (!(e instanceof WriteBackError)) throw e;
     if (e.code === 'CONFLICT' || e.code === 'CLOSED') {
       // Someone got there first in the sheet. The sheet is the airline's record, so it wins.
       if (e.code === 'CONFLICT' && e.existing) ctx.store.setLegSheetHolder(job.id, 1, truncate(e.existing, 40));
-      ctx.jobs.release(job.id, user.id, res.reserved);
+      ctx.jobs.release(job.id, user.id, res.reserved, true);
       return { res, sheet: { kind: 'undone', message: e.message } };
     }
     ctx.log.warn(`Could not write ${job.code} to the sheet: ${e.message}`);
     return { res, sheet: { kind: 'unreachable', message: e.message } };
   }
-  for (const legNo of res.reserved) ctx.store.setReservationSheetName(job.id, legNo, name);
   return { res, sheet: { kind: 'written', name } };
 }
 
 /** After legs are given back: take the name the bot wrote off the sheet. Best effort; the sheet is the airline's, so failures are only noted. */
-async function clearFromSheet(ctx: BotContext, panelId: number, sourceKey: string, name: string): Promise<'cleared' | 'left' | 'failed'> {
+async function clearFromSheet(ctx: BotContext, panelId: number, jobId: number, sourceKey: string, name: string): Promise<'cleared' | 'left' | 'failed'> {
   const panel = ctx.store.getPanel(panelId);
   if (!panel || !ctx.writeback?.enabledFor(panel)) return 'left';
   try {
-    return (await ctx.writeback.unclaim(panel, sourceKey, name)) ? 'cleared' : 'left';
+    if (!(await ctx.writeback.unclaim(panel, sourceKey, name))) return 'left';
+    ctx.jobs.sheetNameCleared(jobId, name);
+    return 'cleared';
   } catch (e) {
     ctx.log.warn(`Could not take ${name} off the sheet: ${e instanceof Error ? e.message : e}`);
     return 'failed';
@@ -281,6 +289,10 @@ async function renamePilot(ctx: BotContext, user: Person & { send: Message['auth
     await say(user, 'Tell me the name like this: `name Alex Smith`.');
     return;
   }
+  if (!usableSheetName(name)) {
+    await say(user, "I can't use a name that starts with \"cancel\": that is how an airline's sheet marks a flight as cancelled. Send me `name <your name>` with the name the sheet should show. I haven't changed anything.");
+    return;
+  }
   ctx.store.setPilotName(user.id, name, ctx.now());
   let moved = 0;
   let failed = 0;
@@ -290,6 +302,8 @@ async function renamePilot(ctx: BotContext, user: Person & { send: Message['auth
     try {
       if (await ctx.writeback.rename(panel, r.sourceKey, r.sheetName, name)) {
         ctx.store.setReservationSheetName(r.jobId, r.legNo, name);
+        // The flight shows the new name now, not only after the next read: given back before then, it must not stay "taken" under the old one.
+        ctx.jobs.sheetNameReplaced(r.jobId, r.sheetName, name);
         moved++;
       }
     } catch (e) {
@@ -339,7 +353,7 @@ async function startReservation(ctx: BotContext, interaction: ButtonInteraction,
   if (ctx.writeback?.enabledFor(panel) && !ctx.store.getPilotName(user.id)) {
     const member = interaction.member;
     const nickname = member && 'displayName' in member ? member.displayName : null;
-    ctx.store.setPilotName(user.id, str(nickname ?? user.globalName ?? user.username, 40) ?? user.username, ctx.now());
+    ctx.store.setPilotName(user.id, sheetNameOf(str(nickname, 40), str(user.globalName, 40), user.username), ctx.now());
   }
   // Someone who hasn't told me their FsHub pilot ID is asked for it first; after that it's straight to the flight.
   const needsPilotId = ctx.store.getPilotId(user.id) === null;
@@ -631,9 +645,15 @@ async function backupToSheet(ctx: BotContext, user: Person, view: JobView): Prom
   const panel = ctx.store.getPanel(view.job.panelId);
   if (!panel || !writesToSheet(ctx, panel, view.legs.length)) return { kind: 'none' };
   const name = pilotNameFor(ctx, user);
+  // Remembered before it is written, as a reservation's name is, so that standing down while Google is still answering takes it off again.
+  ctx.store.setBackupSheetName(view.job.id, user.id, name);
   try {
-    if (!(await ctx.writeback!.claimBackup(panel, view.job.sourceKey, name))) return { kind: 'none' }; // the sheet has no Backup Pilot column
+    if (!(await ctx.writeback!.claimBackup(panel, view.job.sourceKey, name))) {
+      ctx.store.setBackupSheetName(view.job.id, user.id, null);
+      return { kind: 'none' }; // the sheet has no Backup Pilot column
+    }
   } catch (e) {
+    ctx.store.setBackupSheetName(view.job.id, user.id, null);
     if (!(e instanceof WriteBackError)) throw e;
     if (e.code === 'CONFLICT' || e.code === 'CLOSED') {
       ctx.jobs.removeBackup(view.job.id, user.id);
@@ -642,7 +662,6 @@ async function backupToSheet(ctx: BotContext, user: Person, view: JobView): Prom
     ctx.log.warn(`Could not write the backup for ${view.job.code} to the sheet: ${e.message}`);
     return { kind: 'unreachable', message: e.message };
   }
-  ctx.store.setBackupSheetName(view.job.id, user.id, name);
   return { kind: 'written', name };
 }
 
@@ -721,11 +740,13 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
   await interaction.deferUpdate();
   const freed: string[] = [];
   const stoodDown: string[] = [];
-  const written: Array<{ sourceKey: string; name: string }> = [];
+  const written: Array<{ jobId: number; sourceKey: string; name: string }> = [];
   // Which flights had a backup before anything was given back (giving a flight back ends its backup's spot), and which legs went from each.
   const hadBackup = new Set<number>();
   const seen = new Set<number>();
   const givenBack = new Map<number, number[]>();
+  /** Flights picked from an old menu that have finished since: they stay with whoever had them. */
+  const finished = new Set<string>();
   for (const value of interaction.values) {
     if (value.startsWith('b:')) {
       const backupJob = ctx.store.getJob(Number(value.slice(2)));
@@ -736,7 +757,12 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
     if (!Number.isInteger(jobId) || !Number.isInteger(legNo)) continue;
     const job = ctx.store.getJob(jobId as number);
     if (!job || job.panelId !== panelId) continue;
-    const name = ctx.store.getHolder(job.id, legNo as number)?.sheetName ?? null;
+    const holder = ctx.store.getHolder(job.id, legNo as number);
+    if (holder?.discordId === interaction.user.id && (job.status !== 'open' || job.completedAt !== null)) {
+      finished.add(job.code);
+      continue;
+    }
+    const name = holder?.sheetName ?? null;
     if (!seen.has(job.id)) {
       seen.add(job.id);
       if (ctx.jobs.view(job.id)?.backup) hadBackup.add(job.id);
@@ -745,11 +771,11 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
     if (done.length > 0) {
       givenBack.set(job.id, [...(givenBack.get(job.id) ?? []), ...done]);
       freed.push(`${job.code} leg ${legNo}`);
-      if (name) written.push({ sourceKey: job.sourceKey, name });
+      if (name) written.push({ jobId: job.id, sourceKey: job.sourceKey, name });
     }
   }
   // Where the bot had put their name in the airline's sheet, take it off again.
-  const outcomes = await Promise.all(written.map((w) => clearFromSheet(ctx, panelId, w.sourceKey, w.name)));
+  const outcomes = await Promise.all(written.map((w) => clearFromSheet(ctx, panelId, w.jobId, w.sourceKey, w.name)));
   const note =
     outcomes.includes('failed')
       ? "\n⚠️ I couldn't take your name off the airline's sheet; please ask a manager."
@@ -770,6 +796,7 @@ async function releaseSelected(ctx: BotContext, interaction: StringSelectMenuInt
   const said = [
     freed.length > 0 ? `Released: ${freed.join(', ')}. The panel is updated and those legs are free again.${note}${spreadNote}` : '',
     stoodDown.length > 0 ? `You're no longer the backup for ${stoodDown.join(', ')}.` : '',
+    finished.size > 0 ? `${[...finished].join(', ')} ${finished.size === 1 ? 'has' : 'have'} already finished, so there is nothing to give back.` : '',
   ].filter(Boolean);
   await interaction.editReply({
     content: said.length > 0 ? said.join('\n') : 'Nothing to release (they may already have been given back).',
@@ -891,8 +918,9 @@ async function completeFromFsHub(ctx: BotContext, interaction: ButtonInteraction
       sheetNotWritten = true;
     }
     try {
-      if (sheetName !== null) ctx.jobs.completeNamed(view.job.id, { discordId: user.id, username: user.username }, names, 'fshub');
-      else ctx.jobs.complete(view.job.id, user.id, 'fshub');
+      const used = [...legs.values()].map((f) => f.flightId);
+      if (sheetName !== null) ctx.jobs.completeNamed(view.job.id, { discordId: user.id, username: user.username }, names, 'fshub', used);
+      else ctx.jobs.complete(view.job.id, user.id, 'fshub', used);
     } catch (e) {
       if (!(e instanceof JobError)) throw e;
       lines.push(`⚠️ **${code}**: ${e.message}`);
@@ -1513,7 +1541,7 @@ async function openDirect(ctx: BotContext, message: Message, panel: Panel, displ
   }
   // If the airline's sheet will carry this person's name, start from their server nickname (they can change it with `name …`), as the button does.
   if (ctx.writeback?.enabledFor(panel) && !ctx.store.getPilotName(user.id)) {
-    ctx.store.setPilotName(user.id, str(displayName ?? user.globalName ?? user.username, 40) ?? user.username, now);
+    ctx.store.setPilotName(user.id, sheetNameOf(str(displayName, 40), str(user.globalName, 40), user.username), now);
   }
   const base = { discordId: user.id, panelId: panel.id, purpose: req.purpose, expiresAt: now + SESSION_TTL_MS };
   // Someone who hasn't told me their FsHub pilot ID is asked for it first, and what they sent is done as soon as they have answered.

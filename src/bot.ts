@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { Client, Events, GatewayIntentBits, Partials, Routes } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, RESTEvents, Routes } from 'discord.js';
 import { AeroDaqClient } from './aerodaq/client.js';
 import { MetarClient } from './metar/client.js';
 import type { Config } from './config.js';
@@ -175,16 +175,18 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   // Optional: with a Google service account, pilots' names and completions are written to a linked sheet.
   // Demo mode never writes to a real sheet unless asked to, since its pilots and flights are made up.
   let writeback: SheetWriteBack | null = null;
+  // What the bot knows of a flight, so a write finds its row even when rows of one route and day have been re-ordered since the last read.
+  const flightOf = (panelId: number, sourceKey: string) => store.flightHint(panelId, sourceKey);
   if (DEBUG_BUILD) {
     // The diagnostic build has no write access to anything of Google's: its sheet is a local file (see src/google/localSheet.ts).
-    writeback = new SheetWriteBack(new LocalSheet(debugSheets, log), 'the local debug sheet', { logger: log });
+    writeback = new SheetWriteBack(new LocalSheet(debugSheets, log), 'the local debug sheet', { logger: log, flightOf });
     log.info(`DEBUG BUILD: nothing is written to Google, and the Google key is not used. The schedule is read from, and written to, a local copy in ${debugSheets}`);
   } else if (config.googleServiceAccountFile) {
     if (DEMO && process.env.AEROBOT_DEMO_WRITEBACK !== '1') {
       log.info('Demo mode: not writing to Google Sheets (set AEROBOT_DEMO_WRITEBACK=1 to allow it, ideally against a copy of the sheet).');
     } else {
       const account = loadServiceAccount(config.googleServiceAccountFile);
-      writeback = new SheetWriteBack(new SheetsApi(tokenProvider(account)), account.email, { logger: log });
+      writeback = new SheetWriteBack(new SheetsApi(tokenProvider(account)), account.email, { logger: log, flightOf });
       log.info(`Google Sheets write-back is available. Sheets must be shared with ${account.email} as an Editor.`);
     }
   }
@@ -352,6 +354,11 @@ export async function startBot(config: Config, opts: StartOptions = {}): Promise
   };
 
   client.on(Events.Error, (e) => log.error('Discord client error', e));
+  // Why something was slow is said here: Discord sometimes makes the bot wait (its limit on editing older messages, say). The route has no
+  // IDs in it, and short waits are ordinary, so only longer ones are noted.
+  client.rest.on(RESTEvents.RateLimited, (r) => {
+    if (r.timeToReset >= 2_000) log.info(`Discord made the bot wait ${(r.timeToReset / 1000).toFixed(1)} s before ${r.method} ${r.route} (rate limit${r.global ? ', all requests' : ''})`);
+  });
   if (DEBUG_BUILD) {
     client.on(Events.ShardDisconnect, (ev, id) => dbg(log, `gateway: shard ${id} disconnected (code ${ev.code})`));
     client.on(Events.ShardReconnecting, (id) => dbg(log, `gateway: shard ${id} reconnecting`));

@@ -1,9 +1,10 @@
 import type { Holder, Job, JobView, Panel, Store } from '../db/store.js';
-import type { SourceJob } from '../jobs/types.js';
+import { normalizeFlightNumber, type SourceJob, type UnreadableRow } from '../jobs/types.js';
 import { DEBUG_BUILD, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { mergeNotices, type BackupNotice, type JobEvents, type ReleasedNotice } from './events.js';
 import { dayCode, flightIdChunks, MAX_ID_WORDS, MAX_SHOWN_ID } from './flightIds.js';
+import { movedKeys, plainNumber } from './flightPairing.js';
 import { namedForOneOf } from './pilotNames.js';
 import { dayOf, flyableOn, matchesAircraft, matchesSearch, type SearchDay } from './search.js';
 import { appNow } from '../util/clock.js';
@@ -36,6 +37,8 @@ export interface SyncResult {
   numberClashes?: string[];
   /** Backup pilots whose flight is gone or has nobody flying it any more, so their backup spot ended. They are told. */
   backupEnded?: BackupNotice[];
+  /** Flights somebody holds that were left as they were because their row may be one that cannot be read (their IDs). */
+  held?: string[];
 }
 
 export interface ReserveResult {
@@ -162,8 +165,9 @@ export class JobService {
    * Make the panel's jobs match `jobs`. A job the source still lists keeps its bot ID and its
    * reservations; a new job gets the next ID; a job the source no longer lists is closed and its
    * holders are told. A leg whose airports changed loses its reservation (the flight is different now).
+   * The source's flight numbers are the IDs: see `assignNumbers`.
    */
-  sync(panelId: number, jobs: SourceJob[]): SyncResult {
+  sync(panelId: number, jobs: SourceJob[], unreadable: UnreadableRow[] = []): SyncResult {
     const now = this.now();
     const result = this.store.tx(() => {
       const panel = this.store.getPanel(panelId);
@@ -172,19 +176,14 @@ export class JobService {
       const seen = new Set<number>();
       const backed = this.store.listBackedJobIds(panelId);
       if (DEBUG_BUILD) dbg(this.log, `sync ${panel.airlineName} (panel ${panelId}): the source lists ${jobs.length} flight(s); ${this.store.listJobs(panelId, 'open').length} are open here now`);
-      /** The ID a flight gets: its flight number when it has one that no other flight on the panel has, else the automatic one. */
-      const claim = (wanted: string | null | undefined, ownCode?: string): string | null => {
-        if (!wanted || wanted === ownCode) return null;
-        if (this.store.getJobByCode(panelId, wanted)) {
-          out.numberClashes!.push(wanted);
-          return null;
-        }
-        return wanted;
-      };
 
-      for (const sj of jobs) {
+      const rows = [...new Map(jobs.map((j) => [j.key, j])).values()];
+      /** Flights somebody holds that may be on a row that cannot be read just now: not to be taken for gone. */
+      const unread = new Set(this.store.listJobs(panelId, 'open').filter((j) => this.maybeUnreadable(j.id, unreadable)).map((j) => j.id));
+      this.followMovedRows(panelId, rows, unread);
+
+      const read = rows.map((sj) => {
         const existing = this.store.getJobBySourceKey(panelId, sj.key);
-
         // Is it completed? A source that tracks completion (a schedule sheet) is believed, except for
         // a few minutes after a pilot completed the flight here, when the sheet may not show it yet.
         // A source that doesn't track completion says nothing, so what we know stays.
@@ -195,13 +194,19 @@ export class JobService {
         // A completion FsHub confirmed stands even if the sheet is never ticked; one a pilot only claimed is given a few minutes.
         else completed = existing.completedBy !== null && existing.completedAt !== null && (existing.completedVia === 'fshub' || now - existing.completedAt < COMPLETION_GRACE_MS);
         const expired = (sj.deadline !== null && sj.deadline <= now) || sj.closed === true || completed;
+        // Never list a new job that is already over. The exception is a flight that was flown recently: it is worth showing as completed.
+        const listed = existing !== null || !expired || (completed && (sj.deadline === null || sj.deadline > now - COMPLETED_SHOW_MS));
+        return { sj, existing, completed, expired, listed };
+      });
 
+      const ids = this.assignNumbers(panel, read.filter((r) => r.listed), out.numberClashes!);
+      /** The ID a flight had before this read: what its pilot knows it by. */
+      const knownAs = (job: Job) => ids.was.get(job.id) ?? job.code;
+
+      for (const { sj, existing, completed, expired, listed } of read) {
         if (!existing) {
-          // Never list a job that is already over. The exception is a flight that was flown recently:
-          // it is worth showing as completed.
-          const showAsCompleted = completed && (sj.deadline === null || sj.deadline > now - COMPLETED_SHOW_MS);
-          if (expired && !showAsCompleted) continue;
-          const code = claim(sj.flightNumber) ?? this.store.allocateCode(panelId);
+          if (!listed) continue;
+          const code = ids.forNew.get(sj.key) ?? this.store.allocateCode(panelId, ids.spoken);
           const job = this.store.insertJob({
             panelId,
             code,
@@ -232,12 +237,9 @@ export class JobService {
         const completedBy = completed ? existing.completedBy : null;
         const completedVia = completed ? existing.completedVia : null;
         if (completed && existing.completedAt === null) out.completed++;
-        // The airline's flight number becomes the flight's ID, also for a flight the bot already knew by its automatic one.
-        // (A number taken away again leaves the ID as it was: IDs don't change back and forth.)
-        const number = claim(sj.flightNumber, existing.code);
-        if (number) this.store.setJobCode(existing.id, number);
+        const renamed = ids.was.has(existing.id);
         let changed =
-          number !== null ||
+          renamed ||
           existing.title !== sj.title ||
           existing.aircraft !== sj.aircraft ||
           existing.availableFrom !== sj.availableFrom ||
@@ -251,7 +253,7 @@ export class JobService {
           existing.completedVia !== completedVia;
         if (DEBUG_BUILD && changed) {
           const what: string[] = [];
-          if (number !== null) what.push(`code ${existing.code}->${number}`);
+          if (renamed) what.push(`code ${knownAs(existing)}->${this.store.getJob(existing.id)?.code}`);
           if (existing.aircraft !== sj.aircraft) what.push(`aircraft ${existing.aircraft}->${sj.aircraft}`);
           if (existing.availableFrom !== sj.availableFrom) what.push('window start');
           if (existing.deadline !== sj.deadline) what.push('window end/deadline');
@@ -297,7 +299,7 @@ export class JobService {
           if (DEBUG_BUILD) dbg(this.log, `sync: LEG CHANGED on ${existing.code} key=${sj.key} leg ${i + 1}: ${o ? `${o.dep}-${o.arr}` : '(none)'} -> ${nw ? `${nw.dep}-${nw.arr}` : '(none)'}`);
           if (o) {
             const holder = this.store.getHolder(existing.id, o.legNo);
-            if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: existing.code, legNos: [o.legNo], reason: 'changed' });
+            if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: knownAs(existing), legNos: [o.legNo], reason: 'changed' });
             this.store.deleteLeg(existing.id, o.legNo); // takes its reservation with it
           }
           if (nw) this.store.insertLeg(existing.id, i + 1, nw.dep, nw.arr, nw.heldBy ?? null);
@@ -306,22 +308,27 @@ export class JobService {
         // A change to the route took the pilots off it: a backup has nobody to stand in for now. The same when an open flight with a backup
         // has nobody flying it any more (a name taken out of the schedule by hand, or the bot's own name for the pilot who gave it back).
         if (out.released.length > releasedBefore || (backed.has(existing.id) && status === 'open' && completedAt === null)) {
-          this.endBackup(existing.id, 'freed', out.backupEnded!);
+          this.endBackup(existing.id, 'freed', out.backupEnded!, [], ids.was.get(existing.id));
         }
+        if (sj.cancelled === true && !completed) this.cancelFlight(existing, now, knownAs(existing), out);
       }
 
       for (const job of this.store.listJobs(panelId, 'open')) {
         if (seen.has(job.id)) continue;
+        if (unread.has(job.id)) {
+          (out.held ??= []).push(this.store.getJob(job.id)?.code ?? job.code);
+          continue;
+        }
         if (DEBUG_BUILD) {
           const holders = this.store.listLegs(job.id).map((l) => ({ l, h: this.store.getHolder(job.id, l.legNo) })).filter((x) => x.h);
           dbg(this.log, `sync: REMOVED ${job.code} key=${job.sourceKey} (no row in the source reads as this flight any more)${holders.length > 0 ? `; Discord holders released: ${holders.map((x) => `leg ${x.l.legNo} ${x.h!.username} (${x.h!.discordId})`).join(', ')}` : '; nobody held it in Discord'}`);
         }
         for (const leg of this.store.listLegs(job.id)) {
           const holder = this.store.getHolder(job.id, leg.legNo);
-          if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: job.code, legNos: [leg.legNo], reason: 'removed' });
+          if (holder) out.released.push({ panelId, discordId: holder.discordId, jobCode: knownAs(job), legNos: [leg.legNo], reason: 'removed' });
           this.store.deleteReservation(job.id, leg.legNo);
         }
-        this.endBackup(job.id, 'removed', out.backupEnded!);
+        this.endBackup(job.id, 'removed', out.backupEnded!, [], ids.was.get(job.id));
         this.store.updateJob(job.id, { status: 'removed' });
         out.removed++;
       }
@@ -340,11 +347,131 @@ export class JobService {
   }
 
   /**
+   * The airline has cancelled a flight: whoever holds it or stands by for it is let go, so that it cannot be completed, and told if it was
+   * still to be flown. Call inside a transaction.
+   */
+  private cancelFlight(was: Job, now: number, code: string, out: SyncResult): void {
+    const toFly = was.completedAt === null && (was.deadline === null || was.deadline > now);
+    for (const leg of this.store.listLegs(was.id)) {
+      const holder = this.store.getHolder(was.id, leg.legNo);
+      if (!holder) continue;
+      this.store.deleteReservation(was.id, leg.legNo);
+      if (toFly) out.released.push({ panelId: was.panelId, discordId: holder.discordId, jobCode: code, legNos: [leg.legNo], reason: 'cancelled' });
+    }
+    if (toFly) this.endBackup(was.id, 'cancelled', out.backupEnded!, [], code);
+    else this.store.deleteBackup(was.id);
+  }
+
+  /** Rows of one route and day that were re-ordered, added to or taken from: each flight goes with its row (see `movedKeys`). Call inside a transaction. */
+  private followMovedRows(panelId: number, rows: SourceJob[], unread: ReadonlySet<number>): void {
+    const known = this.store.listJobs(panelId).map((job) => ({
+      job,
+      names: (this.store.getJobView(job.id)?.legs ?? []).flatMap((l) => [l.sheetHolder, l.holder?.sheetName]).filter((n): n is string => !!n),
+    }));
+    const moves = movedKeys(rows, known, unread);
+    // Out of the way first, then to their new keys: two flights may be changing places.
+    for (const id of moves.keys()) this.store.setJobSourceKey(id, `~${id}`);
+    for (const [id, key] of moves) this.store.setJobSourceKey(id, key);
+    if (DEBUG_BUILD) for (const [id, key] of moves) dbg(this.log, `sync: job ${id} now has the key ${key} (rows of one route and day moved)`);
+  }
+
+  /**
+   * Whether a flight that a read does not find may only be on a row that could not be read (a half-typed date or route, a cleared cell).
+   * Only a flight somebody holds or stands by for matters. An unreadable row may be it when it contradicts neither its route nor its day and
+   * names its pilot; where the sheet names nobody for it, when that row names nobody either and agrees with its route or day.
+   */
+  private maybeUnreadable(jobId: number, unreadable: UnreadableRow[]): boolean {
+    if (unreadable.length === 0) return false;
+    const view = this.store.getJobView(jobId);
+    if (!view || (!view.backup && !view.legs.some((l) => l.holder))) return false;
+    const key = /^(.+)@(\d{4}-\d{2}-\d{2})/.exec(view.job.sourceKey);
+    if (!key) return false;
+    const names = view.legs.flatMap((l) => [l.sheetHolder, l.holder?.sheetName]).flatMap((n) => (n ? [n.trim().toLowerCase()] : []));
+    return unreadable.some((u) => {
+      if ((u.route !== null && u.route !== key[1]) || (u.day !== null && u.day !== key[2])) return false;
+      if (names.length > 0) return u.pilot !== null && names.includes(u.pilot.trim().toLowerCase());
+      return u.pilot === null && (u.route !== null || u.day !== null);
+    });
+  }
+
+  /**
+   * Make each flight's ID the number the source gives it, so Discord says what the sheet says. A number belongs to the flight that has it in
+   * the source now: one that is over or gone gives it up (it is then known by its day), and numbers that moved between flights follow them.
+   * A flight whose number is taken away keeps its ID, unless another flight now has that number. Call inside a transaction.
+   */
+  private assignNumbers(
+    panel: Panel,
+    read: Array<{ sj: SourceJob; existing: Job | null }>,
+    clashes: string[],
+  ): { was: Map<number, string>; forNew: Map<string, string>; spoken: Set<string> } {
+    const automatic = new RegExp(`^${escapeRegExp(panel.prefix)}-\\d{3,}$`);
+    // Who gets each number: the source's own numbers come before ones filled in from Aeroconomy, then the first row.
+    const claims = new Map<string, { sj: SourceJob; existing: Job | null }>();
+    for (const r of [...read].sort((a, b) => Number(a.sj.numberFrom !== undefined) - Number(b.sj.numberFrom !== undefined))) {
+      const number = r.sj.flightNumber;
+      if (!number) continue;
+      if (claims.has(number)) clashes.push(number);
+      else claims.set(number, r);
+    }
+    const here = new Map<number, SourceJob>();
+    for (const r of read) if (r.existing) here.set(r.existing.id, r.sj);
+
+    const was = new Map<number, string>();
+    const displaced = new Set<number>();
+    const rename = (job: Job, code: string) => {
+      if (!was.has(job.id)) was.set(job.id, job.code);
+      this.store.setJobCode(job.id, code);
+    };
+
+    // Free every number that is claimed by a flight other than the one that has it.
+    for (const [number, claim] of [...claims]) {
+      const holder = this.store.getJobByCode(panel.id, number);
+      if (!holder || holder.id === claim.existing?.id) continue;
+      const row = here.get(holder.id);
+      if (!row) {
+        rename(holder, this.retiredCode(holder, claims)); // over, cancelled, or no longer in the source
+      } else if ((row.flightNumber && claims.get(row.flightNumber)?.sj === row) || !automatic.test(holder.code)) {
+        rename(holder, `~${holder.id}`); // it is getting another number, or its number has moved on
+        displaced.add(holder.id);
+      } else {
+        // An automatic ID of a flight that is staying as it is: it is not taken from it.
+        claims.delete(number);
+        clashes.push(number);
+      }
+    }
+
+    const forNew = new Map<string, string>();
+    for (const [number, { sj, existing }] of claims) {
+      if (!existing) forNew.set(sj.key, number);
+      else if (displaced.delete(existing.id) || existing.code !== number) rename(existing, number);
+    }
+    const spoken = new Set(claims.keys());
+
+    for (const { sj, existing } of read) {
+      if (!existing) continue;
+      // What the sheet's cell says cannot be used (the same number twice in a day, say): the ID must not be some other number.
+      const unusable = !sj.flightNumber && !!sj.numberCell && plainNumber(existing.code) !== normalizeFlightNumber(sj.numberCell) && !automatic.test(existing.code);
+      if (displaced.has(existing.id) || (unusable && claims.get(existing.code)?.existing?.id !== existing.id)) rename(existing, this.store.allocateCode(panel.id, spoken));
+    }
+    return { was, forNew, spoken };
+  }
+
+  /** What a flight that has lost its number to another is known by: the number with its own day on the end. */
+  private retiredCode(job: Job, claims: Map<string, unknown>): string {
+    const day = job.availableFrom ?? job.deadline;
+    const dated = day === null ? plainNumber(job.code) : `${plainNumber(job.code)}-${dayCode(day)}`;
+    for (const code of [dated, `${dated}-2`, `${dated}-3`]) {
+      if (code !== job.code && !claims.has(code) && !this.store.getJobByCode(job.panelId, code)) return code;
+    }
+    return `OLD-${job.id}`;
+  }
+
+  /**
    * End a flight's backup spot when it has no point any more: for `removed` always (the flight is gone), for `freed` once
    * nobody (no Discord pilot and no name in the schedule) is flying any leg. The notice is added to `into` for the caller to
-   * announce. Call inside a transaction.
+   * announce, naming the flight `as` when its ID has just changed. Call inside a transaction.
    */
-  private endBackup(jobId: number, reason: BackupNotice['reason'], into: BackupNotice[], ignoreNames: string[] = []): void {
+  private endBackup(jobId: number, reason: BackupNotice['reason'], into: BackupNotice[], ignoreNames: string[] = [], as?: string): void {
     const view = this.store.getJobView(jobId);
     if (!view?.backup) return;
     // `ignoreNames`: names the bot itself wrote in the sheet for pilots who have just given the flight back. The sheet still shows them
@@ -353,7 +480,24 @@ export class JobService {
     if (reason === 'freed' && view.legs.some((l) => l.holder || (l.sheetHolder && !ignored.has(l.sheetHolder.trim().toLowerCase())))) return;
     const written = this.store.getBackupSheetName(jobId);
     this.store.deleteBackup(jobId);
-    into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: view.job.code, reason, ...(written ? { sourceKey: written.sourceKey, sheetName: written.name } : {}) });
+    into.push({ panelId: view.job.panelId, discordId: view.backup.discordId, jobCode: as ?? view.job.code, reason, ...(written ? { sourceKey: written.sourceKey, sheetName: written.name } : {}) });
+  }
+
+  /**
+   * The bot has just taken `name` off a flight's row in the sheet: the legs that showed it from the last read are free again now, not only
+   * after the next one.
+   */
+  sheetNameCleared(jobId: number, name: string): void {
+    this.sheetNameReplaced(jobId, name, null);
+  }
+
+  /** The bot has just changed (or, with `to` null, removed) a name it wrote on a flight's row: the legs showing the old one follow at once. */
+  sheetNameReplaced(jobId: number, from: string, to: string | null): void {
+    const view = this.store.getJobView(jobId);
+    if (!view) return;
+    const showing = view.legs.filter((l) => l.sheetHolder?.trim().toLowerCase() === from.trim().toLowerCase());
+    for (const leg of showing) this.store.setLegSheetHolder(jobId, leg.legNo, to);
+    if (showing.length > 0) this.events.emit({ type: 'changed', panelId: view.job.panelId });
   }
 
   /** Close jobs whose deadline has passed. Returns the panels that changed. */
@@ -611,9 +755,9 @@ export class JobService {
    * A pilot marks a flight completed. They must hold every leg of it. The flight leaves the open
    * list and is shown as completed; the person who completed it is remembered. `via` is `fshub` when
    * FsHub's own record of the landing was what confirmed it (such a completion is not undone by a sheet
-   * that has not been ticked).
+   * that has not been ticked). `flights` are the FsHub flights that showed it flown: each is noted as used, so it completes nothing else.
    */
-  complete(jobId: number, discordId: string, via: 'fshub' | null = null): JobView {
+  complete(jobId: number, discordId: string, via: 'fshub' | null = null, flights: number[] = []): JobView {
     const now = this.now();
     const view = this.store.tx(() => {
       const current = this.store.getJobView(jobId);
@@ -623,6 +767,7 @@ export class JobService {
         throw new JobError('BAD_INPUT', `You can only complete a flight you hold every leg of, and ${current.job.code} has legs that aren't yours.`);
       }
       this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: discordId, completedVia: via });
+      this.store.markFshubUsed(current.job.panelId, flights, jobId, now);
       return this.store.getJobView(jobId) as JobView;
     });
     this.events.emit({ type: 'changed', panelId: view.job.panelId });
@@ -635,7 +780,7 @@ export class JobService {
    * it is in the sheet, and it is then completed as `complete` does. The caller has the proof (FsHub's record of the pilot's
    * own landing); the checks here are that the sheet still names them on every leg and that nobody has taken the flight.
    */
-  completeNamed(jobId: number, user: { discordId: string; username: string }, names: string[], via: 'fshub'): JobView {
+  completeNamed(jobId: number, user: { discordId: string; username: string }, names: string[], via: 'fshub', flights: number[] = []): JobView {
     const now = this.now();
     const view = this.store.tx(() => {
       const current = this.store.getJobView(jobId);
@@ -647,6 +792,7 @@ export class JobService {
         this.store.setReservationSheetName(jobId, leg.legNo, sheet[i] as string);
       });
       this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: user.discordId, completedVia: via });
+      this.store.markFshubUsed(current.job.panelId, flights, jobId, now);
       return this.store.getJobView(jobId) as JobView;
     });
     this.events.emit({ type: 'changed', panelId: view.job.panelId });
@@ -660,7 +806,7 @@ export class JobService {
    * the backup's own landing, and that the pilot flew none of it); the checks here are that this person is still the flight's backup, that one
    * pilot still holds every leg, and that the flight is still open. Returns the flight as it now is and the pilot it was taken from.
    */
-  completeAsBackup(jobId: number, backup: { discordId: string; username: string }, sheetName: string | null, via: 'fshub'): { view: JobView; replaced: Holder } {
+  completeAsBackup(jobId: number, backup: { discordId: string; username: string }, sheetName: string | null, via: 'fshub', flights: number[] = []): { view: JobView; replaced: Holder } {
     const now = this.now();
     const out = this.store.tx(() => {
       const current = this.store.getJobView(jobId);
@@ -676,18 +822,24 @@ export class JobService {
       }
       this.store.deleteBackup(jobId);
       this.store.updateJob(jobId, { status: 'expired', completedAt: now, completedBy: backup.discordId, completedVia: via });
+      this.store.markFshubUsed(current.job.panelId, flights, jobId, now);
       return { view: this.store.getJobView(jobId) as JobView, replaced };
     });
     this.events.emit({ type: 'changed', panelId: out.view.job.panelId });
     return out;
   }
 
-  /** Give legs back. With `legNos` omitted, releases everything the person holds on that job. Returns the legs freed. */
-  release(jobId: number, discordId: string, legNos?: number[]): number[] {
+  /**
+   * Give legs back. With `legNos` omitted, releases everything the person holds on that job. Returns the legs freed. `undo` takes back a
+   * reservation just made that the sheet turned down, whatever has become of the flight meanwhile.
+   */
+  release(jobId: number, discordId: string, legNos?: number[], undo = false): number[] {
     const ended: BackupNotice[] = [];
     const freed = this.store.tx(() => {
       const view = this.store.getJobView(jobId);
-      if (!view) return [] as number[];
+      // Only a flight still to be flown can be given back: one completed, closed or cancelled is the record of who had it, and a
+      // menu opened before it finished must not take that away.
+      if (!view || (!undo && (view.job.status !== 'open' || view.job.completedAt !== null))) return [] as number[];
       const out: number[] = [];
       const written: string[] = [];
       for (const leg of view.legs) {
@@ -697,7 +849,7 @@ export class JobService {
           if (leg.holder.sheetName) written.push(leg.holder.sheetName);
         }
       }
-      if (out.length > 0) this.endBackup(jobId, 'freed', ended, written);
+      if (out.length > 0 && view.job.status === 'open') this.endBackup(jobId, 'freed', ended, written);
       return out;
     });
     if (freed.length > 0) {

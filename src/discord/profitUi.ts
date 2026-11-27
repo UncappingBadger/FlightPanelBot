@@ -82,6 +82,9 @@ function safetyHow(p: PayPlan): string {
   return `${tierName(s.tier)} safety: landed at -${s.fpm} fpm, ${cut}; ${formatMoney(s.normal)} without the cut`;
 }
 
+/** Said on a row whose logbook flight is under another name than the sheet's. */
+const otherNameText = (f: ProfitFillPlan): string => (f.logbookPilot ? ` · ⚠️ the logbook says ${plainText(f.logbookPilot.slice(0, 40))} flew it, the sheet says ${plainText(f.pilot.slice(0, 40))}` : '');
+
 /** The pilot's pay for a row, in words and how it was worked out, or why there is none. Empty when its cell isn't going to be filled anyway. */
 function payText(p: PayPlan): string {
   if (p.cell === 'zeroed') return ' · pilot pay: left at $0 (it was set back to $0 after I wrote one)';
@@ -186,6 +189,7 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
     `• ✏️ **${a.different.length}** have a Profit Made that is not what Aeroconomy says`,
     `• ⬜ **${a.fills.length}** have a blank Profit Made that Aeroconomy can fill in`,
     ...(a.fills.length > 0 ? [payBullet(a.fills)] : []),
+    ...(a.others ? [`• 👤 **${a.others}** ${a.others === 1 ? 'is' : 'are'} left alone: the only flight that fits was flown by another pilot the sheet names`] : []),
     ...safetyBullets(a.fills, a.waiting ?? 0, a.held ?? []),
     ...(a.unreadable > 0 ? [`• 🔒 **${a.unreadable}** have something in Profit Made that is not an amount (like TBD): left exactly as it is`] : []),
     `• ❔ **${a.unmatched}** I found no logbook flight for${a.unmatched > 0 ? " (Aeroconomy only lets me read the newest 100 entries of each aircraft's logbook, so older flights are out of reach)" : ''}, and **${a.ambiguous}** could be more than one flight (left alone)`,
@@ -197,7 +201,7 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
   }
   if (a.fills.length > 0) {
     lines.push('', '**Blank, could be filled in:**');
-    const shown = a.fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)}${payText(f.payPlan)}${deductionText(f)}`)}`);
+    const shown = a.fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)}${payText(f.payPlan)}${deductionText(f)}${otherNameText(f)}`)}`);
     addWithin(lines, shown, REPORT_BUDGET, a.fills.length);
   }
   if (a.held && a.held.length > 0) {
@@ -213,13 +217,16 @@ export function profitReport(airline: string, a: ProfitAnalysis): string {
  * meant to be) goes after the closing words, and is counted in the budget so the message always fits.
  */
 export function previewText(airline: string, fills: ProfitFillPlan[], note = ''): string {
-  const closing = `Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, or the cell is no longer empty. Nothing is written unless you press **Write**.${note ? `\n${note}` : ''}`;
+  // Said in the closing words, which are never cut off: the rows concerned may be further down than the lines that are shown.
+  const other = fills.filter((f) => f.logbookPilot !== undefined);
+  const check = other.length > 0 ? `⚠️ On ${other.length === 1 ? 'row' : 'rows'} ${other.slice(0, 15).map((f) => f.row).join(', ')}${other.length > 15 ? ' and more' : ''} the logbook's pilot is not the name in the sheet: check ${other.length === 1 ? 'it' : 'them'} before pressing **Write**.\n` : '';
+  const closing = `${check}Each one is checked again against the sheet as it is when you press the button, and skipped if its row has moved, its pilot or box has changed, or the cell is no longer empty. Nothing is written unless you press **Write**.${note ? `\n${note}` : ''}`;
   const lines = [
     `✍️ **Fill blank Profit Made cells: ${plainText(airline)}**`,
     `I would write the profit Aeroconomy gives, rounded up to a whole dollar (Aeroconomy has no cents), into **${fills.length}** Profit Made cell${fills.length === 1 ? '' : 's'} that ${fills.length === 1 ? 'is' : 'are'} empty today${payIntro(fills)}`,
     '',
   ];
-  const shown = fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)} (Aeroconomy: ${formatMoney(f.exact)})${payText(f.payPlan)}${deductionText(f)}`)}`);
+  const shown = fills.slice(0, SHOWN_FILLS).map((f) => `• ${row(f.row, `${flight(f.callsign, f.route, f.day)} · ${formatMoney(f.value)} (Aeroconomy: ${formatMoney(f.exact)})${payText(f.payPlan)}${deductionText(f)}${otherNameText(f)}`)}`);
   addWithin(lines, shown, PREVIEW_BUDGET - closing.length - 2, fills.length);
   lines.push('', closing);
   return lines.join('\n');
@@ -350,15 +357,7 @@ export async function applyProfitSettings(ctx: BotContext, interaction: ChatInpu
   if (nextSendTo === 'channel') {
     const channelId = picked?.id ?? panel.profitChannelId;
     if (!channelId) throw new UserError('Choose the channel with the `channel` option.');
-    const guild = interaction.guild;
-    if (!guild) throw new UserError('This only works inside a server.');
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (!channel) throw new UserError("I can't see that channel.");
-    const me = guild.members.me ?? (await guild.members.fetchMe());
-    const perms = channel.permissionsFor(me);
-    const missing = POST_PERMS.filter((p) => !perms?.has(p));
-    if (missing.length > 0) throw new UserError(`I'm missing permissions in <#${channel.id}>: ${new PermissionsBitField(missing).toArray().join(', ')}. Grant those and run this again.`);
-    patch.profitChannelId = channel.id;
+    patch.profitChannelId = await postableChannel(interaction, channelId);
   }
   if (who === 'admins') patch.profitRoleId = null;
   else if (role) patch.profitRoleId = role.id;
@@ -366,6 +365,19 @@ export async function applyProfitSettings(ctx: BotContext, interaction: ChatInpu
 
   ctx.store.updatePanel(panel.id, patch);
   return { panel: ctx.store.getPanel(panel.id) as Panel, given };
+}
+
+/** A channel of this server the bot can post in, by its ID; anything else is refused with the reason. */
+export async function postableChannel(interaction: ChatInputCommandInteraction, channelId: string): Promise<string> {
+  const guild = interaction.guild;
+  if (!guild) throw new UserError('This only works inside a server.');
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel) throw new UserError("I can't see that channel.");
+  const me = guild.members.me ?? (await guild.members.fetchMe());
+  const perms = channel.permissionsFor(me);
+  const missing = POST_PERMS.filter((p) => !perms?.has(p));
+  if (missing.length > 0) throw new UserError(`I'm missing permissions in <#${channel.id}>: ${new PermissionsBitField(missing).toArray().join(', ')}. Grant those and run this again.`);
+  return channel.id;
 }
 
 /** Why a post or DM did not work, in a few words. */

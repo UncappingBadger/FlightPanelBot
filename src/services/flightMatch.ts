@@ -24,6 +24,8 @@ const HOUR = 3_600_000;
 export const WINDOW_GRACE_MS = HOUR;
 /** A job with no start or no end is treated as open for this long. */
 const OPEN_ENDED_MS = 48 * HOUR;
+/** How far back completed flights are looked at for the landings they account for: as long as FsHub's flights are kept. */
+const COUNTED_BACK_MS = 7 * 24 * HOUR;
 
 /** When a flight may have landed to count as this job's (epoch ms, both ends included). */
 export function landingWindow(job: Job, now: number): { from: number; to: number } {
@@ -67,12 +69,15 @@ export function confirmationsFor(
   if (store.countFshubFlights(panel.id) === 0) return out;
 
   const claimed = new Set<number>(opts.taken ?? []);
+  // A landing that has completed one flight is only ever that flight's, on this check and on every later one.
+  const used = store.listFshubUsed(panel.id);
+  if (opts.strict) for (const id of countedByCompleted(store, panel, views, used, now)) claimed.add(id);
   for (const view of views) {
     const { from, to } = landingWindow(view.job, now);
     for (const leg of view.legs) {
       const candidates = store
         .listFshubFlights(panel.id, leg.dep.toUpperCase(), leg.arr.toUpperCase(), from, to)
-        .filter((f) => !claimed.has(f.flightId));
+        .filter((f) => !claimed.has(f.flightId) && (used.get(f.flightId) ?? view.job.id) === view.job.id);
       const backup = opts.backupPilots?.get(view.job.id);
       const flight = backup !== undefined ? candidates.filter((f) => f.pilotId === backup).at(-1) ?? null : pick(candidates, leg, opts.strict === true, opts.namedPilots?.get(view.job.id) ?? null);
       if (!flight) continue;
@@ -83,6 +88,32 @@ export function confirmationsFor(
     }
   }
   return out;
+}
+
+/**
+ * The landings that belong to flights already completed without the bot having noted which one it was: ticked in the sheet by hand, or
+ * completed before the bot kept that note. Each such flight's leg accounts for one landing by its pilot (whoever holds it, or whoever the bot
+ * knows by the name the sheet has), so that the same landing is not counted again for a flight still to be completed.
+ */
+function countedByCompleted(store: Store, panel: Panel, views: JobView[], used: ReadonlyMap<number, number>, now: number): number[] {
+  const asked = new Set(views.map((v) => v.job.id));
+  const noted = new Set(used.values());
+  const counted: number[] = [];
+  // Oldest first, so that of two flights completed on the same route each takes its own landing: taken newest first, the later one would take the
+  // earlier landing, and the earlier one, completed before the later landing happened, would be left with none.
+  for (const view of store.listCompletedJobViews(panel.id, now - COUNTED_BACK_MS).reverse()) {
+    if (asked.has(view.job.id) || noted.has(view.job.id)) continue;
+    const { from, to } = landingWindow(view.job, now);
+    const landedBy = Math.min(to, (view.job.completedAt ?? now) + HOUR);
+    for (const leg of view.legs) {
+      const pilots = leg.holder ? (leg.holder.fshubId === null ? [] : [leg.holder.fshubId]) : leg.sheetHolder ? store.fshubIdsForSheetName(leg.sheetHolder) : [];
+      const flight = store
+        .listFshubFlights(panel.id, leg.dep.toUpperCase(), leg.arr.toUpperCase(), from, landedBy)
+        .find((f) => pilots.includes(f.pilotId) && !used.has(f.flightId) && !counted.includes(f.flightId));
+      if (flight) counted.push(flight.flightId);
+    }
+  }
+  return counted;
 }
 
 /**

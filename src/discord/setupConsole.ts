@@ -124,7 +124,7 @@ const META: Record<string, Meta> = {
     scope: 'airline',
     status: 'self',
     submit: 'Save the number of days',
-    intro: "How many days ahead the selected airline's panel lists flights. Flights that start later are left off the panel until they come within that many days (a pilot can still reserve one by typing its flight ID).",
+    intro: "How many days ahead the selected airline's panel lists flights. Flights that start later are left off the panel until they come within that many days; a pilot can't reserve one before then, not even by typing its flight ID.",
     labels: { days: 'Days ahead (1 to 7)' },
     blanks: { days: 'no change' },
   },
@@ -243,7 +243,7 @@ const META: Record<string, Meta> = {
     status: 'self',
     submit: 'Run',
     statusValues: { action: 'settings' },
-    intro: "Compares Aeroconomy's profit for each of the selected airline's flights with its sheet. Action Check (the default) only reads and reports: it changes nothing. Action Fill posts a preview of the blank cells it would fill, and NOTHING is written to the sheet until someone presses Write on that preview. The Write button only exists in Discord, so set Send the preview to DM or Channel first (a preview shown on this page has no button and is refused). The other boxes set where the preview goes and who may press Write.",
+    intro: "Compares Aeroconomy's profit for each of the selected airline's flights with its sheet. Action Check (the default) only reads and reports: it changes nothing. Action Fill posts a preview of the blank cells it would fill, and NOTHING is written to the sheet until someone presses Write on that preview. The Write button only exists in Discord, so set Send the preview to DM or Channel first (a preview shown on this page has no button and is refused). The other boxes set where the preview goes and who may press Write. Members of the role that may press Write can also work on pilot pay lists (change a line's account and amount, and press Pay). Where pay lists go is not set here: it is set with /payroll settings in Discord.",
     labels: { action: 'Action', 'send-to': 'Send the preview to', channel: 'Channel for the preview', 'who-can-write': 'Who may press Write', role: 'Role that may press Write', business: 'Aeroconomy business number' },
     blanks: { action: 'Check: read and report only, change nothing (the default)', business: 'found automatically' },
     choices: {

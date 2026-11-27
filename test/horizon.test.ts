@@ -344,7 +344,7 @@ describe('/setup window', () => {
     const reply = await run({ options: { days: 3 } });
     assert.equal(h.store.getPanel(pid())!.showDays, 3);
     assert.match(reply, /Done\. The \*\*Test Air\*\* panel lists the flights that are open now or start within the next \*\*3 days\*\*\./);
-    assert.match(reply, /2 open flights start later than that and are left off the panel until they come within 3 days\. Pilots can still reserve one by typing its flight ID\./);
+    assert.match(reply, /2 open flights start later than that and are left off the panel until they come within 3 days\. Pilots can't reserve them before then, not even by typing the flight ID\./);
     assert.match(reply, /Change it with `\/setup window days:` \(1 to 7\)\./);
     const text = d.client.channel(CHANNEL).live.slice(0, -1).map((m) => messageText(m)).join('\n');
     assert.match(text, /^TST-001( · |$)/m);

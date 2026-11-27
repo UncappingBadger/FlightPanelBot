@@ -1,4 +1,4 @@
-import { InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type AutocompleteInteraction } from 'discord.js';
+import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type AutocompleteInteraction } from 'discord.js';
 import { AeroconomyError } from '../../aeroconomy/http.js';
 import type { BankAccount } from '../../aeroconomy/banking.js';
 import type { Panel, PayrollSettings } from '../../db/store.js';
@@ -13,6 +13,7 @@ import { UserError } from '../errors.js';
 import { requireAdmin } from '../guard.js';
 import { askTest } from '../payTestUi.js';
 import { runTimeText, sendList } from '../payrollUi.js';
+import { postableChannel } from '../profitUi.js';
 import { noPings } from '../ui.js';
 import { pickPanel } from './setup.js';
 
@@ -47,19 +48,21 @@ async function seeAccounts(payroll: Payroll): Promise<BankAccount[]> {
 /** What is set up, in words, and what is still missing. */
 export function payrollSettingsText(ctx: BotContext, panel: Panel, s: PayrollSettings | null): string {
   const connected = ctx.payroll?.gateway.connected ?? false;
-  const where =
-    panel.profitSendTo === 'channel' && panel.profitChannelId
-      ? `posted in <#${panel.profitChannelId}>`
-      : s?.ownerId
-        ? `sent to the DMs of <@${s.ownerId}> (the admin who last changed these settings)`
-        : 'sent to the DMs of the admin who sets this up';
+  const channel = s?.sendTo === 'channel' && s.channelId ? `<#${s.channelId}>` : null;
+  const where = channel
+    ? `posted in ${channel}`
+    : s?.ownerId
+      ? `sent to the DMs of <@${s.ownerId}> (the admin who last changed these settings)`
+      : 'sent to the DMs of the admin who sets this up';
+  const asked = channel ? `posts its list there too` : s?.sendTo === 'dm' ? 'sends its list to the DMs of whoever runs it' : 'shows its list only to whoever runs it, in the reply';
   const who = panel.profitRoleId ? `that admin, and any member of <@&${panel.profitRoleId}>` : 'that admin only';
   return [
     `💷 **Paying pilots: ${plainText(panel.airlineName)}** is **${s?.enabled ? 'on' : 'off'}**.`,
     `• The pay comes out of account: ${s?.sourceAccount ? `\`${s.sourceAccount}\`` : '**not set** (`source-account:`)'}`,
     `• The pilots' accounts are read from: ${s?.infoSheetId && s.infoGid ? `[the Pilot Info tab](${sheetViewUrl({ id: s.infoSheetId, gid: s.infoGid })})` : '**not set** (`pilot-info:`, the link of that tab)'}`,
     `• Flights are paid from: ${s?.startDay != null ? `**${new Date(s.startDay).toISOString().slice(0, 10)}** on (earlier flights are never put on a list)` : '**not set**: the day it is switched on'}`,
-    `• A list of what is due is made every day at **${runTimeText(s?.runAtMinute ?? 720)}**, ${where}. Who can work on it: ${who} (the same as for filling in profits: the **Profit and pay** tab of the bot's settings page).`,
+    `• A list of what is due is made every day at **${runTimeText(s?.runAtMinute ?? 720)}**, ${where}. Who can work on it: ${who} (the same as for filling in profits: the **Profit and pay** tab of the bot's settings page). They can change a line's account and amount, and press **Pay**.`,
+    `• \`/payroll run\` ${asked}. The list shows pilots' **bank account numbers**, so where it goes is chosen here (\`send-to:\` and \`channel:\`); it does not follow where profit previews go.${channel ? ` **Everyone who can read ${channel} sees those numbers.**` : ''}`,
     s?.lastRunDay != null ? `• The last list was made for ${ts(s.lastRunDay, 'D')}.` : '• No list has been made yet.',
     ctx.writeback?.enabledFor(panel)
       ? '• After a payment goes through, I tick **Pilot Paid** on its row in the sheet (only an empty box is ever ticked).'
@@ -89,6 +92,17 @@ export const payrollCommand: Command = {
         .addStringOption((o) => o.setName('pilot-info').setDescription('The link of the Pilot Info tab (names, FsHub IDs, bank accounts)').setMaxLength(300))
         .addStringOption((o) => o.setName('start-from').setDescription('The first flight day to pay, like 2026-11-19 (earlier flights are never put on a list)').setMaxLength(10))
         .addStringOption((o) => o.setName('at').setDescription('The time of day (Zulu) the list is made, like 12:00').setMaxLength(5))
+        .addStringOption((o) =>
+          o
+            .setName('send-to')
+            .setDescription('Where the pay list is shown. It has bank account numbers on it')
+            .addChoices(
+              { name: 'Here: in the reply to /payroll run (the daily list goes to DMs)', value: 'here' },
+              { name: 'DM: in your DMs', value: 'dm' },
+              { name: 'Channel: posted in the channel you pick in the channel option', value: 'channel' },
+            ),
+        )
+        .addChannelOption((o) => o.setName('channel').setDescription('The channel for the pay list: everyone who can read it sees the account numbers').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
         .addStringOption((o) => o.setName('airline').setDescription('Which panel (optional if there is only one)').setAutocomplete(true)),
     )
     .addSubcommand((s) =>
@@ -135,7 +149,9 @@ export const payrollCommand: Command = {
         const info = interaction.options.getString('pilot-info');
         const from = interaction.options.getString('start-from');
         const at = interaction.options.getString('at');
-        if (enabled === null && source === null && info === null && from === null && at === null) {
+        const sendTo = interaction.options.getString('send-to');
+        const picked = interaction.options.getChannel('channel');
+        if (enabled === null && source === null && info === null && from === null && at === null && sendTo === null && picked === null) {
           await interaction.editReply({ content: payrollSettingsText(ctx, panel, settings), allowedMentions: noPings });
           return;
         }
@@ -179,6 +195,15 @@ export const payrollCommand: Command = {
             if (patch.startDay === undefined && (settings?.startDay ?? null) === null) patch.startDay = Math.floor(ctx.now() / DAY) * DAY;
           }
         }
+        if (sendTo !== null && sendTo !== 'here' && sendTo !== 'dm' && sendTo !== 'channel') throw new UserError('Choose where the pay list is shown: here, your DMs, or a channel.');
+        if (picked && (sendTo === 'here' || sendTo === 'dm')) throw new UserError('A channel only goes with the "Channel" choice. Leave `send-to` empty or choose that one.');
+        const place = sendTo ?? (picked ? 'channel' : null);
+        if (place === 'channel') {
+          const channelId = picked?.id ?? settings?.channelId;
+          if (!channelId) throw new UserError('Choose the channel with the `channel` option.');
+          patch.channelId = await postableChannel(interaction, channelId);
+        }
+        if (place !== null) patch.sendTo = place;
         patch.ownerId = interaction.user.id;
         const saved = ctx.store.savePayrollSettings(panel.id, patch);
         await interaction.editReply({ content: `Done. Nothing was paid.\n${payrollSettingsText(ctx, panel, saved)}`, allowedMentions: noPings });

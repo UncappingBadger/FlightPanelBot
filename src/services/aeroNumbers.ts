@@ -30,6 +30,8 @@ export interface NumberedJob {
   deadline: number | null;
   /** A number the source gave the flight itself. It is never replaced. */
   flightNumber?: string | null;
+  /** Something the sheet's own number cell says: the flight takes no other number, even when that cannot be used. */
+  numberCell?: string | null;
 }
 
 /**
@@ -77,7 +79,7 @@ export function matchNumbers(jobs: NumberedJob[], flights: AeroFlight[]): Number
   const sameWindow = (a: number, b: number) => Math.abs(a - b) <= WINDOW_TOLERANCE_MS;
 
   const proposals: Array<AeroFlight | 'ambiguous' | 'none' | 'own'> = jobs.map((j) => {
-    if (j.flightNumber) return 'own';
+    if (j.flightNumber || j.numberCell) return 'own';
     const leg = j.legs.length === 1 ? j.legs[0] : undefined;
     if (!leg || j.availableFrom === null || j.deadline === null) return 'none';
     const [dep, arr] = [leg.dep.toUpperCase(), leg.arr.toUpperCase()];
@@ -177,7 +179,7 @@ export class AeroNumbers {
     const cache = this.cacheFor(panel.fshubAirlineId);
     if (!cache) return jobs;
     const matches = matchNumbers(jobs, cache.flights);
-    return jobs.map((j, i) => (matches[i]?.code ? { ...j, flightNumber: matches[i]!.code } : j));
+    return jobs.map((j, i) => (matches[i]?.code ? { ...j, flightNumber: matches[i]!.code, numberFrom: 'aeroconomy' as const } : j));
   }
 
   /**

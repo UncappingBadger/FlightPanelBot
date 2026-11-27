@@ -739,6 +739,26 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (panel_id, aircraft)
   );
   `,
+
+  /* v43: which FsHub flights have already completed a flight. A landing counts once: without this, the next check would let the same landing
+     complete a second flight of the same route whose window it also fits. It is not tied to the flight's own row, which is forgotten sooner. */
+  `
+  CREATE TABLE fshub_used (
+    panel_id  INTEGER NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+    flight_id INTEGER NOT NULL,
+    job_id    INTEGER NOT NULL,
+    used_at   INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, flight_id)
+  );
+  `,
+
+  /* v44: where a panel's pay list is shown. The list holds pilots' bank account numbers, so it has a choice of its own, made by an admin, and no longer
+     goes wherever the profit previews go. 'send_to' is 'here' (only to whoever asks; the daily list goes to the admin's DMs), 'dm' or 'channel'.
+     Every panel starts at 'here', whatever its profit previews do: a channel is only ever one that was chosen for the pay list. */
+  `
+  ALTER TABLE payroll_settings ADD COLUMN send_to TEXT NOT NULL DEFAULT 'here';
+  ALTER TABLE payroll_settings ADD COLUMN channel_id TEXT;
+  `,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

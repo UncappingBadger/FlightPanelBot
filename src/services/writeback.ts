@@ -3,7 +3,8 @@ import { SheetsError, type Cell, type SheetsPort } from '../google/sheetsApi.js'
 import { parseLegChain } from '../jobs/import.js';
 import { normalizeFlightNumber, type NumberlessRow } from '../jobs/types.js';
 import { isUnsetPay, parseMoney } from './contributions.js';
-import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type SheetRef } from '../jobs/sheet.js';
+import { colLetter, findHeader, isCancelled, isTicked, PAID_COLUMNS, parseScheduleValues, parseSheetDate, sheetRefOf, type ParsedSchedule, type SheetRef } from '../jobs/sheet.js';
+import { plainNumber } from './flightPairing.js';
 import { DEBUG_BUILD, callerPath, dbg } from '../util/debugBuild.js';
 import { silentLogger, type Logger } from '../util/log.js';
 import { appNow, realMs } from '../util/clock.js';
@@ -15,6 +16,10 @@ export type WriteBackErrorCode =
   | 'NO_COLUMNS'
   /** The flight's row can't be found any more. */
   | 'FLIGHT_NOT_FOUND'
+  /** The rows of that route and day have changed since the last read, and which of them is the flight can't be told. */
+  | 'ROWS_CHANGED'
+  /** The name would be read by the sheet as something else (a name starting "cancel" cancels the flight). */
+  | 'BAD_NAME'
   /** Someone else is already named against the flight in the sheet. */
   | 'CONFLICT'
   /** The sheet already shows the flight as completed or cancelled. */
@@ -36,6 +41,35 @@ export class WriteBackError extends Error {
 }
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** What the bot knows of a flight, to find its row again when rows of its route and day have been re-ordered. */
+export interface FlightHint {
+  code: string;
+  /** The ID is a flight number from the schedule, not one the bot made up. */
+  ownNumber: boolean;
+  availableFrom: number | null;
+  deadline: number | null;
+  aircraft: string | null;
+  /** The flight has left the schedule: it has no row to write to. */
+  removed: boolean;
+  /** No row read as the flight at the last read (its own can't be read just now), so none of the others is it. */
+  setAside: boolean;
+  /** This flight and the others of its route and day still open, as far as the bot knows. */
+  known: number;
+  /** How many open flights, this one among them if it is open, share its route, day and window: their rows can only be told apart by place. */
+  twins: number;
+  /**
+   * Names (lower case) the other flights of its route and day have in the Pilot and Backup Pilot cells: all of them, and those of the
+   * flights that share its window too. A name another flight has does not say which row is this one, where its window could be taken for ours.
+   */
+  names: { pilots: ReadonlySet<string>; backups: ReadonlySet<string>; twinPilots: ReadonlySet<string>; twinBackups: ReadonlySet<string> };
+}
+
+/** The name an operation expects to find on the row it is to change. */
+interface Named {
+  pilot?: string;
+  backup?: string;
+}
 
 /**
  * Formats that would show a distance as something else: a column copied from the Date column shows 392 as 1/26/1901, one copied from a money
@@ -143,14 +177,27 @@ export class SheetWriteBack {
    */
   private readonly queues = new Map<string, Promise<unknown>>();
 
+  /** Says what the bot knows of the flight with a key. Without it a row is found by its key alone. */
+  private readonly flightOf: ((panelId: number, sourceKey: string) => FlightHint | null) | null;
+
   constructor(
     private readonly api: SheetsPort,
     /** The service account's address: what a sheet owner shares the sheet with. */
     readonly accountEmail: string,
-    opts: { now?: () => number; logger?: Logger } = {},
+    opts: { now?: () => number; logger?: Logger; flightOf?: (panelId: number, sourceKey: string) => FlightHint | null } = {},
   ) {
     this.now = opts.now ?? appNow;
     this.log = opts.logger ?? silentLogger;
+    this.flightOf = opts.flightOf ?? null;
+  }
+
+  /** Taken when the write is asked for, not when its turn comes: the keys may have moved by then. */
+  private hint(panel: Panel, sourceKey: string): FlightHint | null {
+    return this.flightOf?.(panel.id, sourceKey) ?? null;
+  }
+
+  private usable(name: string): void {
+    if (isCancelled(name)) throw new WriteBackError('BAD_NAME', `I can't write "${name}" in the sheet: a name starting "cancel" would cancel the flight.`);
   }
 
   /** Will writes for this panel be attempted? */
@@ -170,8 +217,10 @@ export class SheetWriteBack {
 
   /** Put a pilot's name against a flight. Refuses if the sheet already names someone else. */
   claim(panel: Panel, sourceKey: string, name: string): Promise<void> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(name);
+      const at = await this.locate(panel, sourceKey, hint, { pilot: name });
       if (at.ticked || isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed or cancelled.');
       if (at.pilot === '') await this.write(at, [{ a1: at.pilotCell, value: name }]);
       else if (!same(at.pilot, name)) throw new WriteBackError('CONFLICT', `The sheet already names **${at.pilot}** for that flight.`, at.pilot);
@@ -180,8 +229,9 @@ export class SheetWriteBack {
 
   /** Take a pilot's name off a flight, but only if it is still the name we wrote. Returns whether it was cleared. */
   unclaim(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      const at = await this.locate(panel, sourceKey, hint, { pilot: name });
       if (!same(at.pilot, name) || at.ticked) return false;
       await this.write(at, [{ a1: at.pilotCell, value: '' }]);
       return true;
@@ -190,8 +240,10 @@ export class SheetWriteBack {
 
   /** Change the name we wrote against a flight, but only if it is still the one we wrote. Returns whether it changed. */
   rename(panel: Panel, sourceKey: string, oldName: string, newName: string): Promise<boolean> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(newName);
+      const at = await this.locate(panel, sourceKey, hint, { pilot: oldName });
       if (!same(at.pilot, oldName) || at.ticked) return false;
       await this.write(at, [{ a1: at.pilotCell, value: newName }]);
       return true;
@@ -203,8 +255,10 @@ export class SheetWriteBack {
    * if the flight is finished or cancelled, or if the cell already names someone else; a cell already holding this name is left as it is.
    */
   claimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(name);
+      const at = await this.locate(panel, sourceKey, hint, { backup: name });
       if (at.backupCell === null) return false;
       if (at.ticked || isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed or cancelled.');
       if (at.backup === '') await this.write(at, [{ a1: at.backupCell, value: name }]);
@@ -215,8 +269,9 @@ export class SheetWriteBack {
 
   /** Take a backup pilot's name off a flight, but only if it is still the name we wrote. Returns whether it was cleared. */
   unclaimBackup(panel: Panel, sourceKey: string, name: string): Promise<boolean> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      const at = await this.locate(panel, sourceKey, hint, { backup: name });
       if (at.backupCell === null || !same(at.backup, name) || at.ticked) return false;
       await this.write(at, [{ a1: at.backupCell, value: '' }]);
       return true;
@@ -225,8 +280,10 @@ export class SheetWriteBack {
 
   /** Change the backup pilot's name we wrote against a flight, but only if it is still the one we wrote. Returns whether it changed. */
   renameBackup(panel: Panel, sourceKey: string, oldName: string, newName: string): Promise<boolean> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(newName);
+      const at = await this.locate(panel, sourceKey, hint, { backup: oldName });
       if (at.backupCell === null || !same(at.backup, oldName) || at.ticked) return false;
       await this.write(at, [{ a1: at.backupCell, value: newName }]);
       return true;
@@ -239,8 +296,10 @@ export class SheetWriteBack {
    * there is nothing to write.
    */
   complete(panel: Panel, sourceKey: string, name: string): Promise<void> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(name);
+      const at = await this.locate(panel, sourceKey, hint, { pilot: name });
       if (isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet shows that flight as cancelled.');
       const cells: Cell[] = [];
       if (at.pilot === '') cells.push({ a1: at.pilotCell, value: name });
@@ -257,8 +316,10 @@ export class SheetWriteBack {
    * shown as completed. Returns whether the backup's name was taken off the Backup Pilot cell (only where it still held `backupName`, the name this bot wrote).
    */
   completeAsBackup(panel: Panel, sourceKey: string, change: { from: string | null; to: string; backupName: string | null }): Promise<{ backupCleared: boolean }> {
+    const hint = this.hint(panel, sourceKey);
     return this.serial(panel, async () => {
-      const at = await this.locate(panel, sourceKey);
+      this.usable(change.to);
+      const at = await this.locate(panel, sourceKey, hint, { ...(change.from !== null ? { pilot: change.from } : {}), ...(change.backupName !== null ? { backup: change.backupName } : {}) });
       if (isCancelled(at.pilot)) throw new WriteBackError('CLOSED', 'The sheet shows that flight as cancelled.');
       if (at.ticked) throw new WriteBackError('CLOSED', 'The sheet already shows that flight as completed.');
       const cells: Cell[] = [];
@@ -639,8 +700,49 @@ export class SheetWriteBack {
     return new WriteBackError('GOOGLE', 'Something went wrong talking to Google Sheets.');
   }
 
+  /**
+   * The row this flight is on now. A flight's key is its route and day (with `#2` for a later row of the same two), so rows re-ordered, added or
+   * taken out since the last read can leave the key on another flight. With more than one row of that route and day, the row is found by what
+   * the flight is: its flight number and landing window first, then the name being looked for. Undefined when it cannot be told.
+   */
+  private rowFor(parsed: ParsedSchedule, values: string[][], sourceKey: string, hint: FlightHint | null, named: Named, iBackup: number): number | undefined {
+    if (!hint) return parsed.rowOf.get(sourceKey);
+    // A flight with no row of its own must not be given another flight's.
+    if (hint.removed || hint.setAside) return undefined;
+    const routeDay = sourceKey.replace(/#.*$/, '');
+    const rows = parsed.jobs
+      .filter((j) => j.key === routeDay || j.key.startsWith(`${routeDay}#`))
+      .map((j) => {
+        const row = parsed.rowOf.get(j.key) as number;
+        const cells = values[row - 1] ?? [];
+        const numbered = !!j.flightNumber && plainNumber(j.flightNumber) === plainNumber(hint.code);
+        const timed = j.availableFrom === hint.availableFrom && j.deadline === hint.deadline;
+        // A name on the row points to this flight only when no other flight has it that the row could belong to: among rows of this window,
+        // one with the same window; on a row of another window, any other of the route and day.
+        const says = (name: string | undefined, cell: string | undefined, elsewhere: ReadonlySet<string>) => name !== undefined && !elsewhere.has(name.trim().toLowerCase()) && same(cell ?? '', name);
+        const carries =
+          says(named.pilot, cells[parsed.cols.pilot], timed ? hint.names.twinPilots : hint.names.pilots) ||
+          (iBackup >= 0 && says(named.backup, cells[iBackup], timed ? hint.names.twinBackups : hint.names.backups));
+        return { key: j.key, row, numbered, other: !!j.flightNumber && !numbered, timed, carries, closed: j.closed === true, points: (numbered ? 16 : 0) + (timed ? 4 : 0) + (carries ? 2 : 0) + (j.aircraft === hint.aircraft ? 1 : 0) };
+      });
+    // The only row of its route and day, under the key it had, and the bot knows of no other flight it could be: it is that flight,
+    // whatever has been edited in it.
+    if (rows.length === 1 && rows[0]!.key === sourceKey && hint.known <= 1) return rows[0]!.row;
+    // Flights that only their place in the sheet told apart, and now there are fewer rows to be had than there are flights: which one lost
+    // its row can't be told. (A row closed to writes, cancelled or ticked, is not one to be had unless this flight's own name is on it.)
+    if (hint.twins > 1 && rows.filter((r) => r.timed && (!r.closed || r.carries)).length < hint.twins && !rows.some((r) => r.numbered)) return undefined;
+    // A flight known by its number whose number is on no row is not one of the rows that carry another number.
+    const possible = hint.ownNumber && !rows.some((r) => r.numbered) ? rows.filter((r) => !r.other) : rows;
+    const sure = possible.filter((r) => r.numbered || r.timed);
+    const pool = sure.length > 0 ? sure : possible.filter((r) => r.carries);
+    const best = Math.max(0, ...pool.map((r) => r.points));
+    const top = pool.filter((r) => r.points === best);
+    if (sure.length === 0 && top.length !== 1) return undefined;
+    return (top.find((r) => r.key === sourceKey) ?? top[0])?.row;
+  }
+
   /** Read the tab now and find the flight's row, its Pilot cell and its Completed box. */
-  private async locate(panel: Panel, sourceKey: string): Promise<Located> {
+  private async locate(panel: Panel, sourceKey: string, hint: FlightHint | null = null, named: Named = {}): Promise<Located> {
     const ref = this.refOf(panel);
     try {
       const tab = await this.api.readTab(ref);
@@ -649,13 +751,17 @@ export class SheetWriteBack {
         this.api.forgetTab?.(ref); // the sheet is not what was expected: do not trust the tab's name kept from before
         throw new WriteBackError('NO_COLUMNS', "I couldn't find the Pilot and Flight Completed columns in that sheet.");
       }
-      const row = parsed.rowOf.get(sourceKey);
+      const iBackup = findHeader(tab.values)?.names.findIndex((n) => n === 'backuppilot') ?? -1;
+      const row = this.rowFor(parsed, tab.values, sourceKey, hint, named, iBackup);
       if (row === undefined) {
         this.api.forgetTab?.(ref);
+        const routeDay = sourceKey.replace(/#.*$/, '');
+        if (!hint?.removed && [...parsed.rowOf.keys()].some((k) => k === routeDay || k.startsWith(`${routeDay}#`))) {
+          throw new WriteBackError('ROWS_CHANGED', "The rows for that route and day have changed since I last read the sheet, so I can't tell which of them is that flight.");
+        }
         throw new WriteBackError('FLIGHT_NOT_FOUND', "I can't find that flight in the sheet any more. Its row may have been changed or removed.");
       }
       const cells = tab.values[row - 1] ?? [];
-      const iBackup = findHeader(tab.values)?.names.findIndex((n) => n === 'backuppilot') ?? -1;
       return {
         ref,
         title: tab.title,

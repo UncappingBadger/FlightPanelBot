@@ -1,6 +1,6 @@
 import type { Panel } from '../db/store.js';
 import { canon, ImportError, parseCsv, parseJobsFile, parseLegChain, str } from './import.js';
-import { MAX_JOBS, normalizeFlightNumber, type FetchedJobs, type JobSource, type SourceAirline, type SourceJob } from './types.js';
+import { MAX_JOBS, normalizeFlightNumber, type FetchedJobs, type JobSource, type SourceAirline, type SourceJob, type UnreadableRow } from './types.js';
 
 /**
  * A job source that reads the schedule an airline already keeps in a Google Sheet.
@@ -123,17 +123,17 @@ export async function downloadSheetCsv(ref: SheetRef, fetchFn: typeof fetch = fe
 
 /* ------------------------------------------------------------------ reading cells */
 
-/** `11/1/2026` (month first, as US sheets show it), `13/11/2026` (day first when it can't be a month) or `2026-11-01`. */
+/** `11/1/2026` or `11-01-26` (month first, as US sheets show it), `13/11/2026` (day first when it can't be a month) or `2026-11-01`. */
 export function parseSheetDate(input: string): { y: number; m: number; d: number } | null {
   const t = input.trim();
   let y: number;
   let m: number;
   let d: number;
-  let hit = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(t);
+  let hit = /^(\d{1,2})([/-])(\d{1,2})\2(\d{2}|\d{4})$/.exec(t);
   if (hit) {
     const a = Number(hit[1]);
-    const b = Number(hit[2]);
-    y = Number(hit[3]) < 100 ? 2000 + Number(hit[3]) : Number(hit[3]);
+    const b = Number(hit[3]);
+    y = Number(hit[4]) < 100 ? 2000 + Number(hit[4]) : Number(hit[4]);
     [m, d] = a > 12 && b <= 12 ? [b, a] : [a, b];
   } else if ((hit = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))) {
     y = Number(hit[1]);
@@ -175,10 +175,11 @@ export const isCancelled = (v: string) => /^cancel/i.test(v.trim());
 
 /* ------------------------------------------------------------------ the schedule layout */
 
-export function findHeader(rows: string[][]): { index: number; names: string[] } | null {
+export function findHeader(rows: string[][]): { index: number; names: string[]; cells: string[] } | null {
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
-    const names = (rows[i] as string[]).map(canon);
-    if (names.includes('route') && names.includes('date')) return { index: i, names };
+    const cells = rows[i] as string[];
+    const names = cells.map(canon);
+    if (names.includes('route') && names.includes('date')) return { index: i, names, cells };
   }
   return null;
 }
@@ -198,6 +199,20 @@ export interface ParsedSchedule extends FetchedJobs {
 
 /** Column titles (as `canon` writes them) that hold the airline's own flight number of a flight. */
 export const FLIGHT_NUMBER_COLUMNS = ['flightnumber', 'flightno', 'flightnum', 'flightid', 'fltno', 'fltnumber', 'flt', 'flight'];
+
+/** The same with the airline's own name (or anything else) in front: "SKY Airways Flight #", "Airline Flight No.", "SKY Flt Number". */
+const PREFIXED_FLIGHT_NUMBER = /\S[\s_-]+(?:flight|flt)\.?\s*(?:#|№|no\.?|num\.?|number|id)\s*$/i;
+
+/**
+ * The column of the airline's flight numbers, by its heading. `own` is a heading with something in front of "Flight #": it is read like any other,
+ * but it is the airline's own column, so the bot never writes numbers into its empty cells. A heading the documentation names wins over it.
+ */
+export function findFlightNumberColumn(cells: string[]): { index: number; own: boolean } {
+  const exact = cells.findIndex((c) => FLIGHT_NUMBER_COLUMNS.includes(canon(c)));
+  if (exact >= 0) return { index: exact, own: false };
+  const prefixed = cells.findIndex((c) => PREFIXED_FLIGHT_NUMBER.test(c.trim()));
+  return { index: prefixed, own: prefixed >= 0 };
+}
 
 /** Column titles (as `canon` writes them) that hold a flight's profit: the airline's own, not a pilot's pay. */
 export const PROFIT_COLUMNS = ['profitmade', 'profit', 'flightprofit', 'netprofit'];
@@ -260,7 +275,7 @@ const hasWindowColumn = (names: string[]) => names.some((n) => n.includes('windo
  * Read a schedule tab: one flight per row, with a route, a date, a landing window and the pilot who
  * signed up. A row that can't be read is skipped and reported, never allowed to stop the others.
  */
-function parseScheduleRows(rows: string[][], header: { index: number; names: string[] }, now: number, keepOld = false): ParsedSchedule {
+function parseScheduleRows(rows: string[][], header: { index: number; names: string[]; cells: string[] }, now: number, keepOld = false): ParsedSchedule {
   const { names } = header;
   const at = (pred: (n: string) => boolean) => names.findIndex(pred);
   const iRoute = at((n) => n === 'route');
@@ -275,8 +290,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const iDeduction = at((n) => DEDUCTION_COLUMNS.includes(n));
   const iDistance = at((n) => DISTANCE_COLUMNS.includes(n));
   const iSequence = at((n) => SEQUENCE_COLUMNS.includes(n));
-  // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No".
-  const iFlightNo = at((n) => FLIGHT_NUMBER_COLUMNS.includes(n));
+  // An optional column of the airline's own flight numbers: "Flight Number", "Flight No", "Flight #", "Flight ID", "Flt No", or one of them with a name in front.
+  const { index: iFlightNo, own: ownNumberColumn } = findFlightNumberColumn(header.cells);
 
   const warnings: string[] = [];
   const jobs: SourceJob[] = [];
@@ -284,6 +299,8 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
   const seenKeys = new Map<string, number>();
   const blankDistances: string[] = [];
   const blankNumbers = new Set<string>();
+  const unreadable: UnreadableRow[] = [];
+  const dayKeyOf = (d: { y: number; m: number; d: number }) => `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
 
   for (let i = header.index + 1; i < rows.length; i++) {
     const r = rows[i] as string[];
@@ -291,11 +308,20 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     const cell = (c: number) => (c >= 0 ? (r[c] ?? '').trim() : '');
 
     const route = cell(iRoute);
-    if (!route || /^week\b/i.test(route)) continue; // blank filler and "Week 2" divider rows
+    if (/^week\b/i.test(route)) continue; // "Week 2" divider rows
+    const named = cell(iPilot) && !isCancelled(cell(iPilot)) ? str(cell(iPilot), 40) : null;
+    if (!route) {
+      // Blank filler, unless a pilot and a day are there: then the route has been cleared by mistake, or is about to be typed.
+      const when = parseSheetDate(cell(iDate));
+      if (named && when) unreadable.push({ row: rowNo, route: null, day: dayKeyOf(when), pilot: named });
+      continue;
+    }
 
     const legs = parseLegChain(route);
     if (typeof legs === 'string') {
       warnings.push(`row ${rowNo}: route "${str(route, 30)}" ${legs}`);
+      const when = parseSheetDate(cell(iDate));
+      unreadable.push({ row: rowNo, route: null, day: when ? dayKeyOf(when) : null, pilot: named });
       continue;
     }
     const label = `row ${rowNo} (${legs.map((l) => `${l.dep}-${l.arr}`).join(', ')})`;
@@ -303,6 +329,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     const day = parseSheetDate(cell(iDate));
     if (!day) {
       warnings.push(`${label}: the date "${str(cell(iDate), 20) ?? ''}" isn't a date`);
+      unreadable.push({ row: rowNo, route: legs.map((l) => `${l.dep}-${l.arr}`).join('+'), day: null, pilot: named });
       continue;
     }
     const midnight = Date.UTC(day.y, day.m - 1, day.d);
@@ -316,6 +343,10 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     } else {
       warnings.push(`${label}: couldn't read the landing window "${str(cell(iWindow), 30) ?? ''}", so the whole day is used`);
     }
+    // Counted before an old row is left out, so a row's key does not change when an earlier row of the same route and day is no longer read.
+    const base = `${legs.map((l) => `${l.dep}-${l.arr}`).join('+')}@${dayKeyOf(day)}`;
+    const nth = (seenKeys.get(base) ?? 0) + 1;
+    seenKeys.set(base, nth);
     if (!keepOld && deadline < now - KEEP_FINISHED_FOR_MS) continue; // long over; nothing to show (unless every row is wanted, to find the empty ones)
 
     const pilot = cell(iPilot);
@@ -328,17 +359,12 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     // Flights that depend on one another carry a number in the sheet (1, 2, 3...) in place of a colour; it is shown with the flight.
     const sequence = str(cell(iSequence), 20);
 
-    const dayKey = `${day.y}-${String(day.m).padStart(2, '0')}-${String(day.d).padStart(2, '0')}`;
-    const base = `${legs.map((l) => `${l.dep}-${l.arr}`).join('+')}@${dayKey}`;
-    const nth = (seenKeys.get(base) ?? 0) + 1;
-    seenKeys.set(base, nth);
-
     const key = nth === 1 ? base : `${base}#${nth}`;
     rowOf.set(key, rowNo);
     // A Distance cell with nothing in it (not a space, not a zero) is one the bot can fill in. A cancelled flight is not worth it.
     if (iDistance >= 0 && !cancelled && (r[iDistance] ?? '') === '') blankDistances.push(key);
     // The same for a Flight Number cell (nothing in it at all: not a space, not a note).
-    if (iFlightNo >= 0 && (r[iFlightNo] ?? '') === '') blankNumbers.add(key);
+    if (iFlightNo >= 0 && !ownNumberColumn && (r[iFlightNo] ?? '') === '') blankNumbers.add(key);
 
     let flightNumber: string | null = null;
     const rawNumber = cell(iFlightNo);
@@ -349,6 +375,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     jobs.push({
       key,
       flightNumber,
+      ...(rawNumber ? { numberCell: rawNumber } : {}),
       title: null,
       legs: legs.map((l) => ({ ...l, heldBy })),
       aircraft: str(cell(iAircraft), 40),
@@ -359,6 +386,7 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
       notes: [sequence ? `Flight sequence: ${sequence}` : null, backupName ? `Backup: ${backupName}` : null].filter(Boolean).join(' · ') || null,
       closed: cancelled || completed,
       completed,
+      ...(cancelled ? { cancelled: true } : {}),
     });
   }
 
@@ -393,8 +421,9 @@ function parseScheduleRows(rows: string[][], header: { index: number; names: str
     warnings: capWarnings(warnings),
     rowOf,
     cols: { pilot: iPilot, done: iDone, profit: iProfit, pay: iPay, deduction: iDeduction, distance: iDistance, flightNo: iFlightNo },
+    ...(unreadable.length > 0 ? { unreadable } : {}),
     ...(iDistance >= 0 ? { blankDistances: blankDistances.filter((k) => kept.has(k)) } : {}),
-    ...(iFlightNo >= 0
+    ...(iFlightNo >= 0 && !ownNumberColumn
       ? { blankFlightNumbers: jobs.filter((j) => blankNumbers.has(j.key)).map((j) => ({ key: j.key, legs: j.legs.map((l) => ({ dep: l.dep, arr: l.arr })), availableFrom: j.availableFrom, deadline: j.deadline })) }
       : {}),
   };
@@ -425,6 +454,7 @@ export function parseSheetCsv(text: string, now: number): FetchedJobs {
     return {
       jobs: schedule.jobs,
       warnings: schedule.warnings,
+      ...(schedule.unreadable ? { unreadable: schedule.unreadable } : {}),
       ...(schedule.blankDistances ? { blankDistances: schedule.blankDistances } : {}),
       ...(everyRow ? { blankFlightNumbers: everyRow } : {}),
     };

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { dailyHours, type Config } from '../config.js';
@@ -55,19 +55,21 @@ export function normalizeChannel(raw: string): string | null {
   return /^[a-z0-9_]{3,25}$/.test(t) ? t : null;
 }
 
+// Each value stands on its own (`catch`): one that is not what it should be (a typo in a hand-edited file) falls back to its default and
+// leaves the others, the tokens among them, as they are.
 const FileSchema = z.object({
-  discordToken: z.string().default(''),
-  checkForUpdates: z.boolean().default(true),
-  logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  fshubAccessToken: z.string().default(''),
-  dailyNoteUserId: z.string().default(''),
-  dailyNoteFromHour: z.number().int().min(0).max(23).default(14),
-  dailyNoteToHour: z.number().int().min(1).max(24).default(23),
-  twitchChannel: z.string().default(''),
-  twitchCommands: z.boolean().default(true),
-  twitchBanter: z.boolean().default(true),
-  twitchPilotId: z.number().int().positive().nullable().default(null),
-  twitchClientId: z.string().default(''),
+  discordToken: z.string().default('').catch(''),
+  checkForUpdates: z.boolean().default(true).catch(true),
+  logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info').catch('info'),
+  fshubAccessToken: z.string().default('').catch(''),
+  dailyNoteUserId: z.string().default('').catch(''),
+  dailyNoteFromHour: z.number().int().min(0).max(23).default(14).catch(14),
+  dailyNoteToHour: z.number().int().min(1).max(24).default(23).catch(23),
+  twitchChannel: z.string().default('').catch(''),
+  twitchCommands: z.boolean().default(true).catch(true),
+  twitchBanter: z.boolean().default(true).catch(true),
+  twitchPilotId: z.number().int().positive().nullable().default(null).catch(null),
+  twitchClientId: z.string().default('').catch(''),
 });
 
 /** Tidy a pasted token: no spaces, quotes, or a leading "Bot ". */
@@ -155,7 +157,27 @@ function writeAtomic(path: string, text: string): void {
   renameSync(tmp, path);
 }
 
+/**
+ * A settings file that cannot be read as a whole (a missing bracket, say) reads as empty, so saving would replace it and the tokens in it
+ * would be gone. A copy is kept beside it first, as `settings.json.unreadable`.
+ */
+function keepUnreadable(paths: HostPaths): void {
+  if (!existsSync(paths.settings)) return;
+  try {
+    const raw: unknown = JSON.parse(readSettingsText(paths));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return;
+  } catch {
+    /* not readable: keep it */
+  }
+  try {
+    copyFileSync(paths.settings, `${paths.settings}.unreadable`);
+  } catch {
+    /* no copy could be made; saving goes ahead, as it did before */
+  }
+}
+
 export function saveSettings(paths: HostPaths, settings: HostSettings): void {
+  keepUnreadable(paths);
   // The daily-note settings are written only when somebody has set them, so nobody else's file carries them.
   const { dailyNote, twitch, ...rest } = settings;
   const out = {

@@ -8,6 +8,7 @@ import { silentLogger, type Logger } from '../util/log.js';
 import { isUnsetPay, parseMoney, readSheetFlights, type SheetFlight, type SheetFlights } from './contributions.js';
 import { callsignCode } from './flightEtas.js';
 import { fshubFlightFacts, type FlightFacts } from './fshubDistances.js';
+import { looselySame } from './payroll.js';
 import { paidByDistance, pilotPay, type PayBasis } from './pilotPay.js';
 import { fineFor, limitsFor, normalizeAircraft, readLanding, type FineTier, type SafetyFine, type SafetyPolicy } from './safetyPay.js';
 import type { ProfitFill } from './writeback.js';
@@ -110,6 +111,8 @@ export interface ProfitFillPlan extends ProfitFill {
   payPlan: PayPlan;
   /** Only where the airline asked for deductions to be written and this flight's pay is cut: what the Safety Deductions cell holds (`deduction` is the amount when it can be written). */
   deductionCell?: DeductionCell;
+  /** The logbook's name for who flew it, when that is not the name in the sheet: whoever confirms the fill should check it. */
+  logbookPilot?: string;
 }
 
 /** A Profit Made that is in the sheet and is not what Aeroconomy says. */
@@ -145,6 +148,8 @@ export interface ProfitAnalysis {
   /** Completed rows no logbook flight was found for, and rows more than one flight could be (left alone). */
   unmatched: number;
   ambiguous: number;
+  /** Rows left alone because the only flight that fits was flown by another pilot the sheet names. */
+  others?: number;
   /** Rows that would be filled but are held for a later run because safety pay is on and FsHub's landing rate for the flight could not be read yet. */
   waiting?: number;
   /** Rows that would be filled but are left alone because safety pay is on and the flight's landing rate cannot be trusted (managers are told). */
@@ -164,12 +169,14 @@ interface Pair {
  * Pair the completed rows of a sheet with the logbook flights they are. A row is a flight with the same two airports whose landing falls
  * in the row's day (a little before it, or up to a day and a half after it begins); if several flights could be it, the pilot's name
  * settles it, and if that does not, the row is left alone. A flight cannot belong to two rows. A row of several legs (its route has
- * several arrows) is never the same as one flight, so it is never paired.
+ * several arrows) is never the same as one flight, so it is never paired. A flight the logbook gives to another pilot the sheet names
+ * (`sheetPilots`) is that pilot's, even when it is the only one that fits: the row is left alone.
  */
-export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pair[]; unmatched: SheetFlight[]; ambiguous: SheetFlight[] } {
+export function pairRows(rows: SheetFlight[], flights: LogFlight[], sheetPilots: readonly string[] = rows.map((r) => r.pilot)): { pairs: Pair[]; unmatched: SheetFlight[]; ambiguous: SheetFlight[]; others: SheetFlight[] } {
   const picks = new Map<SheetFlight, LogFlight>();
   const unmatched: SheetFlight[] = [];
   const ambiguous: SheetFlight[] = [];
+  const others: SheetFlight[] = [];
   for (const row of rows) {
     const candidates = flights.filter((f) => row.route === `${f.dep} → ${f.arr}` && f.landedAt >= row.day - EARLY_MS && f.landedAt <= row.day + LATE_MS);
     if (candidates.length === 0) {
@@ -178,8 +185,9 @@ export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pa
     }
     const byPilot = candidates.filter((f) => f.pilotName !== null && norm(f.pilotName) === norm(row.pilot));
     const only = candidates.length === 1 ? candidates[0] : byPilot.length === 1 ? byPilot[0] : undefined;
-    if (only) picks.set(row, only);
-    else ambiguous.push(row);
+    if (!only) ambiguous.push(row);
+    else if (flownByAnother(row, only, sheetPilots)) others.push(row);
+    else picks.set(row, only);
   }
   const claims = new Map<LogFlight, number>();
   for (const f of picks.values()) claims.set(f, (claims.get(f) ?? 0) + 1);
@@ -188,7 +196,14 @@ export function pairRows(rows: SheetFlight[], flights: LogFlight[]): { pairs: Pa
     if ((claims.get(flight) ?? 0) > 1) ambiguous.push(row);
     else pairs.push({ row, flight });
   }
-  return { pairs, unmatched, ambiguous };
+  return { pairs, unmatched, ambiguous, others };
+}
+
+/** Does the logbook give this flight to somebody else the sheet names? A name the sheet does not have may only be another spelling of the row's pilot. */
+function flownByAnother(row: SheetFlight, flight: LogFlight, sheetPilots: readonly string[]): boolean {
+  const flew = flight.pilotName;
+  if (!flew || looselySame(flew, row.pilot)) return false;
+  return sheetPilots.some((p) => !looselySame(p, row.pilot) && looselySame(p, flew));
 }
 
 /**
@@ -268,7 +283,7 @@ export function compareProfits(
 ): Omit<ProfitAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> & { needFacts: number[] } {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
   const completed = rows.filter((r) => r.completed);
-  const { pairs, unmatched, ambiguous } = pairRows(completed, usable);
+  const { pairs, unmatched, ambiguous, others } = pairRows(completed, usable, rows.map((r) => r.pilot));
   const fills: ProfitFillPlan[] = [];
   const different: ProfitDifference[] = [];
   const needFacts = new Set<number>();
@@ -346,6 +361,7 @@ export function compareProfits(
         logbookNm: flight.distanceNm,
         payPlan,
         ...(deductionCell ? { deductionCell } : {}),
+        ...(flight.pilotName && row.pilot.trim() !== '' && !looselySame(flight.pilotName, row.pilot) ? { logbookPilot: flight.pilotName } : {}),
       });
     } else if (Math.abs(row.profit - flight.profit) <= SAME_WITHIN) agree++;
     else different.push({ row: row.row, route: row.route, day: row.day, callsign: flight.callsign ?? '', sheet: row.profit, aeroconomy: flight.profit });
@@ -353,7 +369,7 @@ export function compareProfits(
   fills.sort((a, b) => a.row - b.row);
   different.sort((a, b) => a.row - b.row);
   held.sort((a, b) => a.row - b.row);
-  return { logbookFlights: flights.length, usableFlights: usable.length, sheetCompleted: completed.length, matched: pairs.length, agree, fills, different, unreadable, unmatched: unmatched.length, ambiguous: ambiguous.length, waiting, held, needFacts: [...needFacts] };
+  return { logbookFlights: flights.length, usableFlights: usable.length, sheetCompleted: completed.length, matched: pairs.length, agree, fills, different, unreadable, unmatched: unmatched.length, ambiguous: ambiguous.length, others: others.length, waiting, held, needFacts: [...needFacts] };
 }
 
 /* ------------------------------------------------------------------ deductions for flights already filled in */
@@ -423,7 +439,7 @@ export function compareDeductions(
   aircraft: ReadonlyMap<number, string | null> = new Map(),
 ): Omit<DeductionAnalysis, 'business' | 'aircraft' | 'leased' | 'leasedHidden' | 'leasedProblem' | 'readAt'> & { needFacts: number[] } {
   const usable = flights.filter((f) => isAirlineCallsign(f.callsign, code));
-  const { pairs } = pairRows(rows.filter((r) => r.completed), usable);
+  const { pairs } = pairRows(rows.filter((r) => r.completed), usable, rows.map((r) => r.pilot));
   const out = { matched: pairs.length, fills: [] as DeductionFill[], already: 0, uncut: 0, paidInFull: 0, differs: 0, unpaid: 0, noRate: 0, waiting: 0 };
   const needFacts: number[] = [];
   for (const { row, flight } of pairs) {

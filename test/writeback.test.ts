@@ -11,6 +11,7 @@ import { UserError } from '../src/discord/errors.js';
 import { GoogleAuthError, loadServiceAccount, signJwt, TOKEN_URL, tokenProvider } from '../src/google/serviceAccount.js';
 import { SheetsApi, SheetsError } from '../src/google/sheetsApi.js';
 import { colLetter, parseScheduleValues } from '../src/jobs/sheet.js';
+import { backupSheetCleaner } from '../src/services/backupSheet.js';
 import { COMPLETE_AFTER_DEADLINE_MS, COMPLETION_GRACE_MS, JobError } from '../src/services/jobs.js';
 import { refreshIntervalFor, REFRESH_INTERVAL_MS, SHEET_REFRESH_INTERVAL_MS } from '../src/services/refresh.js';
 import { SheetWriteBack, WriteBackError } from '../src/services/writeback.js';
@@ -588,6 +589,65 @@ describe('pilots reserving, releasing and completing flights with write-back on'
       const calls = await release(alice, K.open);
       assert.equal(g.cell('E3'), 'Sam');
       assert.doesNotMatch(calls.edits[0].content, /taken your name off/);
+    });
+
+    it('is free again at once, not shown as taken under their name until the next read', async () => {
+      await reserve(alice, 'TST-001');
+      syncFromSheet(); // the hourly read has seen "alice" in the Pilot column
+      await release(alice, K.open);
+      assert.equal(view(K.open).legs[0]!.sheetHolder, null);
+      await reserve(bob, 'TST-001');
+      assert.equal(view(K.open).legs[0]!.holder?.username, 'bob');
+      assert.equal(g.cell('E3'), 'bob');
+    });
+
+    it('takes the name off even when it is given back while the sheet is still being written', async () => {
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let held = false;
+      const slow = (async (input: string | URL | Request, init?: RequestInit) => {
+        if (!held && String(input).endsWith('/values:batchUpdate')) {
+          held = true;
+          await gate;
+        }
+        return g.fetchFn(input, init);
+      }) as typeof fetch;
+      d = makeDiscordHarness(h, { writeback: new SheetWriteBack(new SheetsApi(tokenProvider(account, slow, () => h.clock.now), slow), account.email, { now: () => h.clock.now }) });
+      const reserving = reserve(alice, 'TST-001');
+      while (!held) await settle(5);
+      const releasing = release(alice, K.open);
+      await settle(10);
+      open();
+      await Promise.all([reserving, releasing]);
+      await settle(40);
+      assert.equal(view(K.open).legs[0]!.holder, null);
+      assert.equal(g.cell('E3'), '', 'the sheet does not keep the name of someone who no longer holds the flight');
+    });
+
+    it('takes a backup name off even when they stand down while the sheet is still being written', async () => {
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let held = false;
+      const slow = (async (input: string | URL | Request, init?: RequestInit) => {
+        if (!held && String(input).endsWith('/values:batchUpdate')) {
+          held = true;
+          await gate;
+        }
+        return g.fetchFn(input, init);
+      }) as typeof fetch;
+      const writeback = new SheetWriteBack(new SheetsApi(tokenProvider(account, slow, () => h.clock.now), slow), account.email, { now: () => h.clock.now });
+      d = makeDiscordHarness(h, { writeback });
+      // as the running bot is wired: a backup spot that ends has its name taken off the sheet
+      h.events.subscribe(backupSheetCleaner({ store: h.store, writeback }));
+      await press(bob, `panel:backup:${pid()}`);
+      const standingBy = say(bob, 'TST-002');
+      while (!held) await settle(5);
+      await press(bob, `panel:release:${pid()}`, { values: [`b:${job(K.taken).id}`] });
+      open();
+      await standingBy;
+      await settle(40);
+      assert.equal(view(K.taken).backup, null);
+      assert.equal(g.cell('F4'), '');
     });
 
     it('still releases, and says the sheet needs a manager, when Google cannot be reached', async () => {

@@ -138,7 +138,8 @@ describe('giving a flight back that nobody is standing by for', () => {
       h.jobs.complete(idOf('TST-001'), USER_A.discordId);
       const calls = await give(alice, `${idOf('TST-001')}:1`);
       assert.deepEqual(dmsAbout(alice), []);
-      assert.match(calls.edits.at(-1).content, /Nothing to release|Released/);
+      assert.equal(calls.edits.at(-1).content, 'TST-001 has already finished, so there is nothing to give back.');
+      assert.equal(h.store.getHolder(idOf('TST-001'), 1)?.discordId, USER_A.discordId, 'it stays with the pilot who flew it');
     });
 
     it('is not said when nothing was given back (someone else holds the leg, or it was already given back)', async () => {

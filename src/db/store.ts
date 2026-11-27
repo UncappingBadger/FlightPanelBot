@@ -2,6 +2,7 @@ import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite';
 import { callerPath } from '../util/debugBuild.js';
 import type { Logger } from '../util/log.js';
 import { safetyPolicyOf, type SafetyLimits, type SafetyPolicy } from '../services/safetyPay.js';
+import type { FlightHint } from '../services/writeback.js';
 import { installReservationAudit, type AuditRow } from './debugAudit.js';
 
 /* ------------------------------------------------------------------ types */
@@ -790,15 +791,15 @@ export class Store {
     return this.run('DELETE FROM panels WHERE id = ?', id).changes > 0;
   }
 
-  /** Hand out the next job code for a panel (DMO-001, DMO-002, ...). Call inside a transaction. */
-  allocateCode(panelId: number): string {
+  /** Hand out the next job code for a panel (DMO-001, DMO-002, ...), never one of `spoken` (about to be given to another). Call inside a transaction. */
+  allocateCode(panelId: number, spoken: ReadonlySet<string> = new Set()): string {
     const p = this.getPanel(panelId);
     if (!p) throw new Error(`No panel ${panelId}`);
     // A flight number from the schedule may already be using what would be next (a sheet that numbers flights `WA-005`),
     // so skip any that is taken.
     for (let seq = p.nextSeq; ; seq++) {
       const code = `${p.prefix}-${String(seq).padStart(3, '0')}`;
-      if (this.getJobByCode(panelId, code)) continue;
+      if (spoken.has(code) || this.getJobByCode(panelId, code)) continue;
       this.run('UPDATE panels SET next_seq = ? WHERE id = ?', seq + 1, panelId);
       return code;
     }
@@ -807,6 +808,50 @@ export class Store {
   /** Give a flight a different ID (an airline's flight number replacing the automatic one). Call inside a transaction. */
   setJobCode(jobId: number, code: string): void {
     this.run('UPDATE jobs SET code = ? WHERE id = ?', code, jobId);
+  }
+
+  /** What a write to the sheet needs to know of the flight with this key, to find its row again when rows have moved. */
+  flightHint(panelId: number, sourceKey: string): FlightHint | null {
+    const job = this.getJobBySourceKey(panelId, sourceKey);
+    if (!job) return null;
+    const routeDay = sourceKey.replace(/#.*$/, '');
+    // Only the others still open are counted with this one. A finished or cancelled flight can outlive its row in the sheet, and counting it
+    // would then hold up every write to the flights that are left; its row, while it is there, is closed to writes anyway.
+    // (A route and day has no `%` or `_` in it, so it can stand in a LIKE as it is.)
+    const sameRouteDay = `FROM jobs WHERE panel_id = ? AND id != ? AND status != 'removed' AND source_key NOT LIKE '%#gone-%' AND (source_key = ? OR source_key LIKE ?)`;
+    const args = [panelId, job.id, routeDay, `${routeDay}#%`] as const;
+    const others = this.all(`SELECT available_from, deadline ${sameRouteDay} AND status = 'open'`, ...args);
+    const at = (v: unknown) => (v === null || v === undefined ? null : n(v));
+    const sameWindow = (r: Row) => at(r.available_from) === job.availableFrom && at(r.deadline) === job.deadline;
+    // The names the others have in the sheet are asked for whether they are open or not, and whether or not their row could be read last
+    // time: a pilot's finished flight still has their name on its row, and so has one whose row is being put right.
+    const named = (table: string, column: string) =>
+      this.all(
+        `SELECT t.${column} AS name, j.available_from, j.deadline FROM ${table} t JOIN jobs j ON j.id = t.job_id
+         WHERE t.${column} IS NOT NULL AND t.${column} != '' AND j.panel_id = ? AND j.id != ? AND j.status != 'removed' AND (j.source_key = ? OR j.source_key LIKE ?)`,
+        ...args,
+      );
+    const pilotRows = [...named('job_legs', 'sheet_holder'), ...named('leg_reservations', 'sheet_name')];
+    const backupRows = named('job_backups', 'sheet_name');
+    const set = (rows: Row[]) => new Set(rows.map((r) => s(r.name).trim().toLowerCase()));
+    return {
+      code: job.code,
+      // Anything but the bot's own `ABC-012` is a number the schedule gave the flight, which its row should still carry.
+      ownNumber: !new RegExp(`^${(this.getPanel(panelId)?.prefix ?? '').replace(/[^A-Za-z0-9]/g, '')}-\\d{3,}$`).test(job.code),
+      availableFrom: job.availableFrom,
+      deadline: job.deadline,
+      aircraft: job.aircraft,
+      removed: job.status === 'removed',
+      setAside: sourceKey.includes('#gone-'),
+      known: others.length + 1,
+      twins: others.filter(sameWindow).length + (job.status === 'open' ? 1 : 0),
+      names: { pilots: set(pilotRows), backups: set(backupRows), twinPilots: set(pilotRows.filter(sameWindow)), twinBackups: set(backupRows.filter(sameWindow)) },
+    };
+  }
+
+  /** Move a flight to the key of the row it is on now. Call inside a transaction. */
+  setJobSourceKey(jobId: number, sourceKey: string): void {
+    this.run('UPDATE jobs SET source_key = ? WHERE id = ?', sourceKey, jobId);
   }
 
   /* ------------------------------------------------------------------ jobs and legs */
@@ -1420,6 +1465,21 @@ export class Store {
     return n(this.get('SELECT count(*) AS c FROM fshub_flights WHERE panel_id = ?', panelId)?.c ?? 0);
   }
 
+  /** Remember that these FsHub flights have completed this flight, so none of them completes another. Call inside a transaction. */
+  markFshubUsed(panelId: number, flightIds: number[], jobId: number, now: number): void {
+    for (const flightId of flightIds) this.run('INSERT OR REPLACE INTO fshub_used(panel_id, flight_id, job_id, used_at) VALUES (?,?,?,?)', panelId, flightId, jobId, now);
+  }
+
+  /** The FsHub flights of a panel that have completed a flight: FsHub flight ID to the job it completed. */
+  listFshubUsed(panelId: number): Map<number, number> {
+    return new Map(this.all('SELECT flight_id, job_id FROM fshub_used WHERE panel_id = ?', panelId).map((r) => [n(r.flight_id), n(r.job_id)]));
+  }
+
+  /** Forget uses noted before this: the flights themselves are long gone by then. */
+  pruneFshubUsed(before: number): void {
+    this.run('DELETE FROM fshub_used WHERE used_at < ?', before);
+  }
+
   /** Forget flights that landed before `before`. */
   pruneFshubFlights(panelId: number, before: number): number {
     return this.run('DELETE FROM fshub_flights WHERE panel_id = ? AND arrived_at < ?', panelId, before).changes;
@@ -1924,6 +1984,11 @@ export class Store {
     }
     if (patch.ownerId !== undefined) set('owner_id', patch.ownerId);
     if (patch.lastRunDay !== undefined) set('last_run_day', patch.lastRunDay);
+    if (patch.sendTo !== undefined) {
+      if (patch.sendTo !== 'here' && patch.sendTo !== 'dm' && patch.sendTo !== 'channel') throw new Error(`The pay list goes here, to a DM or to a channel, not ${String(patch.sendTo)}`);
+      set('send_to', patch.sendTo);
+    }
+    if (patch.channelId !== undefined) set('channel_id', patch.channelId);
     if (sets.length > 0) this.run(`UPDATE payroll_settings SET ${sets.join(', ')} WHERE panel_id = ?`, ...params, panelId);
     return this.getPayrollSettings(panelId) as PayrollSettings;
   }
@@ -1977,6 +2042,11 @@ export class Store {
   lastPaidAccount(panelId: number, fshubId: number): string | null {
     const r = this.get(`SELECT account FROM payroll_payments WHERE panel_id = ? AND fshub_id = ? AND status = 'paid' ORDER BY updated_at DESC, id DESC LIMIT 1`, panelId, fshubId);
     return r ? s(r.account) : null;
+  }
+
+  /** Every payment of a panel that was made, or was begun and never answered, oldest first. */
+  ledgerOutstanding(panelId: number): LedgerEntry[] {
+    return this.all(`SELECT * FROM payroll_payments WHERE panel_id = ? AND status != 'failed' ORDER BY id`, panelId).map(toLedgerEntry);
   }
 
   /** The newest ledger rows, newest first. */
@@ -2078,6 +2148,10 @@ export interface PayrollSettings {
   ownerId: string | null;
   /** The Zulu day (midnight, epoch ms) a list was last made for. */
   lastRunDay: number | null;
+  /** Where the list is shown. Chosen for the pay list alone, since it holds bank account numbers: never taken from where profit previews go. */
+  sendTo: ProfitSendTo;
+  /** The channel it is posted in when `sendTo` is 'channel'; kept when it is switched away, so switching back needs no channel. */
+  channelId: string | null;
 }
 
 /** One payment the bot has begun to make. */
@@ -2106,6 +2180,8 @@ const toPayrollSettings = (r: Row): PayrollSettings => ({
   runAtMinute: n(r.run_at_minute),
   ownerId: sn(r.owner_id),
   lastRunDay: r.last_run_day === null || r.last_run_day === undefined ? null : n(r.last_run_day),
+  sendTo: s(r.send_to) === 'dm' ? 'dm' : s(r.send_to) === 'channel' ? 'channel' : 'here',
+  channelId: sn(r.channel_id),
 });
 
 const toLedgerEntry = (r: Row): LedgerEntry => ({

@@ -83,7 +83,8 @@ export type PayFlag =
   | 'name-differs' // FsHub knows this ID under a different name
   | 'account-changed' // not the account this pilot was last paid into
   | 'bad-amount' // not a sensible amount
-  | 'no-distance'; // lost money, so its pay depends on the distance flown, and FsHub's distance for it is not known
+  | 'no-distance' // lost money, so its pay depends on the distance flown, and FsHub's distance for it is not known
+  | 'maybe-paid'; // a payment the ledger has no longer matches any row, and it may have been this flight's
 
 export const FLAG_TEXT: Record<PayFlag, string> = {
   'no-info': 'not on the Pilot Info tab',
@@ -96,6 +97,7 @@ export const FLAG_TEXT: Record<PayFlag, string> = {
   'account-changed': 'not the account they were last paid into',
   'bad-amount': 'the amount is not between $0.01 and $500,000',
   'no-distance': "it lost money, so its pay depends on the distance flown, and I couldn't get FsHub's distance for it: check the amount",
+  'maybe-paid': 'it may already be paid (a payment I made no longer matches its row): check the bank, and if it was, tick Pilot Paid',
 };
 
 /** One payment on a list. */
@@ -199,8 +201,26 @@ export function readPilotInfo(csv: string): PilotInfoRead {
 
 /* ------------------------------------------------------------------ names */
 
-const words = (text: string): string[] => text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+/**
+ * The words of a name, in any alphabet. Accents on Latin letters are not counted (`José` is `Jose`); every other letter and mark is, so two
+ * names written in Cyrillic, Greek or any other script stay two names.
+ */
+const words = (text: string): string[] =>
+  text
+    .normalize('NFD')
+    .replace(/(\p{Script=Latin})[̀-ͯ]+/gu, '$1')
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
 export const nameKey = (text: string): string => words(text).join(' ');
+/** The same person by name. A name with no letters or numbers in it is nobody's, so it never matches, not even itself. */
+export const samePilot = (a: string, b: string): boolean => {
+  const key = nameKey(a);
+  return key !== '' && key === nameKey(b);
+};
 
 /** Are these two names plausibly one person? Equal with the spaces gone, or all the words of the shorter one are in the longer. */
 export function looselySame(a: string, b: string): boolean {
@@ -223,10 +243,94 @@ export interface IdentityBook {
   knowsId(id: number): boolean;
 }
 
+/* ------------------------------------------------------------------ which rows the payments already made cover */
+
+/** A payment the ledger has, made or being made with no answer yet. */
+export interface PaidRecord {
+  sourceKey: string | null;
+  pilot: string;
+  fshubId: number | null;
+  account: string;
+  cents: number;
+}
+
+const DAY = 86_400_000;
+/** A flight's key in the sheet (`EGLL-EGPH@2026-11-12`, perhaps with `#2` for a later row of the same two): its route and its day. */
+function keyParts(sourceKey: string): { route: string; day: number } | null {
+  const m = /^(.+)@(\d{4})-(\d{2})-(\d{2})(?:#.*)?$/.exec(sourceKey);
+  return m ? { route: m[1] as string, day: Date.UTC(Number(m[2]), Number(m[3]) - 1, Number(m[4])) } : null;
+}
+
+/** Is this payment the amount this row's Pilot Pay comes to (as it stands, or raised to the minimum)? */
+function cellPays(f: Pick<SheetFlight, 'payRaw'>, cents: number): boolean {
+  const dollars = parseMoney(f.payRaw);
+  return dollars !== null && (cents === centsOf(dollars) || cents === Math.max(centsOf(dollars), centsOf(PAY_MINIMUM)));
+}
+
+/**
+ * Which completed rows of the sheet the payments already made cover. A row's key moves when rows of the same route and day are added, taken
+ * away or re-ordered, so a payment is not looked for by its key alone: it covers one completed row of its route, day and pilot, the one whose
+ * pay is the amount paid first, then the one still under its key, then one whose box is ticked. Each payment covers one row and each row one
+ * payment. `loose` are the payments no row accounts for any more (the row was re-dated, re-routed, renamed or taken out of the sheet).
+ */
+export function matchPaid<T extends PaidRecord>(flights: SheetFlight[], records: readonly T[]): { taken: Map<string, T>; loose: T[] } {
+  const completed = flights.filter((f) => f.completed);
+  const rows = completed.flatMap((f) => {
+    const at = keyParts(f.sourceKey);
+    return at ? [{ f, ...at }] : [];
+  });
+  const pairs = records
+    .flatMap((record, i) => {
+      const was = record.sourceKey === null ? null : keyParts(record.sourceKey);
+      if (!was) return [];
+      return rows
+        .filter((r) => r.route === was.route && r.day === was.day && samePilot(r.f.pilot, record.pilot))
+        .map((r) => ({ i, f: r.f, points: (cellPays(r.f, record.cents) ? 4 : 0) + (r.f.sourceKey === record.sourceKey ? 2 : 0) + (r.f.pilotPaid === true ? 1 : 0) }));
+    })
+    .sort((a, b) => b.points - a.points || a.i - b.i || a.f.row - b.f.row);
+  const taken = new Map<string, T>();
+  const used = new Set<number>();
+  for (const p of pairs) {
+    if (used.has(p.i) || taken.has(p.f.sourceKey)) continue;
+    used.add(p.i);
+    taken.set(p.f.sourceKey, records[p.i] as T);
+  }
+  // A payment whose row was changed, and which somebody has since ticked as paid under the new details, is accounted for by that row.
+  records.forEach((record, i) => {
+    const was = record.sourceKey === null ? null : keyParts(record.sourceKey);
+    if (used.has(i) || !was) return;
+    const ticked = rows.find((r) => r.f.pilotPaid === true && !taken.has(r.f.sourceKey) && r.route === was.route && Math.abs(r.day - was.day) <= 3 * DAY && looselySame(r.f.pilot, record.pilot));
+    if (!ticked) return;
+    used.add(i);
+    taken.set(ticked.f.sourceKey, record);
+  });
+  return { taken, loose: records.filter((_, i) => !used.has(i)) };
+}
+
+/**
+ * Whether a payment no row accounts for any more may have been for this flight: the same route on the same day (whoever flew it), the same
+ * route within three days by what looks like the same person, or the same day by the same person on another route (a route corrected,
+ * and with it, perhaps, the pay).
+ */
+export function mayBePaid(loose: readonly PaidRecord[], f: SheetFlight, who: { fshubId: number | null; account: string | null }): boolean {
+  const here = keyParts(f.sourceKey);
+  if (!here) return false;
+  return loose.some((r) => {
+    const there = r.sourceKey === null ? null : keyParts(r.sourceKey);
+    if (!there) return false;
+    const person = looselySame(r.pilot, f.pilot) || (who.fshubId !== null && r.fshubId === who.fshubId) || (who.account !== null && r.account === who.account);
+    const apart = Math.abs(there.day - here.day);
+    if (there.route === here.route) return apart === 0 || (apart <= 3 * DAY && person);
+    return apart === 0 && person;
+  });
+}
+
 /** What the ledger of payments already made says. */
 export interface LedgerView {
   /** Was this flight already paid for this pilot (or is it being, or was it, with nobody knowing how it ended)? */
   isTaken(sourceKey: string, pilot: string): boolean;
+  /** May a payment that no longer matches any row have been this flight's? Then it is listed, but not paid until someone has checked. */
+  mayBePaid?(flight: SheetFlight, who: { fshubId: number | null; account: string | null }): boolean;
   hasUniqueId(uniqueId: string): boolean;
   /** The unique ID a payment of this flight failed under, so a second try is the same payment. */
   failedIdFor(sourceKey: string, pilot: string): string | null;
@@ -299,7 +403,8 @@ export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: n
 
   const drafts = due.map(({ flight: f, pay }) => {
     const { cents, sheetCents, lossNm } = pay;
-    const matches = infoByName.get(nameKey(f.pilot)) ?? [];
+    const key = nameKey(f.pilot);
+    const matches = key === '' ? [] : (infoByName.get(key) ?? []);
     const info = matches.length === 1 ? (matches[0] as PilotInfoRow) : null;
     const flags: PayFlag[] = [];
     if (matches.length === 0) flags.push('no-info');
@@ -310,6 +415,7 @@ export function buildPayLines(input: BuildInput): { lines: PayLine[]; waiting: n
     for (const flag of structuralFlags(account, cents)) if (info || flag === 'bad-amount') flags.push(flag);
     if (info) flags.push(...identityFlags(f.pilot, info, identities, ledger, account));
     if (pay.needsDistance) flags.push('no-distance');
+    if (ledger.mayBePaid?.(f, { fshubId, account })) flags.push('maybe-paid');
     return { f, cents, sheetCents, lossNm, account, fshubId, flags: [...new Set(flags)], ...endpoints(f.route) };
   });
 
